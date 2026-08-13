@@ -5,6 +5,7 @@ import PlayerBar from './components/PlayerBar.vue'
 import LyricPanel from './components/LyricPanel.vue'
 import { usePlayerStore } from './stores/player'
 import { useSettingsStore } from './stores/settings'
+import { ncm } from './api'
 
 const player = usePlayerStore()
 const settings = useSettingsStore()
@@ -23,9 +24,8 @@ const navs = [
 
 onMounted(() => {
   settings.load()
-  const { ncm } = window
   ncm.onServerStatus((s) => (serverState.value = s))
-  ncm.invoke('ncm:server-status').then((s) => (serverState.value = s))
+  ncm.serverStatus().then((s) => (serverState.value = s))
 })
 </script>
 
