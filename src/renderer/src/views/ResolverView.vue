@@ -90,8 +90,11 @@ async function downloadUrl() {
 
 <template>
   <div class="resolver">
-    <h1 class="page-title">解析</h1>
-    <p class="desc">粘贴网易云歌曲 / 歌单 / 专辑链接或纯 ID，一键解析真实播放地址</p>
+    <div class="hero">
+      <div class="hero-icon">⌁</div>
+      <h1 class="page-title">解析</h1>
+      <p class="desc">粘贴网易云歌曲 / 歌单 / 专辑链接或纯 ID，一键解析真实播放地址</p>
+    </div>
 
     <div class="input-row">
       <input
@@ -146,18 +149,39 @@ async function downloadUrl() {
 </template>
 
 <style scoped>
-.page-title {
-  font-size: 22px;
-  margin-bottom: 6px;
+.resolver {
+  max-width: 860px;
+  margin: 0 auto;
+}
+.hero {
+  text-align: center;
+  padding: 40px 0 30px;
+}
+.hero-icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 18px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-soft));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(236, 65, 65, 0.35);
+}
+.hero .page-title {
+  margin-bottom: 8px;
 }
 .desc {
   color: var(--text-dim);
   font-size: 13px;
-  margin-bottom: 18px;
 }
 .input-row {
   display: flex;
   gap: 10px;
+  max-width: 640px;
+  margin: 0 auto;
 }
 .input-row .input {
   flex: 1;
@@ -166,6 +190,7 @@ async function downloadUrl() {
   color: var(--accent);
   margin-top: 10px;
   font-size: 13px;
+  text-align: center;
 }
 .result {
   margin-top: 26px;
@@ -176,6 +201,11 @@ async function downloadUrl() {
   background: var(--bg-card);
   border-radius: var(--radius);
   padding: 22px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s var(--ease);
+}
+.song-card:hover {
+  box-shadow: var(--shadow);
 }
 .big-cover {
   width: 160px;
@@ -183,6 +213,7 @@ async function downloadUrl() {
   border-radius: 10px;
   object-fit: cover;
   flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
 }
 .song-info {
   flex: 1;
@@ -201,7 +232,7 @@ async function downloadUrl() {
 .url-box {
   background: var(--bg-elev);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   margin-bottom: 16px;
 }

@@ -117,7 +117,7 @@ function goToplist(id) {
       </div>
       <div class="grid">
         <div
-          v-for="p in recommendPlaylists"
+          v-for="(p, idx) in recommendPlaylists"
           :key="p.id"
           class="playlist-card"
           @click="router.push('/playlist/' + p.id)"
@@ -125,6 +125,7 @@ function goToplist(id) {
           <div class="cover-wrap">
             <img :src="p.picUrl + '?param=300y300'" alt="" loading="lazy" />
             <div class="play-count">▶ {{ fmtCount(p.playCount) }}</div>
+            <div class="play-float" @click.stop="playAll(recommendPlaylists.slice(idx))">▶</div>
           </div>
           <div class="name">{{ p.name }}</div>
         </div>
@@ -189,6 +190,12 @@ function goToplist(id) {
   cursor: pointer;
   position: relative;
   aspect-ratio: 16/6.5;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+}
+.banner-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow);
 }
 .banner-card img {
   width: 100%;
@@ -236,15 +243,47 @@ function goToplist(id) {
   overflow: hidden;
   aspect-ratio: 1;
   background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
 }
 .cover-wrap img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.25s;
+  transition: transform 0.3s var(--ease);
+}
+.playlist-card:hover .cover-wrap {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
 }
 .playlist-card:hover .cover-wrap img {
-  transform: scale(1.05);
+  transform: scale(1.06);
+}
+/* hover 时浮现的播放按钮 */
+.play-float {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.playlist-card:hover .play-float {
+  opacity: 1;
+  transform: translateY(0);
+}
+.play-float:hover {
+  background: var(--accent-hover);
 }
 .play-count {
   position: absolute;

@@ -84,6 +84,9 @@ onUnmounted(() => clearInterval(timer))
 </template>
 
 <style scoped>
+.playlist-detail {
+  position: relative;
+}
 .head {
   display: flex;
   gap: 24px;
@@ -105,10 +108,13 @@ onUnmounted(() => clearInterval(timer))
 .info {
   flex: 1;
   min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 .info h1 {
   font-size: 24px;
   margin-bottom: 10px;
+  line-height: 1.3;
 }
 .sub {
   color: var(--text-dim);

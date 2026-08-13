@@ -104,8 +104,14 @@ onMounted(() => {
   align-items: center;
   gap: 18px;
   background: var(--bg-card);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: 14px 18px;
+  box-shadow: var(--shadow-sm);
+  transition: background 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.task:hover {
+  background: var(--bg-hover);
+  box-shadow: var(--shadow);
 }
 .t-info {
   width: 240px;

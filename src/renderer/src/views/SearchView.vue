@@ -141,13 +141,14 @@ function goMv(id) {
 
 <style scoped>
 .page-title {
-  font-size: 22px;
+  font-size: 24px;
   margin-bottom: 18px;
 }
 .input-row {
   display: flex;
   gap: 10px;
   margin-bottom: 18px;
+  max-width: 720px;
 }
 .input-row .input {
   flex: 1;
@@ -164,6 +165,10 @@ function goMv(id) {
   font-size: 13px;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
+  transition: color 0.15s;
+}
+.tab:hover {
+  color: var(--text);
 }
 .tab.active {
   color: var(--accent);
@@ -187,6 +192,8 @@ function goMv(id) {
   overflow: hidden;
   aspect-ratio: 1;
   background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
 }
 .cover-wrap.round img {
   border-radius: 50%;
@@ -195,6 +202,14 @@ function goMv(id) {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform 0.3s var(--ease);
+}
+.playlist-card:hover .cover-wrap {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+}
+.playlist-card:hover .cover-wrap img {
+  transform: scale(1.06);
 }
 .play-count {
   position: absolute;

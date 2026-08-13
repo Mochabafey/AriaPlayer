@@ -98,6 +98,7 @@ onMounted(async () => {
   border-radius: 50%;
   flex-shrink: 0;
   box-shadow: var(--shadow);
+  border: 2px solid var(--accent-dim);
 }
 .info h1 {
   font-size: 26px;
@@ -140,11 +141,21 @@ onMounted(async () => {
   overflow: hidden;
   aspect-ratio: 1;
   background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
 }
 .cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform 0.3s var(--ease);
+}
+.card:hover .cover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+}
+.card:hover .cover img {
+  transform: scale(1.06);
 }
 .play-badge {
   position: absolute;
@@ -159,6 +170,10 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   font-size: 13px;
+  transition: background 0.15s;
+}
+.card:hover .play-badge {
+  background: var(--accent);
 }
 .name {
   margin-top: 8px;

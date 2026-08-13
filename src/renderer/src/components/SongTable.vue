@@ -85,8 +85,8 @@ async function download(song) {
   margin-bottom: 4px;
 }
 .st-row {
-  border-radius: 8px;
-  transition: background 0.15s;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s var(--ease);
   cursor: default;
 }
 .st-row:hover {
@@ -99,6 +99,10 @@ async function download(song) {
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   font-size: 13px;
+  transition: color 0.15s;
+}
+.st-row:hover .c-idx {
+  color: var(--accent);
 }
 .c-title {
   flex: 1;
@@ -112,6 +116,10 @@ async function download(song) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color 0.15s;
+}
+.st-row:hover .t-name {
+  color: var(--text);
 }
 .t-artist {
   font-size: 12px;
@@ -147,13 +155,17 @@ async function download(song) {
   color: var(--text-dim);
   font-size: 13px;
   padding: 4px 6px;
+  border-radius: 6px;
   opacity: 0;
-  transition: opacity 0.15s;
+  transform: translateY(2px);
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), color 0.15s;
 }
 .st-row:hover .op {
   opacity: 1;
+  transform: translateY(0);
 }
 .op:hover {
   color: var(--accent);
+  background: var(--bg-active);
 }
 </style>

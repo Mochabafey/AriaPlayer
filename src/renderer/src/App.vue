@@ -85,33 +85,40 @@ onMounted(() => {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 18px 12px;
+  padding: 16px 12px;
 }
 .logo {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 10px 18px;
+  padding: 6px 10px 20px;
 }
 .logo-icon {
   width: 40px;
   height: 40px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--accent), #ff7a45);
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-soft));
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 20px;
   color: #fff;
+  box-shadow: 0 4px 14px rgba(236, 65, 65, 0.35);
+  transition: transform 0.3s var(--ease-spring);
+}
+.logo:hover .logo-icon {
+  transform: rotate(-8deg) scale(1.05);
 }
 .logo-name {
   font-size: 16px;
   font-weight: 700;
+  letter-spacing: 0.3px;
 }
 .logo-sub {
   font-size: 10px;
   color: var(--text-faint);
   letter-spacing: 0.3px;
+  margin-top: 1px;
 }
 .nav {
   flex: 1;
@@ -121,14 +128,15 @@ onMounted(() => {
   overflow-y: auto;
 }
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
-  border-radius: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
   font-size: 14px;
-  transition: all 0.15s;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease);
 }
 .nav-item:hover {
   background: var(--bg-hover);
@@ -139,16 +147,38 @@ onMounted(() => {
   color: var(--accent);
   font-weight: 600;
 }
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+}
 .nav-icon {
-  width: 18px;
-  text-align: center;
-  font-size: 15px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 14px;
+  background: transparent;
+  transition: background 0.18s var(--ease);
+}
+.nav-item:hover .nav-icon {
+  background: var(--bg-active);
+}
+.nav-item.active .nav-icon {
+  background: var(--accent-dim);
 }
 .server-state {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 10px 12px;
   font-size: 12px;
   color: var(--text-faint);
   border-top: 1px solid var(--border);
@@ -161,7 +191,7 @@ onMounted(() => {
 }
 .server-state.ready .dot {
   background: var(--green);
-  box-shadow: 0 0 6px var(--green);
+  box-shadow: 0 0 8px var(--green);
 }
 .server-state.starting .dot {
   background: #f0a020;
@@ -181,6 +211,6 @@ onMounted(() => {
 .content {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 28px 20px;
+  padding: 26px 30px 22px;
 }
 </style>

@@ -117,10 +117,11 @@ async function restartServer() {
 
 <style scoped>
 .page-title {
-  font-size: 22px;
+  font-size: 24px;
   margin-bottom: 22px;
 }
 .sec {
+  max-width: 640px;
   margin-bottom: 32px;
 }
 .sec h2 {
@@ -164,7 +165,8 @@ async function restartServer() {
   border-radius: 13px;
   background: #3a3a3a;
   position: relative;
-  transition: background 0.2s;
+  transition: background 0.22s var(--ease);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 .switch::after {
   content: '';
@@ -175,7 +177,11 @@ async function restartServer() {
   height: 20px;
   border-radius: 50%;
   background: #888;
-  transition: all 0.2s;
+  transition: all 0.22s var(--ease-spring);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+.switch:hover::after {
+  transform: scale(1.1);
 }
 .switch.on {
   background: var(--accent);
@@ -183,6 +189,7 @@ async function restartServer() {
 .switch.on::after {
   left: 23px;
   background: #fff;
+  transform: none;
 }
 .about p {
   font-size: 13px;
@@ -190,5 +197,9 @@ async function restartServer() {
 }
 .about a {
   color: var(--accent);
+}
+.about a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
 }
 </style>

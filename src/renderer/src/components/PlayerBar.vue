@@ -52,7 +52,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="player-bar">
+  <div class="player-bar" :class="{ playing: player.playing }">
     <audio ref="audioRef" preload="metadata" class="hidden-audio" />
 
     <div class="p-left">
@@ -107,12 +107,12 @@ onMounted(() => {
   right: 0;
   bottom: 0;
   height: var(--player-h);
-  background: rgba(26, 26, 26, 0.92);
-  backdrop-filter: blur(16px);
+  background: rgba(22, 22, 22, 0.94);
+  backdrop-filter: blur(18px);
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 20px;
+  padding: 0 22px;
   gap: 24px;
   z-index: 100;
 }
@@ -127,17 +127,34 @@ onMounted(() => {
   flex-shrink: 0;
 }
 .cover {
-  width: 52px;
-  height: 52px;
-  border-radius: 8px;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
   overflow: hidden;
   flex-shrink: 0;
   background: var(--bg-card);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
 }
 .cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  animation: cover-spin 22s linear infinite;
+  animation-play-state: paused;
+}
+.player-bar.playing .cover img {
+  animation-play-state: running;
+}
+.cover:hover img {
+  animation-play-state: paused;
+}
+@keyframes cover-spin {
+  from {
+    transform: rotate(0);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 .cover.placeholder {
   display: flex;
@@ -178,27 +195,41 @@ onMounted(() => {
 .controls {
   display: flex;
   align-items: center;
-  gap: 22px;
+  gap: 18px;
 }
 .ctrl {
-  font-size: 17px;
+  font-size: 16px;
   color: var(--text-dim);
-  transition: all 0.15s;
-  padding: 4px;
+  transition: color 0.15s, transform 0.12s var(--ease);
+  padding: 5px;
   line-height: 1;
+  border-radius: 50%;
 }
 .ctrl:hover {
   color: var(--text);
+  transform: scale(1.1);
+}
+.ctrl:active {
+  transform: scale(0.92);
 }
 .ctrl.active {
   color: var(--accent);
 }
 .ctrl.play {
-  font-size: 24px;
-  color: var(--text);
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  color: #fff;
+  background: var(--accent);
+  box-shadow: 0 3px 12px rgba(236, 65, 65, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .ctrl.play:hover {
-  color: var(--accent);
+  color: #fff;
+  background: var(--accent-hover);
+  transform: scale(1.08);
 }
 .timeline {
   display: flex;
@@ -220,17 +251,39 @@ onMounted(() => {
   border-radius: 3px;
   background: #333;
   cursor: pointer;
-  overflow: hidden;
+  position: relative;
+  transition: height 0.12s var(--ease);
+}
+.progress:hover {
+  height: 7px;
 }
 .progress-fill {
   height: 100%;
   background: var(--accent);
   border-radius: 3px;
+  position: relative;
+}
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.progress:hover .progress-fill::after {
+  opacity: 1;
 }
 .p-right {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   width: 300px;
   flex-shrink: 0;
   justify-content: flex-end;
@@ -241,7 +294,11 @@ onMounted(() => {
   border-radius: 3px;
   background: #333;
   cursor: pointer;
-  overflow: hidden;
+  position: relative;
+  transition: height 0.12s var(--ease);
+}
+.volume:hover {
+  height: 7px;
 }
 .volume-fill {
   height: 100%;

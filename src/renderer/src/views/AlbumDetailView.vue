@@ -63,6 +63,10 @@ onMounted(async () => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform 0.3s var(--ease);
+}
+.cover:hover img {
+  transform: scale(1.04);
 }
 .info {
   flex: 1;
@@ -71,6 +75,7 @@ onMounted(async () => {
 .info h1 {
   font-size: 24px;
   margin-bottom: 10px;
+  line-height: 1.3;
 }
 .sub {
   color: var(--text-dim);

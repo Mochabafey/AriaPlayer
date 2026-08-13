@@ -33,7 +33,7 @@ const sorted = computed(() => {
 })
 
 function coverOf(s) {
-  return s.coverPath ? `ncm://cover?path=${encodeURIComponent(s.coverPath)}` : ''
+  return s.coverPath ? `ncm-audio://cover?path=${encodeURIComponent(s.coverPath)}` : ''
 }
 
 onMounted(() => {
@@ -127,7 +127,7 @@ async function importLibrary() {
         @dblclick="playLocal(s)"
       >
         <div class="cover">
-          <img v-if="s.coverPath" :src="`ncm://cover?path=${encodeURIComponent(s.coverPath)}`" alt="" loading="lazy" />
+          <img v-if="s.coverPath" :src="coverOf(s)" alt="" loading="lazy" />
           <div v-else class="no-cover">♪</div>
           <div class="hover-ops" @click.stop>
             <button class="op" title="播放" @click.stop="playLocal(s)">▶</button>
@@ -168,7 +168,7 @@ async function importLibrary() {
         <input v-model="editForm.artist" class="input" />
         <label>专辑</label>
         <input v-model="editForm.album" class="input" />
-        <p class="hint">MP3 会写回文件标签（ID3v2），FLAC/M4A 仅更新曲库记录</p>
+        <p class="hint">保存后会写回文件标签（MP3/FLAC/M4A）</p>
         <div class="modal-actions">
           <button class="btn ghost" @click="editing = null">取消</button>
           <button class="btn" @click="saveEdit">保存</button>
@@ -247,11 +247,12 @@ async function importLibrary() {
   cursor: pointer;
   border-radius: var(--radius);
   padding: 8px;
-  transition: background 0.15s;
+  transition: background 0.18s var(--ease), transform 0.18s var(--ease), border-color 0.18s var(--ease);
   border: 1px solid transparent;
 }
 .song-card:hover {
   background: var(--bg-card);
+  transform: translateY(-2px);
 }
 .song-card.selected {
   border-color: var(--accent);
@@ -260,9 +261,10 @@ async function importLibrary() {
 .cover {
   position: relative;
   aspect-ratio: 1;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
 }
 .cover img {
   width: 100%;
@@ -282,13 +284,13 @@ async function importLibrary() {
 .hover-ops {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 12px;
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s var(--ease);
 }
 .song-card:hover .hover-ops {
   opacity: 1;
@@ -297,12 +299,15 @@ async function importLibrary() {
   width: 38px;
   height: 38px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.18);
   color: #fff;
   font-size: 15px;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s, transform 0.12s var(--ease);
 }
 .hover-ops .op:hover {
   background: var(--accent);
+  transform: scale(1.08);
 }
 .src-tag {
   position: absolute;

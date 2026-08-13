@@ -257,6 +257,8 @@ async function logout() {
   width: 84px;
   height: 84px;
   border-radius: 50%;
+  border: 2px solid var(--accent-dim);
+  box-shadow: var(--shadow-sm);
 }
 .nick {
   font-size: 22px;
@@ -290,11 +292,21 @@ async function logout() {
   border-radius: var(--radius);
   overflow: hidden;
   aspect-ratio: 1;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
 }
 .cover-wrap img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform 0.3s var(--ease);
+}
+.playlist-card:hover .cover-wrap {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+}
+.playlist-card:hover .cover-wrap img {
+  transform: scale(1.06);
 }
 .name {
   margin-top: 8px;
