@@ -1,0 +1,54 @@
+appId: com.ntr.resolver
+productName: Netease Track Resolver
+copyright: Copyright © 2026 NTR
+directories:
+  buildResources: resources
+  output: dist/release
+
+# 应用代码（electron-vite 构建产物，位于 dist/out）
+files:
+  - dist/out/**
+  - package.json
+
+# 内置 api-enhanced 完整服务（不进 asar，子进程直接运行，需写 cookie 数据文件）
+extraResources:
+  - from: server
+    to: ncm-server
+    filter:
+      - '**/*'
+      - '!**/*.map'
+      - '!**/*.md'
+
+asar: true
+
+win:
+  icon: resources/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-${version}-setup.${ext}
+  shortcutName: 网易牛具
+  uninstallDisplayName: 网易牛具 (Netease Track Resolver)
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+
+mac:
+  icon: resources/icon.png
+  category: public.app-category.music
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+
+dmg:
+  artifactName: ${productName}-${version}.${ext}
+
+npmRebuild: false
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/

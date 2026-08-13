@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+            artifact: 'release/*.exe'
+            asset_name: 'Netease-Track-Resolver-windows'
+          - os: macos-latest
+            target: --mac
+            artifact: 'release/*.dmg'
+            asset_name: 'Netease-Track-Resolver-macos'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set Git for long paths
+        shell: bash
+        run: git config --global core.longpaths true
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Generate icon
+        run: python scripts/gen-icon.py
+
+      - name: Vendor api-enhanced server
+        run: node scripts/vendor-server.mjs
+
+      - name: Build renderer + main + preload
+        run: npx electron-vite build
+
+      - name: Package with electron-builder
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 国内 CI 加速（如需）
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+        run: npx electron-builder ${{ matrix.target }} --publish never
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 14

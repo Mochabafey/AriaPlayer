@@ -1,0 +1,17 @@
+# 依赖
+node_modules/
+server/node_modules/
+
+# 构建产物（编译内容统一放 dist/，不进入版本库）
+dist/
+out/
+release/
+
+# 临时与日志
+*.log
+.npm-fresh-cache/
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

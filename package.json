@@ -1,0 +1,35 @@
+{
+  "name": "netease-track-resolver",
+  "productName": "Netease Track Resolver",
+  "version": "0.1.0",
+  "description": "网易牛具 — 网易云音乐解析/播放/下载桌面工具（基于 api-enhanced）",
+  "main": "./dist/out/main/index.js",
+  "author": "NTR",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "vendor": "node scripts/vendor-server.mjs",
+    "dev": "node scripts/dev-server.mjs",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "smoke": "electron-vite build && cross-env-shell NCM_SMOKE=1 electron . --disable-gpu",
+    "pack:win": "electron-vite build && electron-builder --win",
+    "pack:mac": "electron-vite build && electron-builder --mac",
+    "pack:dir": "electron-vite build && electron-builder --dir"
+  },
+  "dependencies": {
+    "music-metadata": "^11.14.0",
+    "node-id3": "^0.2.9"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "cross-env": "^7.0.3",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "pinia": "^3.0.4",
+    "vite": "^7.3.6",
+    "vue": "^3.5.41",
+    "vue-router": "^4.6.4"
+  }
+}

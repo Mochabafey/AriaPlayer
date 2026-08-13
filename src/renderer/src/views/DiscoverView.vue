@@ -1,0 +1,315 @@
+<script setup>
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { api, waitServerReady } from '../api'
+import { usePlayerStore } from '../stores/player'
+import { useDownloadsStore } from '../stores/downloads'
+import { useSettingsStore } from '../stores/settings'
+import { fmtCount } from '../utils/format'
+
+const router = useRouter()
+const player = usePlayerStore()
+const downloads = useDownloadsStore()
+const settings = useSettingsStore()
+
+const banner = ref([])
+const recommendPlaylists = ref([])
+const newSongs = ref([])
+const toplists = ref([])
+const dailySongs = ref([])
+const loading = ref(true)
+const serverDown = ref(false)
+
+onMounted(async () => {
+  if (!(await waitServerReady())) {
+    serverDown.value = true
+    loading.value = false
+    return
+  }
+  try {
+    const [b, rp, ns, tl] = await Promise.allSettled([
+      api('banner'),
+      api('personalized', { limit: 12 }),
+      api('personalized_newsong', { limit: 10 }),
+      api('toplist')
+    ])
+    if (b.status === 'fulfilled') banner.value = (b.value.banners || []).slice(0, 5)
+    if (rp.status === 'fulfilled') recommendPlaylists.value = rp.value.result || []
+    if (ns.status === 'fulfilled') newSongs.value = (ns.value.result || []).map((x) => x.song || x)
+    if (tl.status === 'fulfilled') toplists.value = (tl.value.list || []).slice(0, 10)
+  } finally {
+    loading.value = false
+  }
+})
+
+async function playDaily() {
+  const res = await api('recommend_songs')
+  dailySongs.value = res.data?.dailySongs || []
+  await player.playList(dailySongs.value)
+}
+
+async function playAll(songs) {
+  await player.playList(songs)
+}
+
+async function downloadSong(song) {
+  try {
+    const res = await api('song_url_v1', {
+      id: song.id,
+      level: settings.settings.quality === 'lossless' ? 'lossless' : settings.settings.quality === '320000' ? 'exhigh' : 'standard'
+    })
+    const url = res.data?.[0]?.url
+    if (!url) return alert('无可用播放地址')
+    await downloads.add({
+      songId: song.id,
+      title: song.name,
+      artist: (song.ar || []).map((a) => a.name).join('/'),
+      url,
+      quality: settings.settings.quality,
+      cover: song.al?.picUrl
+    })
+  } catch (e) {
+    alert('下载失败：' + e.message)
+  }
+}
+
+function goToplist(id) {
+  router.push(`/playlist/${id}`)
+}
+</script>
+
+<template>
+  <div class="discover">
+    <h1 class="page-title">发现</h1>
+
+    <!-- Banner -->
+    <div class="banner-row" v-if="banner.length">
+      <div
+        v-for="b in banner"
+        :key="b.bannerId"
+        class="banner-card"
+        @click="b.targetType === 10 && b.targetId ? goToplist(b.targetId) : null"
+      >
+        <img :src="b.imageUrl + '?param=520y220'" alt="" loading="lazy" />
+        <div class="banner-title">{{ b.typeTitle || b.titleColor }}</div>
+      </div>
+    </div>
+
+    <div v-if="loading" class="placeholder">加载中…</div>
+    <div v-else-if="serverDown" class="placeholder">
+      内置服务未就绪<br />
+      <span class="sub">请检查 server/ 目录是否已 vendor（npm run vendor），或查看设置页重启服务</span>
+    </div>
+
+    <!-- 每日推荐 -->
+    <section class="sec">
+      <div class="sec-head">
+        <h2>每日推荐</h2>
+        <button class="btn small ghost" @click="playDaily">▶ 播放今日推荐</button>
+      </div>
+      <p v-if="dailySongs.length === 0" class="hint">登录后可用（需登录态，推荐歌曲 30 首）</p>
+    </section>
+
+    <!-- 推荐歌单 -->
+    <section class="sec" v-if="recommendPlaylists.length">
+      <div class="sec-head">
+        <h2>推荐歌单</h2>
+      </div>
+      <div class="grid">
+        <div
+          v-for="p in recommendPlaylists"
+          :key="p.id"
+          class="playlist-card"
+          @click="router.push('/playlist/' + p.id)"
+        >
+          <div class="cover-wrap">
+            <img :src="p.picUrl + '?param=300y300'" alt="" loading="lazy" />
+            <div class="play-count">▶ {{ fmtCount(p.playCount) }}</div>
+          </div>
+          <div class="name">{{ p.name }}</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 新歌速递 -->
+    <section class="sec" v-if="newSongs.length">
+      <div class="sec-head">
+        <h2>新歌速递</h2>
+      </div>
+      <div class="song-list">
+        <div v-for="(s, i) in newSongs" :key="s.id" class="song-row">
+          <span class="idx">{{ String(i + 1).padStart(2, '0') }}</span>
+          <div class="song-meta">
+            <div class="song-name">{{ s.name }}</div>
+            <div class="song-artist">{{ (s.ar || []).map((a) => a.name).join('/') }}</div>
+          </div>
+          <button class="op" title="播放" @click="playAll(newSongs.slice(i))">▶</button>
+          <button class="op" title="下载" @click="downloadSong(s)">⇩</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 排行榜 -->
+    <section class="sec" v-if="toplists.length">
+      <div class="sec-head">
+        <h2>排行榜</h2>
+      </div>
+      <div class="grid small">
+        <div
+          v-for="t in toplists"
+          :key="t.id"
+          class="playlist-card"
+          @click="goToplist(t.id)"
+        >
+          <div class="cover-wrap">
+            <img :src="t.coverImgUrl + '?param=200y200'" alt="" loading="lazy" />
+            <div class="play-count">▶ {{ fmtCount(t.playCount) }}</div>
+          </div>
+          <div class="name">{{ t.name }}</div>
+        </div>
+      </div>
+    </section>
+  </div>
+</template>
+
+<style scoped>
+.page-title {
+  font-size: 22px;
+  margin-bottom: 18px;
+}
+.banner-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.banner-card {
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  aspect-ratio: 16/6.5;
+}
+.banner-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.banner-title {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  font-size: 11px;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+.sec {
+  margin-bottom: 30px;
+}
+.sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.sec-head h2 {
+  font-size: 18px;
+}
+.hint {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 16px;
+}
+.grid.small {
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+}
+.playlist-card {
+  cursor: pointer;
+}
+.cover-wrap {
+  position: relative;
+  border-radius: var(--radius);
+  overflow: hidden;
+  aspect-ratio: 1;
+  background: var(--bg-card);
+}
+.cover-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.25s;
+}
+.playlist-card:hover .cover-wrap img {
+  transform: scale(1.05);
+}
+.play-count {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 11px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+.name {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.song-list {
+  display: flex;
+  flex-direction: column;
+}
+.song-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.song-row:hover {
+  background: var(--bg-hover);
+}
+.idx {
+  width: 26px;
+  color: var(--text-faint);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.song-meta {
+  flex: 1;
+  min-width: 0;
+}
+.song-name {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.song-artist {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.op {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 6px;
+}
+.op:hover {
+  color: var(--accent);
+}
+.placeholder {
+  color: var(--text-faint);
+  padding: 40px 0;
+  text-align: center;
+}
+</style>
