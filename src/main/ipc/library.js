@@ -4,17 +4,13 @@ import path from 'path'
 import crypto from 'crypto'
 import { ipcMain, dialog } from 'electron'
 import { stores } from '../store/db.js'
+import { writeFileTags } from '../tags/writeTags.mjs'
 
-// music-metadata 与 node-id3 在主进程运行时加载（外部依赖，不打进 renderer bundle）
+// music-metadata 在主进程运行时加载（外部依赖，不打进 renderer bundle）
 let mm = null
-let NodeID3 = null
 async function loadMeta() {
   mm ??= await import('music-metadata')
   return mm
-}
-async function loadId3() {
-  NodeID3 ??= (await import('node-id3')).default
-  return NodeID3
 }
 
 const AUDIO_EXTS = new Set(['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.opus'])
@@ -70,21 +66,16 @@ export function registerLibraryIpc(notifyUpdate) {
     Object.assign(song, { title, artist, album })
     if (cover !== undefined) song.coverPath = cover
 
-    // mp3 写回文件标签（ID3v2）；其余格式 v1 仅更新库内记录
-    const id3 = await loadId3()
-    const ext = path.extname(song.filePath).toLowerCase()
+    // 写回文件标签：mp3(ID3v2)/flac(vorbis)/m4a(ilst)；失败仅记日志，不影响库内记录
+    const tags = {}
+    if (title !== undefined) tags.title = title
+    if (artist !== undefined) tags.artist = artist
+    if (album !== undefined) tags.album = album
     let wroteTag = false
-    if (ext === '.mp3') {
-      const tags = {}
-      if (title !== undefined) tags.title = title
-      if (artist !== undefined) tags.artist = artist
-      if (album !== undefined) tags.album = album
-      try {
-        id3.write(tags, song.filePath)
-        wroteTag = true
-      } catch (e) {
-        console.error('[library] id3 write failed', e)
-      }
+    try {
+      wroteTag = writeFileTags(song.filePath, tags)
+    } catch (e) {
+      console.error('[library] tag write failed', e)
     }
     notify()
     return { ok: true, wroteTag }

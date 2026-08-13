@@ -13,11 +13,13 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "smoke": "electron-vite build && cross-env-shell NCM_SMOKE=1 electron . --disable-gpu",
+    "test:tags": "node scripts/gen-tag-samples.js && node src/main/tags/writeTags.test.mjs",
     "pack:win": "electron-vite build && electron-builder --win",
     "pack:mac": "electron-vite build && electron-builder --mac",
     "pack:dir": "electron-vite build && electron-builder --dir"
   },
   "dependencies": {
+    "hls.js": "^1.7.0",
     "music-metadata": "^11.14.0",
     "node-id3": "^0.2.9"
   },

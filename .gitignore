@@ -12,6 +12,9 @@ release/
 .npm-fresh-cache/
 .DS_Store
 
+# 标签测试生成的样本（由 scripts/gen-tag-samples.js 生成）
+scripts/samples/
+
 # IDE
 .vscode/
 .idea/
