@@ -21,7 +21,8 @@ const editForm = ref({ title: '', artist: '', album: '' })
 
 // ---- .ncm 批量转换 ----
 const showConvert = ref(false)
-const convertDir = ref('')
+const convertPath = ref('')
+const convertType = ref('dir') // 'file' | 'dir'
 const converting = ref(false)
 const convertProgress = ref({ done: 0, total: 0, ok: 0, fail: 0, current: '' })
 const convertResult = ref(null) // {ok,total,ok,fail,results,outputDir}
@@ -92,34 +93,59 @@ async function importLibrary() {
   if (n > 0) alert(`已导入 ${n} 首`)
 }
 
+// 简单判断：以 .ncm 结尾视为文件，否则视为目录（仅用于预填显示）
+function pathLooksLikeFile(p) {
+  return /\.ncm$/i.test(p || '')
+}
+
 // ---- .ncm 转换 ----
 async function openConvert() {
   showConvert.value = true
   convertResult.value = null
   convertError.value = ''
   convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
+  // 确保设置已加载，预填上次选择的路径（主进程已持久化到 lastConvertPath）
+  if (!settings.loaded) await settings.load()
+  if (!convertPath.value && settings.settings.lastConvertPath) {
+    convertPath.value = settings.settings.lastConvertPath
+    convertType.value = pathLooksLikeFile(settings.settings.lastConvertPath) ? 'file' : 'dir'
+  }
+}
+
+async function pickConvertFile() {
   try {
-    const dir = await ncm.convertPickDir()
-    if (!dir) {
-      showConvert.value = false
-      return
+    const sel = await ncm.convertPickFile()
+    if (sel) {
+      convertPath.value = sel.path
+      convertType.value = sel.type
     }
-    convertDir.value = dir
+  } catch (e) {
+    convertError.value = e.message || '打开文件选择失败'
+    alert('打开文件选择失败：' + (e.message || '未知错误'))
+  }
+}
+
+async function pickConvertDir() {
+  try {
+    const sel = await ncm.convertPickDir()
+    if (sel) {
+      convertPath.value = sel.path
+      convertType.value = sel.type
+    }
   } catch (e) {
     convertError.value = e.message || '打开目录选择失败'
-    showConvert.value = false
     alert('打开目录选择失败：' + (e.message || '未知错误'))
   }
 }
 
 async function startConvert() {
-  if (converting.value || !convertDir.value) return
+  if (converting.value || !convertPath.value) return
   converting.value = true
   convertResult.value = null
   convertError.value = ''
   convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
   try {
-    const r = await ncm.convertBatch({ dir: convertDir.value, recursive: true })
+    const r = await ncm.convertBatch({ path: convertPath.value, recursive: true })
     if (!r.ok) convertError.value = r.error || '转换失败'
     else convertResult.value = r
   } finally {
@@ -231,8 +257,14 @@ function openConvertOut() {
         <p class="hint">将网易云 .ncm 加密文件转换为 MP3 / FLAC（自动提取歌曲信息与封面）</p>
 
         <div class="convert-dir">
-          <span class="path">{{ convertDir || '未选择目录' }}</span>
-          <button class="btn small ghost" :disabled="converting" @click="openConvert()">重新选择</button>
+          <div class="path-wrap">
+            <span class="type-tag" :class="convertType">{{ convertType === 'file' ? '文件' : '目录' }}</span>
+            <span class="path" :title="convertPath">{{ convertPath || '未选择 .ncm 文件或目录' }}</span>
+          </div>
+          <div class="pick-actions">
+            <button class="btn small ghost" :disabled="converting" @click="pickConvertFile">选择文件</button>
+            <button class="btn small ghost" :disabled="converting" @click="pickConvertDir">选择目录</button>
+          </div>
         </div>
 
         <div v-if="converting || convertProgress.total" class="convert-progress">
@@ -256,7 +288,7 @@ function openConvertOut() {
 
         <div class="modal-actions">
           <button class="btn ghost" @click="showConvert = false">关闭</button>
-          <button v-if="!convertResult" class="btn" :disabled="!convertDir || converting" @click="startConvert">
+          <button v-if="!convertResult" class="btn" :disabled="!convertPath || converting" @click="startConvert">
             {{ converting ? '转换中…' : '开始转换' }}
           </button>
           <button v-else class="btn" @click="openConvertOut">打开输出目录</button>
@@ -533,8 +565,7 @@ function openConvertOut() {
 }
 .convert-dir {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 10px;
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -542,12 +573,35 @@ function openConvertOut() {
   padding: 10px 12px;
   margin-top: 8px;
 }
+.convert-dir .path-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.convert-dir .type-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+}
+.convert-dir .type-tag.dir {
+  background: rgba(49, 194, 124, 0.15);
+  color: var(--green);
+}
 .convert-dir .path {
   font-size: 12px;
   color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.convert-dir .pick-actions {
+  display: flex;
+  gap: 8px;
 }
 .convert-progress {
   margin-top: 12px;

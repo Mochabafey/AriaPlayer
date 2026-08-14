@@ -73,6 +73,7 @@ export const ncm = {
   saveDialog: (opts) => bridge.invoke('ncm:save-dialog', opts),
 
   // NCM 转换
+  convertPickFile: () => bridge.invoke('ncm:convert-pick-file'),
   convertPickDir: () => bridge.invoke('ncm:convert-pick-dir'),
   convertBatch: (opts) => bridge.invoke('ncm:convert-batch', opts)
 }

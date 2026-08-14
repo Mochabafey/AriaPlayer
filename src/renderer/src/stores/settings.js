@@ -9,7 +9,8 @@ export const useSettingsStore = defineStore('settings', {
       enableUnblock: true,
       enableFlac: true,
       volume: 0.8,
-      playMode: 'list'
+      playMode: 'list',
+      lastConvertPath: ''
     },
     loaded: false
   }),
