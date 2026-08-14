@@ -15,6 +15,16 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'ncm-audio', privileges: { stream: true, supportFetchAPI: true, bypassCSP: true } }
 ])
 
+// 关键：Chromium 网络栈只认系统代理（不认 NO_PROXY 环境变量）。
+// 本机系统代理配置残留（如失效的 127.0.0.1:10808）会让渲染进程加载
+// localhost:5173（dev 页面）等本地请求挂起 → 白屏卡死。
+// 必须在 app ready 前让 Chromium 绕过代理访问本地地址。
+app.commandLine.appendSwitch('proxy-bypass-list', 'localhost;127.0.0.1;[::1]')
+// 调试用：远程调试端口（排障时打开；正常使用不受影响）
+if (process.env.NCM_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.NCM_DEBUG_PORT)
+}
+
 // 兜底：静默 EPIPE 等管道断开错误，避免触发"JavaScript error"弹窗
 process.on('uncaughtException', (e) => {
   if (e && (e.code === 'EPIPE' || e.code === 'ECONNRESET' || e.code === 'ENOTCONN')) return
@@ -45,10 +55,56 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
 
+  // 兜底：若 ready-to-show 因渲染卡住/加载慢未触发，5s 后强制显示窗口并居中
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.center()
+      mainWindow.show()
+      console.log('[window] 超时兜底强制显示窗口')
+    }
+    // 检查渲染进程实际状态（诊断白屏/未加载）
+    setTimeout(async () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      try {
+        const st = await mainWindow.webContents.executeJavaScript(`({
+          ready: document.readyState,
+          url: location.href,
+          bodyLen: document.body ? document.body.innerHTML.length : -1,
+          hasNav: document.querySelectorAll('.nav-item').length,
+          title: document.title
+        })`)
+        console.log('[window] 渲染状态:', JSON.stringify(st))
+      } catch (e) {
+        console.log('[window] 渲染检查失败:', e.message)
+      }
+    }, 4000)
+  }, 5000)
+
   // 渲染进程 console 转发到主进程日志（排障用；dev 下输出到终端）
   mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
     const tag = ['v', 'i', 'w', 'e'][level] || '?'
     console.log(`[renderer:${tag}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`)
+  })
+
+  // 页面加载状态诊断
+  mainWindow.webContents.on('did-start-loading', () => console.log('[load] start-loading'))
+  mainWindow.webContents.on('did-stop-loading', () => console.log('[load] stop-loading'))
+  mainWindow.webContents.on('did-finish-load', () => console.log('[load] finish-load'))
+  mainWindow.webContents.on('did-frame-finish-load', (_e, isMain) => {
+    if (isMain) console.log('[load] main-frame-finish-load')
+  })
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.log(`[load] FAIL code=${code} desc=${desc} url=${url ? url.slice(0, 100) : ''}`)
+  })
+  mainWindow.webContents.on('did-fail-provisional-load', (_e, code, desc, url) => {
+    console.log(`[load] PROV-FAIL code=${code} desc=${desc} url=${url ? url.slice(0, 100) : ''}`)
+  })
+  mainWindow.webContents.on('did-start-navigation', (_e, url) => {
+    if (url.startsWith('http')) console.log('[load] nav->', url.slice(0, 80))
+  })
+  // 渲染进程内资源加载错误（404/超时等）
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    // console-message 已在上面处理，这里只补充
   })
 
   // 渲染进程崩溃/未响应检测

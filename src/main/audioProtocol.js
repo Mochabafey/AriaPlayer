@@ -1,4 +1,4 @@
-import { protocol, net } from 'electron'
+import { protocol } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import http from 'http'

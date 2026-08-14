@@ -11,13 +11,13 @@
     "vendor": "node scripts/vendor-server.mjs",
     "fetch:ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "dev": "node scripts/dev-server.mjs",
-    "build": "electron-vite build",
+    "build": "node scripts/build-app.mjs",
     "start": "electron-vite preview",
     "smoke": "node scripts/smoke-server.mjs",
     "test:tags": "node scripts/gen-tag-samples.js && node src/main/tags/writeTags.test.mjs",
-    "pack:win": "electron-vite build && electron-builder --win",
-    "pack:mac": "electron-vite build && electron-builder --mac",
-    "pack:dir": "electron-vite build && electron-builder --dir"
+    "pack:win": "node scripts/build-app.mjs && electron-builder --win",
+    "pack:mac": "node scripts/build-app.mjs && electron-builder --mac",
+    "pack:dir": "node scripts/build-app.mjs && electron-builder --dir"
   },
   "dependencies": {
     "hls.js": "^1.7.0",
