@@ -77,18 +77,41 @@ export const ncm = {
 export function parseLink(input) {
   const s = String(input).trim()
   if (!s) return null
+  // 优先处理纯 ID
+  if (/^\d{5,15}$/.test(s)) return { type: 'song', id: s }
+  // 链接格式：song?id=xxx / song/xxx / #/song?id=xxx / m/song?id=xxx
+  // 关键：song 后可能跟 ?id= / = / /，数字不一定紧跟其后（song?id=33894312 的 ? 后是 id=）
   const patterns = [
-    { type: 'song', re: /(?:song|music)[\/=](\d+)/ },
-    { type: 'playlist', re: /playlist[\/=](\d+)/ },
-    { type: 'album', re: /album[\/=](\d+)/ },
-    { type: 'artist', re: /artist[\/=](\d+)/ },
-    { type: 'mv', re: /mv[\/=](\d+)/ }
+    { type: 'song', re: /song[?/=]*(?:id[?/=])?(\d{5,})/ },
+    { type: 'playlist', re: /playlist[?/=]*(?:id[?/=])?(\d{5,})/ },
+    { type: 'album', re: /album[?/=]*(?:id[?/=])?(\d{5,})/ },
+    { type: 'artist', re: /artist[?/=]*(?:id[?/=])?(\d{5,})/ },
+    { type: 'mv', re: /mv[?/=]*(?:id[?/=])?(\d{5,})/ }
   ]
   for (const p of patterns) {
     const m = s.match(p.re)
     if (m) return { type: p.type, id: m[1] }
   }
-  if (/^\d{5,15}$/.test(s)) return { type: 'song', id: s }
+  return null
+}
+
+/**
+ * 解析输入：先直接 parseLink；若为 http(s) 链接且识别失败，
+ * 尝试短链跳转（163cn.tv 等）拿到真实 URL 后再识别。
+ */
+export async function resolveLinkInput(input) {
+  const parsed = parseLink(input)
+  if (parsed) return { ...parsed, raw: String(input).trim() }
+  const s = String(input || '').trim()
+  if (!/^https?:\/\//.test(s)) return null
+  try {
+    const realUrl = await bridge.invoke('ncm:resolve-link', s)
+    if (!realUrl) return null
+    const parsed2 = parseLink(realUrl)
+    if (parsed2) return { ...parsed2, raw: realUrl }
+  } catch {
+    /* ignore */
+  }
   return null
 }
 

@@ -6,6 +6,33 @@ import { app } from 'electron'
 import { stores, flushAll } from '../store/db.js'
 
 export function registerApiIpc(getServer) {
+  // ---- Cookie Jar：模拟浏览器会话，保持登录态 ----
+  // api-enhanced 的登录态通过 Set-Cookie / Cookie 头传递（服务端不维护全局会话），
+  // 这里手动保存每个响应返回的 cookie，并在后续请求带上。
+  const cookieJar = new Map()
+
+  function cookieHeader() {
+    return [...cookieJar.entries()]
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ')
+  }
+
+  function absorbCookies(res) {
+    let setCookies = []
+    if (typeof res.headers.getSetCookie === 'function') {
+      setCookies = res.headers.getSetCookie()
+    } else {
+      const v = res.headers.get('set-cookie')
+      if (v) setCookies = [v]
+    }
+    for (const sc of setCookies) {
+      if (!sc) continue
+      const pair = sc.split(';')[0]
+      const i = pair.indexOf('=')
+      if (i > 0) cookieJar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim())
+    }
+  }
+
   // ---- 通用 API 转发到本地 api-enhanced ----
   ipcMain.handle('ncm:api', async (_e, { method, params }) => {
     const srv = getServer()
@@ -14,8 +41,35 @@ export function registerApiIpc(getServer) {
     const route = method.replace(/_/g, '/').replace(/^\//, '')
     const qs = new URLSearchParams(params || {}).toString()
     const url = `http://127.0.0.1:${srv.port}/${route}${qs ? '?' + qs : ''}`
-    const res = await fetch(url, { signal: AbortSignal.timeout(30000) })
+    const headers = {}
+    const cookie = cookieHeader()
+    if (cookie) headers['Cookie'] = cookie
+    // 登录态/实时数据接口绕过服务端 2 分钟缓存（否则登录后 login_status 命中缓存仍显示匿名）
+    if (/^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin)/.test(route)) {
+      headers['x-apicache-force-fetch'] = '1'
+    }
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(30000) })
+    absorbCookies(res)
     return res.json()
+  })
+
+  // ---- 短链跳转解析（163cn.tv 等）→ 返回真实 URL ----
+  ipcMain.handle('ncm:resolve-link', async (_e, input) => {
+    const target = String(input || '').trim()
+    if (!/^https?:\/\//.test(target)) return null
+    try {
+      const res = await fetch(target, {
+        redirect: 'manual',
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(10000)
+      })
+      const loc = res.headers.get('location')
+      if (loc) return new URL(loc, target).toString()
+      // 无跳转：返回最终响应 URL（可能是 200 页面）
+      return res.url && res.url !== target ? res.url : null
+    } catch {
+      return null
+    }
   })
 
   ipcMain.handle('ncm:server-status', () => {

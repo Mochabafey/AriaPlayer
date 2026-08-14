@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import { api, parseLink } from '../api'
+import { api, resolveLinkInput } from '../api'
 import { usePlayerStore } from '../stores/player'
 import { useDownloadsStore } from '../stores/downloads'
 import { useSettingsStore } from '../stores/settings'
@@ -17,9 +17,9 @@ const result = ref(null) // {type, id, detail, songs, url}
 const error = ref('')
 
 async function resolveLink() {
-  const parsed = parseLink(input.value)
+  const parsed = await resolveLinkInput(input.value)
   if (!parsed) {
-    error.value = '无法识别的链接/ID，支持：歌曲、歌单、专辑链接或纯 ID'
+    error.value = '无法识别的链接/ID，支持：歌曲、歌单、专辑链接、163cn.tv 短链或纯 ID'
     return
   }
   loading.value = true

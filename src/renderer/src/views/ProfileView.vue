@@ -25,8 +25,11 @@ let qrTimer = null
 onMounted(async () => {
   try {
     const s = await api('login_status')
-    if (s.data?.account) {
-      user.value = s.data.profile || { nickname: '用户', avatarUrl: '' }
+    // api-enhanced 启动时会自动注册匿名账号（anonimousUser: true, profile: null），
+    // 必须排除匿名态，否则一进页面就误显示为已登录、登录入口不出现。
+    const acc = s.data?.account
+    if (acc && !acc.anonimousUser && s.data.profile) {
+      user.value = s.data.profile
       await loadUserData()
     }
   } catch { /* 未登录 */ }
@@ -102,9 +105,14 @@ async function phoneLogin() {
   try {
     await api('login_cellphone', { phone: phone.value, password: password.value })
     const s = await api('login_status')
-    user.value = s.data?.profile || { nickname: '用户' }
-    await loadUserData()
-    showPhone.value = false
+    const acc = s.data?.account
+    if (acc && !acc.anonimousUser && s.data.profile) {
+      user.value = s.data.profile
+      await loadUserData()
+      showPhone.value = false
+    } else {
+      alert('登录失败：未获取到有效账号信息')
+    }
   } catch (e) {
     alert('登录失败：' + e.message)
   }
