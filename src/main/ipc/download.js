@@ -1,8 +1,8 @@
 import { ipcMain } from 'electron'
 import { DownloadManager } from '../downloadManager.js'
 
-export function registerDownloadIpc(getWindow) {
-  const dm = new DownloadManager(getWindow)
+export function registerDownloadIpc(getWindow, getServer) {
+  const dm = new DownloadManager(getWindow, getServer)
   dm.init()
 
   ipcMain.handle('ncm:download-add', (_e, info) => dm.add(info))

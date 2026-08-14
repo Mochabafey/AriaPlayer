@@ -70,7 +70,11 @@ export const ncm = {
 
   // 系统
   openFolder: (p) => bridge.invoke('ncm:open-folder', p),
-  saveDialog: (opts) => bridge.invoke('ncm:save-dialog', opts)
+  saveDialog: (opts) => bridge.invoke('ncm:save-dialog', opts),
+
+  // NCM 转换
+  convertPickDir: () => bridge.invoke('ncm:convert-pick-dir'),
+  convertBatch: (opts) => bridge.invoke('ncm:convert-batch', opts)
 }
 
 /** 网易云链接 → {type, id} */

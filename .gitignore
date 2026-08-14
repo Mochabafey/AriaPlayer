@@ -7,6 +7,9 @@ dist/
 out/
 release/
 
+# ffmpeg 二进制（由 scripts/fetch-ffmpeg.mjs 下载）
+resources/ffmpeg/
+
 # 临时与日志
 *.log
 .npm-fresh-cache/

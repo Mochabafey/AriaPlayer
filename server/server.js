@@ -333,8 +333,10 @@ async function constructServer(moduleDefs) {
         )
 
         // 夹带私货部分：如果开启了通用解锁，并且是获取歌曲URL的接口，则尝试解锁（如果需要的话）ヾ(≧▽≦*)o
+        // 注：此处用 req.path 而非 req.baseUrl —— app.all 直接挂载时 baseUrl 恒为空字符串，
+        // 原条件永远为 false，导致解灰永不触发（无版权歌 url 永远为 null）
         if (
-          req.baseUrl === '/song/url/v1' &&
+          req.path === '/song/url/v1' &&
           process.env.ENABLE_GENERAL_UNBLOCK === 'true'
         ) {
           const song = moduleResponse.body.data[0]

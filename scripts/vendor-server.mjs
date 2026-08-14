@@ -62,4 +62,24 @@ for (const p of ['node_modules/.cache']) {
   rmrf(path.join(serverDir, p))
 }
 
+// 应用本地补丁（上游 api-enhanced 的 bug 修复，防止 vendor 覆盖后丢失）
+applyPatches(serverDir)
+
 console.log('[vendor] 完成！server/ 已就绪。')
+
+/** 应用对 vendored 代码的本地补丁 */
+function applyPatches(dir) {
+  const serverJs = path.join(dir, 'server.js')
+  if (fs.existsSync(serverJs)) {
+    let src = fs.readFileSync(serverJs, 'utf-8')
+    // 解灰触发条件：req.baseUrl 在 app.all 挂载下恒为空字符串，永远不触发 → 改为 req.path
+    if (src.includes("req.baseUrl === '/song/url/v1'")) {
+      src = src.replace(
+        "req.baseUrl === '/song/url/v1'",
+        "req.path === '/song/url/v1'"
+      )
+      fs.writeFileSync(serverJs, src)
+      console.log('[vendor] 已应用解灰补丁（req.baseUrl → req.path）')
+    }
+  }
+}

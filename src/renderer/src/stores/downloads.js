@@ -14,6 +14,7 @@ export const useDownloadsStore = defineStore('downloads', {
     async add(info) {
       const r = await ncm.downloadAdd(info)
       if (r.ok) await this.load()
+      else if (r.message) alert(r.message) // duplicated / no-url 等明确提示
       return r
     },
     async cancel(id) {

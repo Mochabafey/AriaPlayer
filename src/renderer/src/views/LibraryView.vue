@@ -98,7 +98,7 @@ async function openConvert() {
   convertResult.value = null
   convertError.value = ''
   convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
-  const dir = await ncm.invoke('ncm:convert-pick-dir')
+  const dir = await ncm.convertPickDir()
   if (!dir) {
     showConvert.value = false
     return
@@ -113,7 +113,7 @@ async function startConvert() {
   convertError.value = ''
   convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
   try {
-    const r = await ncm.invoke('ncm:convert-batch', { dir: convertDir.value, recursive: true })
+    const r = await ncm.convertBatch({ dir: convertDir.value, recursive: true })
     if (!r.ok) convertError.value = r.error || '转换失败'
     else convertResult.value = r
   } finally {

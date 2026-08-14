@@ -4,6 +4,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { app } from 'electron'
 import { stores, flushAll } from '../store/db.js'
+import { ffmpegAvailable, ffmpegVersion, transcodeToWav } from '../ffmpeg.js'
 
 export function registerApiIpc(getServer) {
   // ---- Cookie Jar：模拟浏览器会话，保持登录态 ----
@@ -75,6 +76,23 @@ export function registerApiIpc(getServer) {
   ipcMain.handle('ncm:server-status', () => {
     const srv = getServer()
     return srv ? srv.status : 'down'
+  })
+
+  // ---- ffmpeg ----
+  ipcMain.handle('ncm:ffmpeg-version', async () => {
+    if (!ffmpegAvailable()) return null
+    return ffmpegVersion()
+  })
+  // 播放回退：任意音频 URL/文件 → wav 临时文件
+  ipcMain.handle('ncm:ffmpeg-transcode', async (_e, { url, format = 'wav' }) => {
+    if (!url || !ffmpegAvailable()) return null
+    try {
+      const tmpDir = path.join(app.getPath('temp'), 'ntr-transcode')
+      if (format === 'wav') return await transcodeToWav(url, tmpDir)
+      return null
+    } catch {
+      return null
+    }
   })
 
   ipcMain.handle('ncm:server-restart', async () => {

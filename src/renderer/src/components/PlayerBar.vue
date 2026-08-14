@@ -54,6 +54,7 @@ onMounted(() => {
 <template>
   <div class="player-bar" :class="{ playing: player.playing }">
     <audio ref="audioRef" preload="metadata" class="hidden-audio" />
+    <div v-if="player.playError" class="play-error">{{ player.playError }}</div>
 
     <div class="p-left">
       <div class="cover" v-if="player.current">
@@ -115,6 +116,20 @@ onMounted(() => {
   padding: 0 22px;
   gap: 24px;
   z-index: 100;
+}
+.play-error {
+  position: fixed;
+  bottom: calc(var(--player-h) + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(180, 50, 50, 0.95);
+  color: #fff;
+  font-size: 12px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  z-index: 200;
+  max-width: 70vw;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 .hidden-audio {
   display: none;

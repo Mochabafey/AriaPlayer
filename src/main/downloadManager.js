@@ -18,11 +18,29 @@ function sanitize(name) {
  * 下载管理器：并发池、songId 去重、断点续传（Range）、进度推送。
  */
 export class DownloadManager {
-  constructor(getWindow) {
+  constructor(getWindow, getServer) {
     this.getWindow = getWindow
+    this.getServer = getServer
     this.queue = []
     this.running = new Map() // id -> {task, stream, controller}
     this.initialized = false
+  }
+
+  /** 兜底：调用方未传 url 时，主进程向 api-enhanced 现取播放地址 */
+  async resolveUrl(songId, quality = '320000') {
+    const srv = this.getServer && this.getServer()
+    if (!srv || srv.status !== 'ready') return null
+    const level = quality === 'lossless' ? 'lossless' : quality === '320000' ? 'exhigh' : 'standard'
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${srv.port}/song/url/v1?id=${encodeURIComponent(songId)}&level=${level}`,
+        { signal: AbortSignal.timeout(30000) }
+      )
+      const data = await res.json()
+      return data.data?.[0]?.url || null
+    } catch {
+      return null
+    }
   }
 
   init() {
@@ -46,11 +64,18 @@ export class DownloadManager {
     return stores.downloads.get('tasks') || []
   }
 
-  add({ songId, title, artist, url, quality = '320000', cover }) {
+  async add({ songId, title, artist, url, quality = '320000', cover }) {
     const tasks = stores.downloads.get('tasks') || []
     // songId 去重：已存在则拒绝
     if (songId && tasks.some((t) => t.songId === songId && t.status !== 'failed' && t.status !== 'paused')) {
-      return { ok: false, reason: 'duplicated', task: tasks.find((t) => t.songId === songId) }
+      return { ok: false, reason: 'duplicated', message: '该歌曲已在下载列表中', task: tasks.find((t) => t.songId === songId) }
+    }
+    // 兜底：未传 url 时主进程现取播放地址
+    if (!url && songId) {
+      url = await this.resolveUrl(songId, quality)
+    }
+    if (!url) {
+      return { ok: false, reason: 'no-url', message: '无法获取播放地址（可能无版权）' }
     }
     const q = QUALITY_MAP[quality] || QUALITY_MAP['320000']
     const task = {

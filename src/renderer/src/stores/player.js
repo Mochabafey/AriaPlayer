@@ -19,8 +19,16 @@ export const usePlayerStore = defineStore('player', () => {
   const lyrics = ref([])
   const showLyrics = ref(false)
   const buffering = ref(false)
+  const playError = ref('')
+  let errorTimer = null
 
   const current = computed(() => queue.value[currentIndex.value] || null)
+
+  function setPlayError(msg) {
+    playError.value = msg
+    clearTimeout(errorTimer)
+    errorTimer = setTimeout(() => (playError.value = ''), 6000)
+  }
 
   function attachAudio(el) {
     audioEl = el
@@ -38,8 +46,35 @@ export const usePlayerStore = defineStore('player', () => {
     audioEl.addEventListener('error', () => {
       playing.value = false
       buffering.value = false
+      // 格式不支持时尝试 ffmpeg 转码回退
+      fallbackTranscode()
     })
     audioEl.volume = volume.value
+  }
+
+  /** 音频格式不支持时，用 ffmpeg 转码为 wav 再播 */
+  async function fallbackTranscode() {
+    const song = current.value
+    if (!song || song.fromLocal || song._transcoding || !song.audioUrl) return
+    song._transcoding = true
+    setPlayError('当前音频无法直接播放，正在转码…')
+    try {
+      const outPath = await window.ncm.invoke('ncm:ffmpeg-transcode', {
+        url: song.audioUrl,
+        format: 'wav'
+      })
+      if (outPath) {
+        audioEl.src = `ncm-audio://local?path=${encodeURIComponent(outPath)}`
+        await audioEl.play()
+        setPlayError('')
+      } else {
+        setPlayError(`无法播放「${song.name || ''}」：没有可用音源（可能无版权）`)
+      }
+    } catch (e) {
+      setPlayError(`无法播放「${song.name || ''}」：${e.message}`)
+    } finally {
+      song._transcoding = false
+    }
   }
 
   function audioUrl(song) {
@@ -99,10 +134,11 @@ export const usePlayerStore = defineStore('player', () => {
         try {
           const res = await api('song_url_v1', { id: song.id, level: q === 'lossless' ? 'lossless' : q === '320000' ? 'exhigh' : 'standard' })
           const url = res.data?.[0]?.url
-          if (!url) throw new Error('无可用播放地址（可能无版权，可开启全局解灰）')
+          if (!url) throw new Error('无可用播放地址（可能无版权，已尝试解灰失败）')
           song.audioUrl = url
         } catch (e) {
           playing.value = false
+          setPlayError(`无法播放「${song.name || ''}」：${e.message}`)
           return e
         }
       }
@@ -112,6 +148,7 @@ export const usePlayerStore = defineStore('player', () => {
     await audioEl.play().catch((e) => {
       console.error('play error', e)
       playing.value = false
+      setPlayError(`播放失败：${e.message || '未知错误'}`)
     })
   }
 
@@ -203,6 +240,7 @@ export const usePlayerStore = defineStore('player', () => {
     lyrics,
     showLyrics,
     buffering,
+    playError,
     attachAudio,
     playList,
     playNext,

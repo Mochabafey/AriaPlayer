@@ -9,6 +9,7 @@
   "private": true,
   "scripts": {
     "vendor": "node scripts/vendor-server.mjs",
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "dev": "node scripts/dev-server.mjs",
     "build": "electron-vite build",
     "start": "electron-vite preview",

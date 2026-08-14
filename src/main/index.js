@@ -79,7 +79,7 @@ async function bootstrap() {
     }
   }
 
-  downloadManager = registerDownloadIpc(() => mainWindow)
+  downloadManager = registerDownloadIpc(() => mainWindow, () => server)
   registerApiIpc(() => server)
   registerLibraryIpc(() => {
     if (mainWindow && !mainWindow.isDestroyed()) {

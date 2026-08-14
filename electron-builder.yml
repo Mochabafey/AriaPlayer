@@ -18,6 +18,9 @@ extraResources:
       - '**/*'
       - '!**/*.map'
       - '!**/*.md'
+  # ffmpeg 二进制（scripts/fetch-ffmpeg.mjs 下载；未下载时打包需先 npm run fetch:ffmpeg）
+  - from: resources/ffmpeg
+    to: ffmpeg
 
 asar: true
 

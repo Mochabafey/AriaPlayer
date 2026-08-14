@@ -13,15 +13,32 @@ const settings = useSettingsStore()
 
 const input = ref('')
 const loading = ref(false)
+const searching = ref(false)
 const result = ref(null) // {type, id, detail, songs, url}
 const error = ref('')
+const searchResults = ref([])
+const searchMode = ref(false) // 输入的是歌名，显示搜索结果
 
 async function resolveLink() {
-  const parsed = await resolveLinkInput(input.value)
-  if (!parsed) {
-    error.value = '无法识别的链接/ID，支持：歌曲、歌单、专辑链接、163cn.tv 短链或纯 ID'
+  const text = input.value?.trim()
+  if (!text) return
+  error.value = ''
+  result.value = null
+  searchResults.value = []
+  searchMode.value = false
+
+  // 1) 先尝试链接 / ID
+  const parsed = await resolveLinkInput(text)
+  if (parsed) {
+    await doResolve(parsed)
     return
   }
+  // 2) 非链接 → 按歌名搜索
+  await searchByName(text)
+}
+
+/** 执行解析（链接/ID 或搜索结果选中后共用） */
+async function doResolve(parsed) {
   loading.value = true
   error.value = ''
   result.value = null
@@ -44,6 +61,7 @@ async function resolveLink() {
         songs: [song],
         url: url || null
       }
+      if (!url) error.value = '⚠ 该歌曲无可用播放地址（可能无版权，解灰失败）；如需播放可尝试登录 VIP 账号'
     } else if (parsed.type === 'playlist') {
       const d = await api('playlist_detail', { id: parsed.id })
       const pl = d.playlist
@@ -61,6 +79,40 @@ async function resolveLink() {
     error.value = '解析失败：' + e.message
   } finally {
     loading.value = false
+  }
+}
+
+/** 按歌名搜索（cloudsearch）并展示结果列表 */
+async function searchByName(keywords) {
+  searching.value = true
+  error.value = ''
+  try {
+    const res = await api('cloudsearch', { keywords, type: 1, limit: 20 })
+    const songs = res.result?.songs || []
+    searchResults.value = songs.map((s) => ({
+      id: s.id,
+      name: s.name,
+      artist: (s.ar || []).map((a) => a.name).join('/'),
+      album: s.al?.name || '',
+      pic: s.al?.picUrl || '',
+      dt: s.dt || 0,
+      fee: s.fee
+    }))
+    searchMode.value = true
+    if (!songs.length) error.value = '未找到相关歌曲，换个关键词试试'
+  } catch (e) {
+    error.value = '搜索失败：' + e.message
+  } finally {
+    searching.value = false
+  }
+}
+
+/** 从搜索结果选中一首 → 解析 */
+async function pickSearchSong(song) {
+  await doResolve({ type: 'song', id: String(song.id) })
+  if (result.value?.type === 'song') {
+    // 保留搜索结果区，滚动到结果
+    searchMode.value = false
   }
 }
 
@@ -100,12 +152,33 @@ async function downloadUrl() {
       <input
         v-model="input"
         class="input"
-        placeholder="例如：https://music.163.com/song?id=33894312 或 33894312"
+        placeholder="支持：歌曲链接 / ID / 163cn.tv 短链，或直接输入歌名搜索"
         @keyup.enter="resolveLink"
       />
-      <button class="btn" :disabled="loading" @click="resolveLink">{{ loading ? '解析中…' : '解析' }}</button>
+      <button class="btn" :disabled="loading || searching" @click="resolveLink">{{ loading ? '解析中…' : searching ? '搜索中…' : '解析' }}</button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
+
+    <!-- 歌名搜索结果 -->
+    <div v-if="searchMode" class="search-results">
+      <div class="list-head">
+        <div class="list-title">搜索结果（点击歌曲解析）</div>
+        <span class="count">{{ searchResults.length }} 首</span>
+      </div>
+      <div
+        v-for="s in searchResults"
+        :key="s.id"
+        class="search-item"
+        @click="pickSearchSong(s)"
+      >
+        <img class="thumb" :src="s.pic + '?param=60y60'" alt="" loading="lazy" />
+        <div class="s-main">
+          <div class="s-name">{{ s.name }} <span v-if="s.fee" class="fee">VIP</span></div>
+          <div class="s-sub">{{ s.artist }} · {{ s.album }}</div>
+        </div>
+        <span class="s-dur">{{ fmtTime(s.dt / 1000) }}</span>
+      </div>
+    </div>
 
     <div v-if="result" class="result">
       <!-- 单曲解析 -->
@@ -191,6 +264,59 @@ async function downloadUrl() {
   margin-top: 10px;
   font-size: 13px;
   text-align: center;
+}
+.search-results {
+  margin-top: 20px;
+}
+.search-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.search-item:hover {
+  background: var(--bg-card);
+}
+.search-item .thumb {
+  width: 46px;
+  height: 46px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.search-item .s-main {
+  flex: 1;
+  min-width: 0;
+}
+.search-item .s-name {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-item .s-name .fee {
+  color: var(--accent);
+  font-size: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 6px;
+}
+.search-item .s-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.search-item .s-dur {
+  font-size: 12px;
+  color: var(--text-faint);
+  flex-shrink: 0;
 }
 .result {
   margin-top: 26px;
