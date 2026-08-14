@@ -27,6 +27,16 @@ const converting = ref(false)
 const convertProgress = ref({ done: 0, total: 0, ok: 0, fail: 0, current: '' })
 const convertResult = ref(null) // {ok,total,ok,fail,results,outputDir}
 const convertError = ref('')
+const convertFormat = ref('auto') // auto | mp3 | flac | m4a | wav
+
+// 输出格式选项
+const convertFormats = [
+  { value: 'auto', label: '自动', desc: '跟随原文件' },
+  { value: 'mp3', label: 'MP3', desc: '兼容性最好' },
+  { value: 'flac', label: 'FLAC', desc: '无损' },
+  { value: 'm4a', label: 'M4A', desc: 'AAC 高效' },
+  { value: 'wav', label: 'WAV', desc: '无压缩' }
+]
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -145,7 +155,7 @@ async function startConvert() {
   convertError.value = ''
   convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
   try {
-    const r = await ncm.convertBatch({ path: convertPath.value, recursive: true })
+    const r = await ncm.convertBatch({ path: convertPath.value, recursive: true, format: convertFormat.value })
     if (!r.ok) convertError.value = r.error || '转换失败'
     else convertResult.value = r
   } finally {
@@ -267,6 +277,27 @@ function openConvertOut() {
           </div>
         </div>
 
+        <!-- 输出格式选择 -->
+        <div class="convert-format">
+          <span class="fmt-label">输出格式</span>
+          <div class="fmt-options">
+            <button
+              v-for="f in convertFormats"
+              :key="f.value"
+              class="fmt-btn"
+              :class="{ active: convertFormat === f.value }"
+              :disabled="converting"
+              :title="f.desc"
+              @click="convertFormat = f.value"
+            >
+              {{ f.label }}
+            </button>
+          </div>
+          <p class="fmt-hint">
+            {{ convertFormat === 'auto' ? '保持 .ncm 原始格式（MP3/FLAC）' : `转为 ${convertFormat.toUpperCase()}（需要内置 ffmpeg，转码失败自动保留原格式）` }}
+          </p>
+        </div>
+
         <div v-if="converting || convertProgress.total" class="convert-progress">
           <div class="bar">
             <div class="fill" :style="{ width: (convertProgress.total ? (convertProgress.done / convertProgress.total) * 100 : 0) + '%' }"></div>
@@ -282,6 +313,7 @@ function openConvertOut() {
         <div v-if="convertResult" class="convert-result">
           <p class="summary">
             成功 <span class="ok">{{ convertResult.ok }}</span> / 失败 <span class="fail">{{ convertResult.fail }}</span> / 共 {{ convertResult.total }} 首
+            <span v-if="convertResult.converted" class="converted">（{{ convertResult.converted }} 首已转码为 {{ (convertResult.format || '').toUpperCase() }}）</span>
           </p>
           <p class="out-dir">输出目录：{{ convertResult.outputDir }}</p>
         </div>
@@ -602,6 +634,54 @@ function openConvertOut() {
 .convert-dir .pick-actions {
   display: flex;
   gap: 8px;
+}
+/* 输出格式选择 */
+.convert-format {
+  margin-top: 12px;
+}
+.convert-format .fmt-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  display: block;
+}
+.convert-format .fmt-options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.convert-format .fmt-btn {
+  padding: 5px 14px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.convert-format .fmt-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+.convert-format .fmt-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.convert-format .fmt-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.convert-format .fmt-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 6px;
+}
+.convert-result .converted {
+  color: var(--accent);
+  font-size: 12px;
+  margin-left: 4px;
 }
 .convert-progress {
   margin-top: 12px;
