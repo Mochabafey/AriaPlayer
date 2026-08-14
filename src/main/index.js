@@ -45,6 +45,18 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
 
+  // 渲染进程 console 转发到主进程日志（排障用；dev 下输出到终端）
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    const tag = ['v', 'i', 'w', 'e'][level] || '?'
+    console.log(`[renderer:${tag}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`)
+  })
+
+  // 渲染进程崩溃/未响应检测
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.log(`[renderer-gone] reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+  mainWindow.webContents.on('unresponsive', () => console.log('[renderer-unresponsive] 渲染进程无响应'))
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url)
     return { action: 'deny' }
@@ -109,6 +121,38 @@ async function bootstrap() {
     }
     console.log('SMOKE_OK status=' + server.status)
     setTimeout(() => app.exit(0), 500)
+  }
+
+  // 前端探测模式：NCM_PROBE=1 时自动切换所有路由并输出渲染状态（排障用）
+  if (process.env.NCM_PROBE === '1') {
+    setTimeout(async () => {
+      const w = mainWindow
+      if (!w || w.isDestroyed()) {
+        console.log('[probe] 窗口不可用')
+        app.exit(1)
+        return
+      }
+      try {
+        const routes = ['#/library', '#/resolver', '#/search', '#/profile', '#/downloads', '#/settings', '#/discover']
+        for (const r of routes) {
+          await w.webContents.executeJavaScript(`location.hash = ${JSON.stringify(r)}`)
+          await new Promise((r2) => setTimeout(r2, 2000))
+          const st = await w.webContents.executeJavaScript(`({
+            hash: location.hash,
+            text: (document.querySelector('.content')?.innerText || '').slice(0, 60),
+            imgs: [...document.querySelectorAll('.content img')].filter(i => i.complete && i.naturalWidth > 0).length,
+            imgTotal: document.querySelectorAll('.content img').length
+          })`)
+          console.log(`[probe] ${r} => hash=${st.hash} imgs=${st.imgs}/${st.imgTotal} text="${st.text}"`)
+        }
+        const imgs = await w.webContents.executeJavaScript(`[...document.querySelectorAll('.content img')].map(i => i.src.slice(0, 90))`)
+        console.log('[probe] 图片URL样本:', JSON.stringify(imgs.slice(0, 4)))
+      } catch (e) {
+        console.log('[probe] 探测异常:', e.message)
+      }
+      console.log('[probe] DONE')
+      setTimeout(() => app.exit(0), 300)
+    }, 12000)
   }
 }
 
