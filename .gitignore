@@ -21,3 +21,6 @@ scripts/samples/
 # IDE
 .vscode/
 .idea/
+
+# api-enhanced 运行时数据（设备 ID 池等，不入库）
+server/data/deviceid.txt
