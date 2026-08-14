@@ -70,16 +70,24 @@ console.log('[vendor] 完成！server/ 已就绪。')
 /** 应用对 vendored 代码的本地补丁 */
 function applyPatches(dir) {
   const serverJs = path.join(dir, 'server.js')
-  if (fs.existsSync(serverJs)) {
-    let src = fs.readFileSync(serverJs, 'utf-8')
-    // 解灰触发条件：req.baseUrl 在 app.all 挂载下恒为空字符串，永远不触发 → 改为 req.path
-    if (src.includes("req.baseUrl === '/song/url/v1'")) {
-      src = src.replace(
-        "req.baseUrl === '/song/url/v1'",
-        "req.path === '/song/url/v1'"
-      )
-      fs.writeFileSync(serverJs, src)
-      console.log('[vendor] 已应用解灰补丁（req.baseUrl → req.path）')
-    }
+  if (!fs.existsSync(serverJs)) return
+  let src = fs.readFileSync(serverJs, 'utf-8')
+  let changed = false
+  // 补丁 1：解灰触发条件 req.baseUrl 在 app.all 挂载下恒为空字符串 → 改为 req.path
+  if (src.includes("req.baseUrl === '/song/url/v1'")) {
+    src = src.replace("req.baseUrl === '/song/url/v1'", "req.path === '/song/url/v1'")
+    changed = true
+  }
+  // 补丁 2：解灰 matchID 加 8s 超时（外部源慢/挂起会导致 song_url_v1 30s+ 超时，播放/下载表现为"没反应"）
+  if (src.includes('const result = await matchID(req.query.id)')) {
+    src = src.replace(
+      "const result = await matchID(req.query.id)\n            song.url = result.data.url\n            song.freeTrialInfo = null\n            logger.info('Unblock success! url:', song.url)",
+      "const result = await Promise.race([\n              matchID(req.query.id),\n              new Promise((_, rej) => setTimeout(() => rej(new Error('unblock timeout')), 8000)),\n            ]).catch((e) => ({ code: 500, message: e.message, data: null }))\n            if (result && result.data && result.data.url) {\n              song.url = result.data.url\n              song.freeTrialInfo = null\n              logger.info('Unblock success! url:', song.url)\n            } else {\n              logger.warn('Unblock failed:', result && result.message)\n            }"
+    )
+    changed = true
+  }
+  if (changed) {
+    fs.writeFileSync(serverJs, src)
+    console.log('[vendor] 已应用 server.js 补丁（解灰触发条件 + matchID 超时）')
   }
 }

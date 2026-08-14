@@ -349,10 +349,19 @@ async function constructServer(moduleDefs) {
               matchID,
             } = require('@neteasecloudmusicapienhanced/unblockmusic-utils')
             logger.info('Starting unblock(uses general unblock):', req.query.id)
-            const result = await matchID(req.query.id)
-            song.url = result.data.url
-            song.freeTrialInfo = null
-            logger.info('Unblock success! url:', song.url)
+            // 解灰加 8s 超时：matchID 会遍历多个外部源（byfuns/qijieya 等），
+            // 部分源慢/挂起会导致整个 song_url_v1 请求 30s+ 超时（前端播放/下载表现为"没反应"）
+            const result = await Promise.race([
+              matchID(req.query.id),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('unblock timeout')), 8000)),
+            ]).catch((e) => ({ code: 500, message: e.message, data: null }))
+            if (result && result.data && result.data.url) {
+              song.url = result.data.url
+              song.freeTrialInfo = null
+              logger.info('Unblock success! url:', song.url)
+            } else {
+              logger.warn('Unblock failed:', result && result.message)
+            }
           }
           if (song.url && song.url.includes('kuwo')) {
             const proxy = process.env.PROXY_URL

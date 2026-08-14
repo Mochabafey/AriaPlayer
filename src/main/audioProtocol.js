@@ -1,6 +1,9 @@
 import { protocol, net } from 'electron'
 import fs from 'fs'
 import path from 'path'
+import http from 'http'
+import https from 'https'
+import { Readable } from 'stream'
 
 const FORWARD_HEADERS = [
   'content-type',
@@ -20,6 +23,21 @@ const MIME = {
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg',
   '.wav': 'audio/wav'
+}
+
+/**
+ * 用 Node 原生 http/https 请求上游（绕开 Chromium 网络栈）。
+ * net.fetch 在代理环境对 http 目标常报 ERR_BLOCKED_BY_CLIENT，导致音频无法代理。
+ */
+function fetchUpstream(url, headers) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http
+    const req = mod.get(url, { headers }, (res) => resolve(res))
+    req.on('error', reject)
+    req.setTimeout(20000, () => {
+      req.destroy(new Error('upstream timeout'))
+    })
+  })
 }
 
 /**
@@ -80,18 +98,20 @@ export function registerAudioProtocol() {
       }
       if (range) headers['Range'] = range
 
-      const upstream = await net.fetch(target, { headers })
-      if (upstream.status >= 400) {
-        return new Response(upstream.body, { status: upstream.status })
+      const upstream = await fetchUpstream(target, headers)
+      if (upstream.statusCode >= 400) {
+        upstream.resume()
+        return new Response('upstream error ' + upstream.statusCode, { status: upstream.statusCode })
       }
 
       const respHeaders = {}
       for (const k of FORWARD_HEADERS) {
-        const v = upstream.headers.get(k)
-        if (v) respHeaders[k] = v
+        const v = upstream.headers[k]
+        if (v !== undefined) respHeaders[k] = v
       }
-      if (upstream.status === 206) respHeaders['Accept-Ranges'] = 'bytes'
-      return new Response(upstream.body, { status: upstream.status, headers: respHeaders })
+      if (upstream.statusCode === 206) respHeaders['Accept-Ranges'] = 'bytes'
+      const webStream = Readable.toWeb(upstream)
+      return new Response(webStream, { status: upstream.statusCode, headers: respHeaders })
     } catch (e) {
       console.error('[ncm-audio] proxy error', e.message)
       return new Response('proxy error', { status: 502 })

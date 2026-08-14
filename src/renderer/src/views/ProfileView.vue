@@ -57,6 +57,9 @@ async function loadUserData() {
 async function startQr() {
   qrState.value = 'waiting'
   qrTip.value = '正在生成二维码…'
+  qrImg.value = '' // 先清空旧二维码，生成失败时不显示过期旧图
+  clearInterval(qrTimer)
+  qrTimer = null
   try {
     const key = await api('login_qr_key', { timestamp: Date.now() })
     qrKey.value = key.data.unikey
@@ -66,7 +69,8 @@ async function startQr() {
     qrTimer = setInterval(checkQr, 2000)
   } catch (e) {
     qrState.value = 'expired'
-    qrTip.value = '二维码生成失败：' + e.message
+    qrTip.value = '二维码生成失败：' + e.message + '，请检查网络后重试'
+    qrImg.value = ''
   }
 }
 
@@ -142,7 +146,7 @@ async function logout() {
         <div v-else class="qr-wrap">
           <img :src="qrImg" alt="登录二维码" class="qr-img" />
           <p class="qr-tip" :class="{ scanned: qrState === 'scanned', expired: qrState === 'expired' }">{{ qrTip }}</p>
-          <button class="btn ghost small" @click="qrTimer && clearInterval(qrTimer); startQr()">刷新二维码</button>
+          <button class="btn ghost small" @click="startQr">刷新二维码</button>
         </div>
         <button class="btn ghost" @click="showPhone = true">手机号登录</button>
       </template>
