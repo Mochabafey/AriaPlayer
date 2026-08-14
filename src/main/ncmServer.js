@@ -22,6 +22,8 @@ export class NcmServer {
     this.restarts = 0
     this.stopping = false
     this.onStatusChange = null
+    this.fileWatcher = null
+    this.watchedMtimes = null
   }
 
   serverDir() {
@@ -117,7 +119,45 @@ export class NcmServer {
     const ok = await this.waitReady()
     if (ok) this.setStatus('ready')
     else this.setStatus('down')
+    this.startWatchServer()
     return ok
+  }
+
+  /**
+   * 监控 server.js / app.js 变更并自动重启子进程：
+   * electron-vite dev 不会自动通知 api-enhanced 子进程重读 server.js，
+   * 之前需手动重启 dev 才能让 server.js 修复生效；现在改为文件变更自动 restart。
+   */
+  startWatchServer() {
+    this.stopWatchServer()
+    const dir = this.serverDir()
+    if (!fs.existsSync(dir)) return
+    const targets = ['server.js', 'app.js'].map((n) => path.join(dir, n)).filter((p) => fs.existsSync(p))
+    if (!targets.length) return
+    this.watchedMtimes = new Map(targets.map((p) => [p, fs.statSync(p).mtimeMs]))
+    const check = () => {
+      if (this.stopping) return
+      for (const [p, mt] of this.watchedMtimes) {
+        try {
+          const cur = fs.statSync(p).mtimeMs
+          if (cur !== mt) {
+            this.watchedMtimes.set(p, cur)
+            console.log('[ncm-server] 检测到', path.basename(p), '变更，自动重启子进程')
+            this.restart().catch((e) => console.error('[ncm-server] auto restart error', e))
+            return
+          }
+        } catch { /* ignore */ }
+      }
+      setTimeout(check, 1500)
+    }
+    setTimeout(check, 1500)
+  }
+
+  stopWatchServer() {
+    if (this.fileWatcher) {
+      try { this.fileWatcher.close() } catch {}
+      this.fileWatcher = null
+    }
   }
 
   waitReady() {
@@ -142,7 +182,7 @@ export class NcmServer {
   }
 
   async restart() {
-    this.stopping = false
+    this.stopping = true // 标记主动重启，避免 child exit 同时触发自动重启导致双 start
     if (this.child) {
       await new Promise((resolve) => {
         const c = this.child
@@ -152,11 +192,14 @@ export class NcmServer {
         setTimeout(resolve, 2000)
       })
     }
+    this.stopping = false
+    this.restarts = 0
     return this.start()
   }
 
   async stop() {
     this.stopping = true
+    this.stopWatchServer()
     if (this.child) {
       await new Promise((resolve) => {
         const c = this.child
