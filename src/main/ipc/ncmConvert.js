@@ -47,33 +47,10 @@ export function registerNcmConvertIpc(getWindow) {
         done++
         const base = path.basename(f)
         send({ done, total, current: base })
-        const r = decryptNcmFile(f, { outputDir: out, coverDir })
+        const r = await decryptNcmFile(f, { outputDir: out, coverDir, writeTags: true })
         if (r.ok) {
-          // mp3 写 ID3 标签（封面 + 标题/歌手/专辑）
-          let wroteTag = false
-          if (r.format === 'mp3' && r.meta) {
-            try {
-              const { default: NodeID3 } = await import('node-id3')
-              const tags = {
-                title: r.meta.title || undefined,
-                artist: r.meta.artist || undefined,
-                album: r.meta.album || undefined
-              }
-              if (r.coverPath && fs.existsSync(r.coverPath)) {
-                const ext = path.extname(r.coverPath).toLowerCase()
-                tags.image = {
-                  mime: ext === '.png' ? 'image/png' : 'image/jpeg',
-                  type: { id: 3, name: 'front cover' },
-                  imageBuffer: fs.readFileSync(r.coverPath),
-                  description: ''
-                }
-              }
-              NodeID3.write(tags, r.outPath)
-              wroteTag = true
-            } catch { /* 标签写入失败不影响转换结果 */ }
-          }
           okCount++
-          results.push({ file: f, outPath: r.outPath, format: r.format, ok: true, wroteTag, title: r.meta?.title || '', artist: r.meta?.artist || '' })
+          results.push({ file: f, outPath: r.outPath, format: r.format, ok: true, wroteTag: r.wroteTag, title: r.meta?.title || '', artist: r.meta?.artist || '' })
         } else {
           failCount++
           results.push({ file: f, ok: false, error: r.error })

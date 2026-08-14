@@ -7,7 +7,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { decryptNcmFile, collectNcmFiles, writeTags } from '../src/main/ncm/ncmDecrypt.mjs'
+import { decryptNcmFile, collectNcmFiles } from '../src/main/ncm/ncmDecrypt.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
@@ -41,12 +41,11 @@ console.log(`共 ${files.length} 个文件，输出目录: ${outputDir}\n`)
 let ok = 0
 let fail = 0
 for (const f of files) {
-  const r = decryptNcmFile(f, { outputDir, coverDir })
+  const r = await decryptNcmFile(f, { outputDir, coverDir, writeTags: true })
   if (r.ok) {
-    const tag = await writeTags(r.outPath, r.meta, r.coverPath, r.format).catch(() => ({ wroteTag: false }))
     ok++
     const title = r.meta && r.meta.title ? `${r.meta.artist} - ${r.meta.title}` : path.basename(f)
-    console.log(`✅ ${title} → ${path.basename(r.outPath)}${tag.wroteTag ? ' (已写标签)' : ''}`)
+    console.log(`✅ ${title} → ${path.basename(r.outPath)}${r.wroteTag ? ' (已写标签)' : ''}`)
   } else {
     fail++
     console.log(`❌ ${path.basename(f)}: ${r.error}`)

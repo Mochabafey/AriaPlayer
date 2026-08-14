@@ -98,7 +98,7 @@ const ncmPath = path.join(tmp, 'test.ncm')
 fs.writeFileSync(ncmPath, buildNcm(audio, metaJson, cover))
 
 const outDir = path.join(tmp, 'out')
-const r = decryptNcmFile(ncmPath, { outputDir: outDir, coverDir: path.join(outDir, '.covers') })
+const r = await decryptNcmFile(ncmPath, { outputDir: outDir, coverDir: path.join(outDir, '.covers') })
 
 if (!r.ok) {
   console.error('❌ 解密失败:', r.error)

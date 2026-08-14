@@ -125,7 +125,7 @@ export class DownloadManager {
     this.send('ncm:download-progress', { ...task })
 
     try {
-      const received = fs.existsSync(dest) ? fs.statSync(dest).size : 0
+      let received = fs.existsSync(dest) ? fs.statSync(dest).size : 0
       const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36'
       }
@@ -133,6 +133,12 @@ export class DownloadManager {
 
       const res = await fetch(task.url, { headers, signal: controller.signal })
       if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`)
+
+      // 服务器忽略 Range 返回 200：说明不支持断点续传，从头下载（否则追加会写坏文件）
+      if (received > 0 && res.status !== 206) {
+        received = 0
+        try { fs.unlinkSync(dest) } catch { /* ignore */ }
+      }
 
       const total = Number(res.headers.get('content-length')) || 0
       task.total = total + received

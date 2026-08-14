@@ -13,7 +13,7 @@
     "dev": "node scripts/dev-server.mjs",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "smoke": "electron-vite build && cross-env-shell NCM_SMOKE=1 electron . --disable-gpu",
+    "smoke": "node scripts/smoke-server.mjs",
     "test:tags": "node scripts/gen-tag-samples.js && node src/main/tags/writeTags.test.mjs",
     "pack:win": "electron-vite build && electron-builder --win",
     "pack:mac": "electron-vite build && electron-builder --mac",

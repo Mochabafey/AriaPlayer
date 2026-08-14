@@ -102,8 +102,8 @@ function sanitize(name) {
  * @param {object} opts       { outputDir?, coverDir?, writeTags? }
  * @returns {{ok:boolean, outPath?:string, error?:string, meta?:object, coverPath?:string}}
  */
-export function decryptNcmFile(inputPath, opts = {}) {
-  const { outputDir = path.dirname(inputPath), coverDir = null } = opts
+export async function decryptNcmFile(inputPath, opts = {}) {
+  const { outputDir = path.dirname(inputPath), coverDir = null, writeTags = false } = opts
   try {
     const fd = fs.openSync(inputPath, 'r')
     try {
@@ -199,7 +199,19 @@ export function decryptNcmFile(inputPath, opts = {}) {
       }
 
       if (!outPath) throw new Error('音频数据为空')
-      return { ok: true, outPath, format, meta, coverPath }
+      // 写标签（mp3 走 node-id3；flac/m4a 走项目内纯 JS 写标签）
+      let wroteTag = false
+      let tagError = null
+      if (writeTags && meta) {
+        try {
+          const r = await writeTags(outPath, meta, coverPath, format)
+          wroteTag = r.wroteTag
+          tagError = r.error || r.reason || null
+        } catch (e) {
+          tagError = e.message
+        }
+      }
+      return { ok: true, outPath, format, meta, coverPath, wroteTag, tagError }
     } finally {
       fs.closeSync(fd)
     }
