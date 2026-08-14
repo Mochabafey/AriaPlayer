@@ -19,6 +19,14 @@ const filter = ref('all') // all | download | import
 const editing = ref(null) // 正在编辑元数据的歌曲
 const editForm = ref({ title: '', artist: '', album: '' })
 
+// ---- .ncm 批量转换 ----
+const showConvert = ref(false)
+const convertDir = ref('')
+const converting = ref(false)
+const convertProgress = ref({ done: 0, total: 0, ok: 0, fail: 0, current: '' })
+const convertResult = ref(null) // {ok,total,ok,fail,results,outputDir}
+const convertError = ref('')
+
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
   return library.songs.filter((s) => {
@@ -83,6 +91,39 @@ async function importLibrary() {
   await library.load()
   if (n > 0) alert(`已导入 ${n} 首`)
 }
+
+// ---- .ncm 转换 ----
+async function openConvert() {
+  showConvert.value = true
+  convertResult.value = null
+  convertError.value = ''
+  convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
+  const dir = await ncm.invoke('ncm:convert-pick-dir')
+  if (!dir) {
+    showConvert.value = false
+    return
+  }
+  convertDir.value = dir
+}
+
+async function startConvert() {
+  if (converting.value || !convertDir.value) return
+  converting.value = true
+  convertResult.value = null
+  convertError.value = ''
+  convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
+  try {
+    const r = await ncm.invoke('ncm:convert-batch', { dir: convertDir.value, recursive: true })
+    if (!r.ok) convertError.value = r.error || '转换失败'
+    else convertResult.value = r
+  } finally {
+    converting.value = false
+  }
+}
+
+function openConvertOut() {
+  if (convertResult.value?.outputDir) ncm.openFolder(convertResult.value.outputDir)
+}
 </script>
 
 <template>
@@ -90,6 +131,7 @@ async function importLibrary() {
     <div class="head">
       <h1 class="page-title">曲库</h1>
       <div class="head-actions">
+        <button class="btn small" @click="openConvert">⇲ NCM 转换</button>
         <button class="btn small ghost" @click="pickFolder">{{ library.scanning ? '扫描中…' : '＋ 添加文件夹' }}</button>
         <button class="btn small ghost" @click="library.scan()">↻ 重新扫描</button>
         <button class="btn small ghost" @click="importLibrary">⇪ 导入清单</button>
@@ -172,6 +214,46 @@ async function importLibrary() {
         <div class="modal-actions">
           <button class="btn ghost" @click="editing = null">取消</button>
           <button class="btn" @click="saveEdit">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- NCM 批量转换 -->
+    <div v-if="showConvert" class="modal-mask" @click.self="showConvert = false">
+      <div class="modal convert-modal">
+        <h3>NCM 批量转换</h3>
+        <p class="hint">将网易云 .ncm 加密文件转换为 MP3 / FLAC（自动提取歌曲信息与封面）</p>
+
+        <div class="convert-dir">
+          <span class="path">{{ convertDir || '未选择目录' }}</span>
+          <button class="btn small ghost" :disabled="converting" @click="openConvert()">重新选择</button>
+        </div>
+
+        <div v-if="converting || convertProgress.total" class="convert-progress">
+          <div class="bar">
+            <div class="fill" :style="{ width: (convertProgress.total ? (convertProgress.done / convertProgress.total) * 100 : 0) + '%' }"></div>
+          </div>
+          <div class="meta">
+            <span v-if="converting">转换中 {{ convertProgress.done }}/{{ convertProgress.total }} · {{ convertProgress.current }}</span>
+            <span v-else-if="convertResult">完成</span>
+          </div>
+        </div>
+
+        <p v-if="convertError" class="err">{{ convertError }}</p>
+
+        <div v-if="convertResult" class="convert-result">
+          <p class="summary">
+            成功 <span class="ok">{{ convertResult.ok }}</span> / 失败 <span class="fail">{{ convertResult.fail }}</span> / 共 {{ convertResult.total }} 首
+          </p>
+          <p class="out-dir">输出目录：{{ convertResult.outputDir }}</p>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn ghost" @click="showConvert = false">关闭</button>
+          <button v-if="!convertResult" class="btn" :disabled="!convertDir || converting" @click="startConvert">
+            {{ converting ? '转换中…' : '开始转换' }}
+          </button>
+          <button v-else class="btn" @click="openConvertOut">打开输出目录</button>
         </div>
       </div>
     </div>
@@ -437,5 +519,69 @@ async function importLibrary() {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 12px;
+}
+.convert-modal {
+  width: 460px;
+}
+.convert-dir {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}
+.convert-dir .path {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.convert-progress {
+  margin-top: 12px;
+}
+.convert-progress .bar {
+  height: 8px;
+  border-radius: 4px;
+  background: #2c2c2c;
+  overflow: hidden;
+}
+.convert-progress .fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.25s;
+}
+.convert-progress .meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 6px;
+}
+.convert-result {
+  margin-top: 10px;
+  font-size: 13px;
+}
+.convert-result .summary .ok {
+  color: var(--green);
+  font-weight: 600;
+}
+.convert-result .summary .fail {
+  color: var(--accent);
+  font-weight: 600;
+}
+.convert-result .out-dir {
+  color: var(--text-faint);
+  font-size: 12px;
+  word-break: break-all;
+  margin-top: 4px;
+}
+.err {
+  color: var(--accent);
+  font-size: 13px;
+  margin-top: 8px;
 }
 </style>

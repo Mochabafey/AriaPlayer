@@ -7,6 +7,7 @@ import { registerApiIpc } from './ipc/api.js'
 import { registerDownloadIpc } from './ipc/download.js'
 import { registerLibraryIpc } from './ipc/library.js'
 import { registerPlaylistIpc } from './ipc/playlist.js'
+import { registerNcmConvertIpc } from './ipc/ncmConvert.js'
 import { flushAll } from './store/db.js'
 
 // 自定义协议需在 app ready 前注册特权
@@ -80,6 +81,7 @@ async function bootstrap() {
     }
   })
   registerPlaylistIpc()
+  registerNcmConvertIpc(() => mainWindow)
 
   createWindow()
 
