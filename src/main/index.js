@@ -15,6 +15,12 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'ncm-audio', privileges: { stream: true, supportFetchAPI: true, bypassCSP: true } }
 ])
 
+// 兜底：静默 EPIPE 等管道断开错误，避免触发"JavaScript error"弹窗
+process.on('uncaughtException', (e) => {
+  if (e && (e.code === 'EPIPE' || e.code === 'ECONNRESET' || e.code === 'ENOTCONN')) return
+  console.error('[main] uncaughtException', e)
+})
+
 let mainWindow = null
 const server = new NcmServer()
 let downloadManager = null

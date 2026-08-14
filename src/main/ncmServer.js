@@ -83,8 +83,13 @@ export class NcmServer {
       windowsHide: true
     })
 
-    this.child.stdout.on('data', (d) => process.stdout.write(`[ncm-server] ${d}`))
-    this.child.stderr.on('data', (d) => process.stderr.write(`[ncm-server] ${d}`))
+    // 写入父进程 stdout/stderr 用 safeWrite：EPIPE 在 vite 子进程管道断开时不可避免，
+    // 静默忽略避免触发"JavaScript error in the main process"弹窗
+    const safeWrite = (stream, s) => {
+      try { stream.write(s) } catch (e) { /* pipe closed */ }
+    }
+    this.child.stdout.on('data', (d) => safeWrite(process.stdout, `[ncm-server] ${d}`))
+    this.child.stderr.on('data', (d) => safeWrite(process.stderr, `[ncm-server] ${d}`))
 
     this.child.on('error', (err) => {
       console.error('[ncm-server] spawn error', err)

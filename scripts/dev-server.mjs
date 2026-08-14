@@ -23,4 +23,6 @@ if (!fs.existsSync(path.join(root, 'server', 'app.js'))) {
 }
 
 console.log('[dev] 启动 electron-vite dev（api-enhanced 由主进程自动拉起）...')
-execSync('npx electron-vite dev', { stdio: 'inherit', cwd: root })
+// 支持通过 NCM_ELECTRON_ARGS 透传 electron 启动参数（如 "-- --disable-gpu --no-sandbox"）
+const electronArgs = process.env.NCM_ELECTRON_ARGS || ''
+execSync(`npx electron-vite dev ${electronArgs}`.trim(), { stdio: 'inherit', cwd: root })
