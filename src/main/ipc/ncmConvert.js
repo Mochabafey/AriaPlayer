@@ -18,11 +18,22 @@ export function registerNcmConvertIpc(getWindow) {
   }
 
   ipcMain.handle('ncm:convert-pick-dir', async () => {
-    const r = await dialog.showOpenDialog({
-      title: '选择包含 .ncm 文件的目录',
-      properties: ['openDirectory']
-    })
-    return r.canceled ? null : r.filePaths[0]
+    const w = getWindow()
+    try {
+      // 必须传 parent：无父窗口的原生对话框在 Windows 上可能不显示或被主窗口盖住
+      const opts = {
+        title: '选择包含 .ncm 文件的目录',
+        properties: ['openDirectory'],
+        buttonLabel: '选择此目录'
+      }
+      const r = w && !w.isDestroyed()
+        ? await dialog.showOpenDialog(w, opts)
+        : await dialog.showOpenDialog(opts)
+      return r.canceled ? null : r.filePaths[0]
+    } catch (e) {
+      console.error('[ncm-convert] pick-dir error', e)
+      throw new Error('打开目录选择失败：' + e.message)
+    }
   })
 
   ipcMain.handle('ncm:convert-batch', async (_e, { dir, recursive = true, outputDir = null } = {}) => {
@@ -32,9 +43,9 @@ export function registerNcmConvertIpc(getWindow) {
     try {
       const files = collectNcmFiles(dir)
       const total = files.length
-      if (!total) return { ok: true, total: 0, results: [] }
-
       const out = outputDir || path.join(dir, 'converted')
+      if (!total) return { ok: true, total: 0, results: [], outputDir: out }
+
       const coverDir = path.join(out, '.covers')
       fs.mkdirSync(out, { recursive: true })
 

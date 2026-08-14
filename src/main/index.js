@@ -133,6 +133,48 @@ async function bootstrap() {
         return
       }
       try {
+        // 0. 检查是否有全屏遮罩（LyricPanel）挡住点击
+        const mask = await w.webContents.executeJavaScript(`({
+          lyricPanel: !!document.querySelector('.lyric-panel'),
+          modal: !!document.querySelector('.modal-mask'),
+          playError: !!document.querySelector('.play-error'),
+          overlayCount: [...document.querySelectorAll('*')].filter(el => {
+            const st = getComputedStyle(el)
+            return st.position === 'fixed' && parseFloat(st.zIndex || 0) >= 100 && el.offsetWidth > 0
+          }).map(el => el.className).slice(0, 6)
+        })`)
+        console.log('[probe] 遮罩检查:', JSON.stringify(mask))
+
+        // 1. 真实 DOM 点击侧边栏导航（模拟用户点击）
+        const navTest = await w.webContents.executeJavaScript(`(async () => {
+          const results = []
+          const navs = [...document.querySelectorAll('.nav-item')]
+          for (const a of navs) {
+            const target = a.getAttribute('href')
+            a.click()
+            await new Promise(r => setTimeout(r, 1200))
+            results.push({
+              target,
+              now: location.hash,
+              contentLen: (document.querySelector('.content')?.innerText || '').length
+            })
+          }
+          return results
+        })()`)
+        console.log('[probe] 导航点击测试:', JSON.stringify(navTest, null, 1))
+
+        // 2. 发现页卡片点击测试（若在发现页）
+        const cardTest = await w.webContents.executeJavaScript(`(async () => {
+          await new Promise(r => { location.hash = '#/discover'; setTimeout(r, 1500) })
+          const card = document.querySelector('.playlist-card')
+          if (!card) return '无卡片可点'
+          const before = location.hash
+          card.click()
+          await new Promise(r => setTimeout(r, 1500))
+          return { before, after: location.hash, contentLen: (document.querySelector('.content')?.innerText || '').length }
+        })()`)
+        console.log('[probe] 卡片点击测试:', JSON.stringify(cardTest))
+
         const routes = ['#/discover', '#/library', '#/resolver', '#/search', '#/downloads', '#/settings']
         const shotDir = require('path').join(app.getPath('temp'), 'ntr-shots')
         require('fs').mkdirSync(shotDir, { recursive: true })

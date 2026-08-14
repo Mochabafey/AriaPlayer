@@ -98,12 +98,18 @@ async function openConvert() {
   convertResult.value = null
   convertError.value = ''
   convertProgress.value = { done: 0, total: 0, ok: 0, fail: 0, current: '' }
-  const dir = await ncm.convertPickDir()
-  if (!dir) {
+  try {
+    const dir = await ncm.convertPickDir()
+    if (!dir) {
+      showConvert.value = false
+      return
+    }
+    convertDir.value = dir
+  } catch (e) {
+    convertError.value = e.message || '打开目录选择失败'
     showConvert.value = false
-    return
+    alert('打开目录选择失败：' + (e.message || '未知错误'))
   }
-  convertDir.value = dir
 }
 
 async function startConvert() {
