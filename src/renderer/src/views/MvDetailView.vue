@@ -93,7 +93,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .page-title {
-  font-size: 22px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
   margin-bottom: 6px;
 }
 .sub {

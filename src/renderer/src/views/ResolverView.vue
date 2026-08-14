@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import { api, resolveLinkInput } from '../api'
+import { api, resolveLinkInput, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
 import { useDownloadsStore } from '../stores/downloads'
 import { useSettingsStore } from '../stores/settings'
@@ -171,7 +171,7 @@ async function downloadUrl() {
         class="search-item"
         @click="pickSearchSong(s)"
       >
-        <img class="thumb" :src="s.pic + '?param=60y60'" alt="" loading="lazy" />
+        <img class="thumb" :src="imgUrl(s.pic + '?param=60y60')" alt="" loading="lazy" />
         <div class="s-main">
           <div class="s-name">{{ s.name }} <span v-if="s.fee" class="fee">VIP</span></div>
           <div class="s-sub">{{ s.artist }} · {{ s.album }}</div>
@@ -184,7 +184,7 @@ async function downloadUrl() {
       <!-- 单曲解析 -->
       <template v-if="result.type === 'song'">
         <div class="song-card">
-          <img class="big-cover" :src="result.detail.al?.picUrl + '?param=300y300'" alt="" />
+          <img class="big-cover" :src="imgUrl(result.detail.al?.picUrl + '?param=300y300')" alt="" />
           <div class="song-info">
             <div class="song-title">{{ result.detail.name }}</div>
             <div class="song-sub">

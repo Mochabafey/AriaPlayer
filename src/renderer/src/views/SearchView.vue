@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api } from '../api'
+import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
 import SongTable from '../components/SongTable.vue'
 import { fmtCount } from '../utils/format'
@@ -96,7 +96,7 @@ function goMv(id) {
       <div v-else-if="tab === 'playlists'" class="grid">
         <div v-for="p in results.playlists" :key="p.id" class="playlist-card" @click="goPlaylist(p.id)">
           <div class="cover-wrap">
-            <img :src="p.coverImgUrl + '?param=300y300'" alt="" loading="lazy" />
+            <img :src="imgUrl(p.coverImgUrl + '?param=300y300')" alt="" loading="lazy" />
             <div class="play-count">▶ {{ fmtCount(p.playCount) }}</div>
           </div>
           <div class="name">{{ p.name }}</div>
@@ -107,7 +107,7 @@ function goMv(id) {
       <div v-else-if="tab === 'artists'" class="grid">
         <div v-for="a in results.artists" :key="a.id" class="playlist-card" @click="goArtist(a.id)">
           <div class="cover-wrap round">
-            <img :src="a.picUrl + '?param=300y300'" alt="" loading="lazy" />
+            <img :src="imgUrl(a.picUrl + '?param=300y300')" alt="" loading="lazy" />
           </div>
           <div class="name">{{ a.name }}</div>
         </div>
@@ -117,7 +117,7 @@ function goMv(id) {
       <div v-else-if="tab === 'albums'" class="grid">
         <div v-for="al in results.albums" :key="al.id" class="playlist-card" @click="goAlbum(al.id)">
           <div class="cover-wrap">
-            <img :src="al.picUrl + '?param=300y300'" alt="" loading="lazy" />
+            <img :src="imgUrl(al.picUrl + '?param=300y300')" alt="" loading="lazy" />
           </div>
           <div class="name">{{ al.name }}</div>
         </div>
@@ -127,7 +127,7 @@ function goMv(id) {
       <div v-else-if="tab === 'mvs'" class="grid">
         <div v-for="m in results.mvs" :key="m.id" class="playlist-card" @click="goMv(m.id)">
           <div class="cover-wrap">
-            <img :src="m.cover + '?param=300y300'" alt="" loading="lazy" />
+            <img :src="imgUrl(m.cover + '?param=300y300')" alt="" loading="lazy" />
             <div class="play-count">▶ {{ m.playCount }}</div>
           </div>
           <div class="name">{{ m.name }}</div>
@@ -141,7 +141,9 @@ function goMv(id) {
 
 <style scoped>
 .page-title {
-  font-size: 24px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
   margin-bottom: 18px;
 }
 .input-row {

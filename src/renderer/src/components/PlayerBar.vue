@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { usePlayerStore } from '../stores/player'
 import { useSettingsStore } from '../stores/settings'
+import { imgUrl } from '../api'
 import { fmtTime } from '../utils/format'
 
 const player = usePlayerStore()
@@ -27,11 +28,11 @@ function onVolume(e) {
 
 function cycleMode() {
   const map = { list: 'loop', loop: 'shuffle', shuffle: 'list' }
-  const next = map[settings.settings.playMode]
-  settings.set('playMode', next)
+  settings.set('playMode', map[settings.settings.playMode])
 }
 
 const modeIcon = computed(() => ({ list: '▸▸', loop: '↻', shuffle: '⇄' })[settings.settings.playMode])
+const modeTitle = computed(() => ({ list: '列表循环', loop: '单曲循环', shuffle: '随机播放' })[settings.settings.playMode])
 
 function downloadCurrent() {
   const song = player.current
@@ -52,49 +53,55 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="player-bar" :class="{ playing: player.playing }">
+  <div class="player-bar glass" :class="{ playing: player.playing }">
     <audio ref="audioRef" preload="metadata" class="hidden-audio" />
     <div v-if="player.playError" class="play-error">{{ player.playError }}</div>
 
+    <!-- 顶部进度条（全宽、hover 变粗） -->
+    <div class="seek-track" @click="onSeek">
+      <div class="seek-fill" :style="{ width: progress + '%' }"></div>
+    </div>
+
+    <!-- 左：封面 + 信息 -->
     <div class="p-left">
       <div class="cover" v-if="player.current">
-        <img :src="player.current.pic" alt="" loading="lazy" />
+        <img :src="imgUrl(player.current.pic)" alt="" loading="lazy" />
       </div>
-      <div class="cover placeholder" v-else>♪</div>
+      <div class="cover placeholder" v-else>
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V6l11-2v12.5"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16.5" r="2.5"/></svg>
+      </div>
       <div class="meta" v-if="player.current">
         <div class="title" :title="player.current.name">{{ player.current.name }}</div>
-        <div class="artist">{{ player.current.artist }} · {{ player.current.album }}</div>
+        <div class="artist">{{ player.current.artist }}</div>
       </div>
       <div class="meta empty" v-else>未在播放</div>
     </div>
 
+    <!-- 中：控制 -->
     <div class="p-center">
-      <div class="controls">
-        <button class="ctrl" title="上一首" @click="player.prev()">⏮</button>
-        <button class="ctrl play" title="播放/暂停" @click="player.toggle()">
-          {{ player.buffering ? '…' : player.playing ? '⏸' : '▶' }}
-        </button>
-        <button class="ctrl" title="下一首" @click="player.next()">⏭</button>
-      </div>
-      <div class="timeline">
-        <span class="time">{{ fmtTime(player.currentTime) }}</span>
-        <div class="progress" @click="onSeek">
-          <div class="progress-fill" :style="{ width: progress + '%' }"></div>
-        </div>
-        <span class="time">{{ fmtTime(player.duration) }}</span>
-      </div>
+      <button class="ctrl" title="上一首" @click="player.prev()">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>
+      </button>
+      <button class="ctrl play" title="播放/暂停" @click="player.toggle()">
+        <svg v-if="player.buffering" viewBox="0 0 24 24" fill="currentColor" class="spin"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7z"/></svg>
+        <svg v-else-if="player.playing" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+        <svg v-else viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="ctrl" title="下一首" @click="player.next()">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg>
+      </button>
+      <span class="time cur">{{ fmtTime(player.currentTime) }}</span>
+      <span class="time-divider">/</span>
+      <span class="time total">{{ fmtTime(player.duration) }}</span>
     </div>
 
+    <!-- 右：模式/歌词/下载/音量 -->
     <div class="p-right">
-      <button class="ctrl" :title="'播放模式：' + settings.settings.playMode" @click="cycleMode">
-        {{ modeIcon }}
-      </button>
-      <button class="ctrl" :title="'歌词'" :class="{ active: player.showLyrics }" @click="player.showLyrics = !player.showLyrics">
-        ≣
-      </button>
-      <button class="ctrl" title="下载当前歌曲" @click="downloadCurrent">⇩</button>
-      <button class="ctrl" title="清空队列" @click="player.clearQueue()">✕</button>
-      <div class="volume" @click="onVolume">
+      <button class="ctrl sm" :title="modeTitle" @click="cycleMode">{{ modeIcon }}</button>
+      <button class="ctrl sm" title="歌词" :class="{ active: player.showLyrics }" @click="player.showLyrics = !player.showLyrics">≣</button>
+      <button class="ctrl sm" title="下载当前歌曲" @click="downloadCurrent">⇩</button>
+      <button class="ctrl sm" title="清空队列" @click="player.clearQueue()">✕</button>
+      <div class="volume" @click="onVolume" title="音量">
         <div class="volume-fill" :style="{ width: settings.settings.volume * 100 + '%' }"></div>
       </div>
     </div>
@@ -104,85 +111,83 @@ onMounted(() => {
 <style scoped>
 .player-bar {
   position: fixed;
-  left: var(--sidebar-w);
+  left: 0;
   right: 0;
   bottom: 0;
   height: var(--player-h);
-  background: rgba(22, 22, 22, 0.94);
-  backdrop-filter: blur(18px);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--hairline);
   display: flex;
   align-items: center;
-  padding: 0 22px;
-  gap: 24px;
+  padding: 0 20px;
+  gap: 20px;
   z-index: 100;
 }
+
+/* 顶部全宽进度条 */
+.seek-track {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  transition: height 0.15s var(--ease);
+}
+.seek-track:hover { height: 6px; }
+.seek-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 0 3px 3px 0;
+  transition: width 0.1s linear;
+}
+
 .play-error {
   position: fixed;
   bottom: calc(var(--player-h) + 14px);
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(180, 50, 50, 0.95);
+  background: rgba(250, 36, 60, 0.95);
   color: #fff;
   font-size: 12px;
+  font-weight: 500;
   padding: 8px 16px;
   border-radius: 8px;
   z-index: 200;
   max-width: 70vw;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow);
 }
-.hidden-audio {
-  display: none;
-}
+.hidden-audio { display: none; }
+
+/* 左 */
 .p-left {
   display: flex;
   align-items: center;
   gap: 12px;
   width: 300px;
   flex-shrink: 0;
+  min-width: 0;
 }
 .cover {
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
+  width: 46px;
+  height: 46px;
+  border-radius: 7px;
   overflow: hidden;
   flex-shrink: 0;
   background: var(--bg-card);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-cover);
 }
-.cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  animation: cover-spin 22s linear infinite;
-  animation-play-state: paused;
-}
-.player-bar.playing .cover img {
-  animation-play-state: running;
-}
-.cover:hover img {
-  animation-play-state: paused;
-}
-@keyframes cover-spin {
-  from {
-    transform: rotate(0);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
+.cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover.placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
   color: var(--text-faint);
 }
-.meta {
-  min-width: 0;
-}
+.cover.placeholder svg { width: 20px; height: 20px; }
+.meta { min-width: 0; }
 .title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -194,130 +199,72 @@ onMounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 3px;
+  margin-top: 2px;
 }
-.meta.empty {
-  color: var(--text-faint);
-  font-size: 13px;
-}
+.meta.empty { color: var(--text-faint); font-size: 13px; }
+
+/* 中：控制 */
 .p-center {
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
-}
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 18px;
+  justify-content: center;
+  gap: 22px;
 }
 .ctrl {
-  font-size: 16px;
-  color: var(--text-dim);
-  transition: color 0.15s, transform 0.12s var(--ease);
-  padding: 5px;
-  line-height: 1;
-  border-radius: 50%;
-}
-.ctrl:hover {
-  color: var(--text);
-  transform: scale(1.1);
-}
-.ctrl:active {
-  transform: scale(0.92);
-}
-.ctrl.active {
-  color: var(--accent);
-}
-.ctrl.play {
-  width: 40px;
-  height: 40px;
-  font-size: 18px;
-  color: #fff;
-  background: var(--accent);
-  box-shadow: 0 3px 12px rgba(236, 65, 65, 0.4);
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--text-dim);
+  padding: 6px;
+  border-radius: 50%;
+  transition: color 0.15s, transform 0.1s var(--ease);
 }
-.ctrl.play:hover {
-  color: #fff;
-  background: var(--accent-hover);
-  transform: scale(1.08);
+.ctrl:hover { color: var(--text); }
+.ctrl:active { transform: scale(0.92); }
+.ctrl svg { width: 20px; height: 20px; }
+.ctrl.sm { font-size: 15px; }
+.ctrl.active { color: var(--accent); }
+.ctrl.play {
+  width: 44px;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  transition: background 0.15s, transform 0.1s var(--ease);
 }
-.timeline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  max-width: 560px;
-}
+.ctrl.play:hover { background: rgba(255, 255, 255, 0.18); }
+.ctrl.play svg { width: 20px; height: 20px; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .time {
   font-size: 11px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
-  width: 40px;
-  text-align: center;
 }
-.progress {
-  flex: 1;
-  height: 5px;
-  border-radius: 3px;
-  background: #333;
-  cursor: pointer;
-  position: relative;
-  transition: height 0.12s var(--ease);
-}
-.progress:hover {
-  height: 7px;
-}
-.progress-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 3px;
-  position: relative;
-}
-.progress-fill::after {
-  content: '';
-  position: absolute;
-  right: -4px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.progress:hover .progress-fill::after {
-  opacity: 1;
-}
+.time-divider { color: var(--text-faint); font-size: 11px; }
+
+/* 右 */
 .p-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   width: 300px;
   flex-shrink: 0;
   justify-content: flex-end;
 }
 .volume {
-  width: 80px;
-  height: 5px;
-  border-radius: 3px;
-  background: #333;
+  width: 78px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
   cursor: pointer;
-  position: relative;
   transition: height 0.12s var(--ease);
 }
-.volume:hover {
-  height: 7px;
-}
+.volume:hover { height: 6px; }
 .volume-fill {
   height: 100%;
   background: var(--text-dim);
-  border-radius: 3px;
+  border-radius: 2px;
 }
+.volume:hover .volume-fill { background: #fff; }
 </style>

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api } from '../api'
+import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
 import SongTable from '../components/SongTable.vue'
 
@@ -62,7 +62,7 @@ onUnmounted(() => clearInterval(timer))
     <template v-else-if="playlist">
       <div class="head">
         <div class="cover">
-          <img :src="playlist.coverImgUrl + '?param=300y300'" alt="" />
+          <img :src="imgUrl(playlist.coverImgUrl + '?param=300y300')" alt="" />
         </div>
         <div class="info">
           <h1>{{ playlist.name }}</h1>

@@ -53,8 +53,18 @@ export class NcmServer {
   buildEnv() {
     const settings = stores.settings.get()
     const quality = QUALITY_MAP[settings.quality] || QUALITY_MAP['320000']
+    // 剥离系统代理变量：api-enhanced 启动时（注册匿名 token 后）有对外请求，
+    // 若继承 HTTP(S)_PROXY 会被本机代理（如 127.0.0.1:10808）卡住，导致 listen 永远执行不到
+    // （实测复现：带代理变量时服务注册成功后挂起，waitReady 超时 failed to start）
+    const env = { ...process.env }
+    delete env.HTTP_PROXY
+    delete env.HTTPS_PROXY
+    delete env.http_proxy
+    delete env.https_proxy
+    delete env.ALL_PROXY
+    delete env.all_proxy
     return {
-      ...process.env,
+      ...env,
       ELECTRON_RUN_AS_NODE: '1',
       PORT: String(this.port),
       HOST: '127.0.0.1',

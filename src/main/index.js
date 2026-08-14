@@ -133,7 +133,9 @@ async function bootstrap() {
         return
       }
       try {
-        const routes = ['#/library', '#/resolver', '#/search', '#/profile', '#/downloads', '#/settings', '#/discover']
+        const routes = ['#/discover', '#/library', '#/resolver', '#/search', '#/downloads', '#/settings']
+        const shotDir = require('path').join(app.getPath('temp'), 'ntr-shots')
+        require('fs').mkdirSync(shotDir, { recursive: true })
         for (const r of routes) {
           await w.webContents.executeJavaScript(`location.hash = ${JSON.stringify(r)}`)
           await new Promise((r2) => setTimeout(r2, 2000))
@@ -144,9 +146,13 @@ async function bootstrap() {
             imgTotal: document.querySelectorAll('.content img').length
           })`)
           console.log(`[probe] ${r} => hash=${st.hash} imgs=${st.imgs}/${st.imgTotal} text="${st.text}"`)
+          // 截图保存
+          try {
+            const img = await w.webContents.capturePage()
+            require('fs').writeFileSync(require('path').join(shotDir, r.replace(/[#/]/g, '_') + '.png'), img.toPNG())
+          } catch (e) { console.log('[probe] 截图失败', r, e.message) }
         }
-        const imgs = await w.webContents.executeJavaScript(`[...document.querySelectorAll('.content img')].map(i => i.src.slice(0, 90))`)
-        console.log('[probe] 图片URL样本:', JSON.stringify(imgs.slice(0, 4)))
+        console.log('[probe] 截图目录:', shotDir)
       } catch (e) {
         console.log('[probe] 探测异常:', e.message)
       }

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '../api'
+import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
 import SongTable from '../components/SongTable.vue'
 
@@ -144,7 +144,7 @@ async function logout() {
       <template v-if="!showPhone">
         <button v-if="!qrImg" class="btn" @click="startQr">生成登录二维码</button>
         <div v-else class="qr-wrap">
-          <img :src="qrImg" alt="登录二维码" class="qr-img" />
+          <img :src="imgUrl(qrImg)" alt="登录二维码" class="qr-img" />
           <p class="qr-tip" :class="{ scanned: qrState === 'scanned', expired: qrState === 'expired' }">{{ qrTip }}</p>
           <button class="btn ghost small" @click="startQr">刷新二维码</button>
         </div>
@@ -162,7 +162,7 @@ async function logout() {
     <!-- 已登录 -->
     <template v-else-if="user">
       <div class="user-head">
-        <img :src="user.avatarUrl + '?param=120y120'" class="avatar" alt="" />
+        <img :src="imgUrl(user.avatarUrl + '?param=120y120')" class="avatar" alt="" />
         <div>
           <div class="nick">{{ user.nickname }}</div>
           <div class="dim">{{ user.signature || '这个人很懒，什么都没写' }}</div>
@@ -177,7 +177,7 @@ async function logout() {
         <div class="grid">
           <div v-for="p in myPlaylists" :key="p.id" class="playlist-card" @click="router.push('/playlist/' + p.id)">
             <div class="cover-wrap">
-              <img :src="p.coverImgUrl + '?param=300y300'" alt="" loading="lazy" />
+              <img :src="imgUrl(p.coverImgUrl + '?param=300y300')" alt="" loading="lazy" />
             </div>
             <div class="name">{{ p.name }}</div>
           </div>
@@ -206,7 +206,9 @@ async function logout() {
 
 <style scoped>
 .page-title {
-  font-size: 22px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
   margin-bottom: 18px;
 }
 .login-box {
@@ -273,7 +275,9 @@ async function logout() {
   box-shadow: var(--shadow-sm);
 }
 .nick {
-  font-size: 22px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
   font-weight: 700;
   margin-bottom: 4px;
 }

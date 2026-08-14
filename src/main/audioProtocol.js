@@ -83,6 +83,28 @@ export function registerAudioProtocol() {
         })
       }
 
+      // 远程图片代理：ncm-audio://img?url=<远程图片>，用 Node http 请求（剥离系统代理，
+      // 避免 Chromium 网络栈被代理软件拦截导致封面/头像加载失败 ERR_BLOCKED_BY_CLIENT）
+      if (u.hostname === 'img') {
+        const target = u.searchParams.get('url')
+        if (!target || !/^https?:\/\//.test(target)) return new Response('invalid url', { status: 400 })
+        const upstream = await fetchUpstream(target, {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+          Referer: 'https://music.163.com/'
+        })
+        if (upstream.statusCode >= 400) {
+          upstream.resume()
+          return new Response('upstream ' + upstream.statusCode, { status: upstream.statusCode })
+        }
+        const headers = {
+          'Content-Type': upstream.headers['content-type'] || 'image/jpeg',
+          'Cache-Control': 'max-age=86400'
+        }
+        if (upstream.headers['content-length']) headers['Content-Length'] = upstream.headers['content-length']
+        return new Response(Readable.toWeb(upstream), { status: 200, headers })
+      }
+
       const target = u.searchParams.get('url')
       if (!target || !/^https?:\/\//.test(target)) {
         return new Response('invalid url', { status: 400 })

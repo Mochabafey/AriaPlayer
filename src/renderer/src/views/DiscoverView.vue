@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, waitServerReady } from '../api'
+import { api, waitServerReady, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
 import { useDownloadsStore } from '../stores/downloads'
 import { useSettingsStore } from '../stores/settings'
@@ -90,7 +90,7 @@ function goToplist(id) {
         class="banner-card"
         @click="b.targetType === 10 && b.targetId ? goToplist(b.targetId) : null"
       >
-        <img :src="b.imageUrl + '?param=520y220'" alt="" loading="lazy" />
+        <img :src="imgUrl(b.imageUrl + '?param=520y220')" alt="" loading="lazy" />
         <div class="banner-title">{{ b.typeTitle || b.titleColor }}</div>
       </div>
     </div>
@@ -123,7 +123,7 @@ function goToplist(id) {
           @click="router.push('/playlist/' + p.id)"
         >
           <div class="cover-wrap">
-            <img :src="p.picUrl + '?param=300y300'" alt="" loading="lazy" />
+            <img :src="imgUrl(p.picUrl + '?param=300y300')" alt="" loading="lazy" />
             <div class="play-count">▶ {{ fmtCount(p.playCount) }}</div>
             <div class="play-float" @click.stop="playAll(recommendPlaylists.slice(idx))">▶</div>
           </div>
@@ -163,7 +163,7 @@ function goToplist(id) {
           @click="goToplist(t.id)"
         >
           <div class="cover-wrap">
-            <img :src="t.coverImgUrl + '?param=200y200'" alt="" loading="lazy" />
+            <img :src="imgUrl(t.coverImgUrl + '?param=200y200')" alt="" loading="lazy" />
             <div class="play-count">▶ {{ fmtCount(t.playCount) }}</div>
           </div>
           <div class="name">{{ t.name }}</div>
@@ -175,26 +175,28 @@ function goToplist(id) {
 
 <style scoped>
 .page-title {
-  font-size: 22px;
-  margin-bottom: 18px;
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin-bottom: 22px;
 }
 .banner-row {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  margin-bottom: 24px;
+  gap: 14px;
+  margin-bottom: 32px;
 }
 .banner-card {
-  border-radius: var(--radius);
+  border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
   position: relative;
   aspect-ratio: 16/6.5;
-  box-shadow: var(--shadow-sm);
-  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+  box-shadow: var(--shadow-cover);
+  transition: transform 0.3s var(--ease-spring), box-shadow 0.3s var(--ease);
 }
 .banner-card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-3px) scale(1.02);
   box-shadow: var(--shadow);
 }
 .banner-card img {
@@ -204,23 +206,26 @@ function goToplist(id) {
 }
 .banner-title {
   position: absolute;
-  left: 10px;
-  bottom: 8px;
+  left: 12px;
+  bottom: 10px;
   font-size: 11px;
+  font-weight: 600;
   color: #fff;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
 }
 .sec {
-  margin-bottom: 30px;
+  margin-bottom: 38px;
 }
 .sec-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .sec-head h2 {
-  font-size: 18px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
 }
 .hint {
   color: var(--text-faint);
@@ -228,74 +233,78 @@ function goToplist(id) {
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 18px;
 }
 .grid.small {
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
 }
 .playlist-card {
   cursor: pointer;
 }
 .cover-wrap {
   position: relative;
-  border-radius: var(--radius);
+  border-radius: 10px;
   overflow: hidden;
   aspect-ratio: 1;
   background: var(--bg-card);
-  box-shadow: var(--shadow-sm);
-  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+  box-shadow: var(--shadow-cover);
+  transition: transform 0.3s var(--ease-spring), box-shadow 0.3s var(--ease);
 }
 .cover-wrap img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.3s var(--ease);
+  display: block;
+  transition: transform 0.35s var(--ease-out);
 }
 .playlist-card:hover .cover-wrap {
   transform: translateY(-4px);
   box-shadow: var(--shadow-lg);
 }
 .playlist-card:hover .cover-wrap img {
-  transform: scale(1.06);
+  transform: scale(1.05);
 }
-/* hover 时浮现的播放按钮 */
+/* hover 浮现播放按钮（Apple 风格圆形毛玻璃） */
 .play-float {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
-  width: 36px;
-  height: 36px;
+  right: 10px;
+  bottom: 10px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  background: var(--accent);
+  background: rgba(30, 30, 32, 0.75);
+  backdrop-filter: blur(12px);
   color: #fff;
-  font-size: 14px;
+  font-size: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   opacity: 0;
-  transform: translateY(6px);
-  transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+  transform: translateY(6px) scale(0.9);
+  transition: opacity 0.2s var(--ease), transform 0.25s var(--ease-spring);
 }
 .playlist-card:hover .play-float {
   opacity: 1;
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
 }
 .play-float:hover {
-  background: var(--accent-hover);
+  background: var(--accent);
 }
 .play-count {
   position: absolute;
-  top: 6px;
-  right: 8px;
+  top: 8px;
+  right: 10px;
   font-size: 11px;
+  font-weight: 600;
   color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
 .name {
-  margin-top: 8px;
+  margin-top: 9px;
   font-size: 13px;
+  font-weight: 500;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -310,12 +319,12 @@ function goToplist(id) {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
-  transition: background 0.15s;
+  transition: background 0.15s var(--ease);
 }
 .song-row:hover {
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.06);
 }
 .idx {
   width: 26px;
@@ -342,9 +351,12 @@ function goToplist(id) {
   color: var(--text-dim);
   font-size: 14px;
   padding: 6px;
+  border-radius: 50%;
+  transition: color 0.15s, background 0.15s;
 }
 .op:hover {
   color: var(--accent);
+  background: var(--accent-dim);
 }
 .placeholder {
   color: var(--text-faint);

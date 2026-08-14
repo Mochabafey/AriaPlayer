@@ -50,8 +50,11 @@ async function download(song) {
       <span class="c-time">时长</span>
       <span class="c-ops"></span>
     </div>
-    <div v-for="(s, i) in songs" :key="s.id" class="st-row" @dblclick="playAt(i)">
-      <span class="c-idx" v-if="showIndex">{{ i + 1 }}</span>
+    <div v-for="(s, i) in songs" :key="s.id" class="st-row" :class="{ playing: player.current?.id === s.id }" @dblclick="playAt(i)">
+      <span class="c-idx" v-if="showIndex">
+        <span v-if="player.current?.id === s.id && player.playing" class="playing-bars"><i></i><i></i><i></i></span>
+        <template v-else>{{ i + 1 }}</template>
+      </span>
       <div class="c-title">
         <span class="t-name">{{ s.name }}</span>
         <span class="t-artist">{{ (s.ar || s.artists || []).map((a) => a.name ?? a).join('/') }}</span>
@@ -80,17 +83,22 @@ async function download(song) {
 }
 .st-head {
   color: var(--text-faint);
-  font-size: 12px;
-  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid var(--hairline);
   margin-bottom: 4px;
 }
 .st-row {
-  border-radius: var(--radius-sm);
+  border-radius: 8px;
   transition: background 0.15s var(--ease);
   cursor: default;
 }
 .st-row:hover {
-  background: var(--bg-hover);
+  background: rgba(255, 255, 255, 0.06);
+}
+.st-row.playing .t-name {
+  color: var(--accent);
 }
 .c-idx {
   width: 34px;
@@ -102,7 +110,27 @@ async function download(song) {
   transition: color 0.15s;
 }
 .st-row:hover .c-idx {
-  color: var(--accent);
+  color: var(--text-dim);
+}
+/* 正在播放的跳动听谱条 */
+.playing-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+.playing-bars i {
+  width: 3px;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: eq 0.9s ease-in-out infinite;
+}
+.playing-bars i:nth-child(1) { height: 8px; }
+.playing-bars i:nth-child(2) { height: 12px; animation-delay: 0.2s; }
+.playing-bars i:nth-child(3) { height: 6px; animation-delay: 0.4s; }
+@keyframes eq {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1); }
 }
 .c-title {
   flex: 1;

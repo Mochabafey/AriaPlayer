@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api } from '../api'
+import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
 import SongTable from '../components/SongTable.vue'
 
@@ -28,7 +28,7 @@ onMounted(async () => {
     <template v-else-if="album">
       <div class="head">
         <div class="cover">
-          <img :src="album.picUrl + '?param=300y300'" alt="" />
+          <img :src="imgUrl(album.picUrl + '?param=300y300')" alt="" />
         </div>
         <div class="info">
           <h1>{{ album.name }}</h1>

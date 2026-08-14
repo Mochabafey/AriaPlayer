@@ -2,12 +2,21 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { usePlayerStore } from '../stores/player'
 import { activeIndex } from '../utils/lrc'
+import { imgUrl } from '../api'
 
 const player = usePlayerStore()
 const listRef = ref(null)
 
 const active = computed(() => activeIndex(player.lyrics, player.currentTime))
 const hasLyric = computed(() => player.lyrics.length > 0)
+
+// 封面模糊背景（Apple Music 全屏风格）
+const bgStyle = computed(() => {
+  const pic = player.current?.pic
+  return pic
+    ? { backgroundImage: `url(${imgUrl(pic)})` }
+    : {}
+})
 
 watch(active, async (idx) => {
   if (idx < 0 || !listRef.value) return
@@ -19,10 +28,16 @@ watch(active, async (idx) => {
 
 <template>
   <div class="lyric-panel">
-    <div class="lyric-bg"></div>
+    <div class="lyric-bg" :style="bgStyle"></div>
     <div class="lyric-inner">
-      <div class="cover-large" v-if="player.current">
-        <img :src="player.current.pic" alt="" />
+      <div class="left-col">
+        <div class="cover-large" v-if="player.current">
+          <img :src="imgUrl(player.current.pic)" alt="" />
+        </div>
+        <div class="track-info" v-if="player.current">
+          <div class="t-name">{{ player.current.name }}</div>
+          <div class="t-artist">{{ player.current.artist }}</div>
+        </div>
       </div>
       <div class="lyric-list" ref="listRef">
         <p v-if="!hasLyric" class="no-lyric">暂无歌词</p>
@@ -38,7 +53,9 @@ watch(active, async (idx) => {
           </p>
         </template>
       </div>
-      <button class="close-btn" @click="player.showLyrics = false">✕</button>
+      <button class="close-btn" @click="player.showLyrics = false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
     </div>
   </div>
 </template>
@@ -52,8 +69,11 @@ watch(active, async (idx) => {
 .lyric-bg {
   position: absolute;
   inset: 0;
-  background: rgba(10, 10, 12, 0.88);
-  backdrop-filter: blur(24px);
+  background: #000;
+  background-size: cover;
+  background-position: center;
+  filter: blur(60px) brightness(0.4) saturate(1.4);
+  transform: scale(1.4);
 }
 .lyric-inner {
   position: relative;
@@ -61,48 +81,52 @@ watch(active, async (idx) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 64px;
+  gap: 72px;
   padding: 40px 8vw;
+}
+.left-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  flex-shrink: 0;
 }
 .cover-large {
   width: 300px;
   height: 300px;
-  border-radius: 16px;
+  border-radius: 14px;
   overflow: hidden;
-  box-shadow: var(--shadow);
-  flex-shrink: 0;
+  box-shadow: var(--shadow-lg);
 }
 .cover-large img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  animation: spin-slow 30s linear infinite;
 }
-@keyframes spin-slow {
-  to {
-    transform: rotate(360deg);
-  }
-}
+.track-info { text-align: center; }
+.t-name { font-size: 18px; font-weight: 700; }
+.t-artist { font-size: 14px; color: var(--text-dim); margin-top: 4px; }
 .lyric-list {
   flex: 1;
-  max-width: 520px;
-  height: 380px;
+  max-width: 560px;
+  height: 420px;
   overflow-y: auto;
   scroll-behavior: smooth;
-  mask-image: linear-gradient(180deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
 }
 .lyric-line {
   text-align: center;
-  font-size: 16px;
+  font-size: 17px;
   line-height: 2.1;
-  color: var(--text-faint);
-  transition: color 0.25s, font-size 0.25s, transform 0.25s;
+  color: rgba(255, 255, 255, 0.4);
+  transition: color 0.3s var(--ease), font-size 0.3s var(--ease), font-weight 0.3s;
   cursor: pointer;
 }
 .lyric-line.active {
-  color: var(--text);
-  font-size: 19px;
-  font-weight: 600;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
 }
 .no-lyric {
   text-align: center;
@@ -111,13 +135,19 @@ watch(active, async (idx) => {
 }
 .close-btn {
   position: absolute;
-  top: 28px;
-  right: 32px;
-  font-size: 18px;
-  color: var(--text-dim);
-  padding: 8px;
+  top: 26px;
+  right: 30px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
 }
-.close-btn:hover {
-  color: var(--text);
-}
+.close-btn svg { width: 15px; height: 15px; }
+.close-btn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
 </style>

@@ -124,3 +124,16 @@ export function coverUrl(id, size = 300) {
   if (!id) return ''
   return `https://p2.music.126.net/${id}?param=${size}y${size}`
 }
+
+/**
+ * 图片 URL 包装：远程图片走 ncm-audio://img 代理（主进程 Node http 拉取），
+ * 绕开 Chromium 网络栈被系统代理拦截导致的封面/头像加载失败。
+ * 本地路径（ncm-audio://cover?path=）与非 http 链接原样返回。
+ */
+export function imgUrl(url) {
+  if (!url) return ''
+  const s = String(url)
+  if (s.startsWith('ncm-audio://')) return s
+  if (!/^https?:\/\//.test(s)) return s
+  return `ncm-audio://img?url=${encodeURIComponent(s)}`
+}

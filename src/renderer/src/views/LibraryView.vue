@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ncm } from '../api'
+import { ncm, imgUrl } from '../api'
 import { useLibraryStore } from '../stores/library'
 import { usePlayerStore } from '../stores/player'
 import { useDownloadsStore } from '../stores/downloads'
@@ -169,7 +169,7 @@ function openConvertOut() {
         @dblclick="playLocal(s)"
       >
         <div class="cover">
-          <img v-if="s.coverPath" :src="coverOf(s)" alt="" loading="lazy" />
+          <img v-if="s.coverPath" :src="imgUrl(coverOf(s))" alt="" loading="lazy" />
           <div v-else class="no-cover">♪</div>
           <div class="hover-ops" @click.stop>
             <button class="op" title="播放" @click.stop="playLocal(s)">▶</button>
@@ -268,7 +268,9 @@ function openConvertOut() {
   margin-bottom: 16px;
 }
 .page-title {
-  font-size: 22px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
 }
 .head-actions {
   display: flex;

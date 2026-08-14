@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api } from '../api'
+import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
 import SongTable from '../components/SongTable.vue'
 
@@ -42,7 +42,7 @@ onMounted(async () => {
     <div v-if="loading" class="placeholder">加载中…</div>
     <template v-else-if="artist">
       <div class="head">
-        <img :src="artist.picUrl + '?param=300y300'" class="avatar" alt="" />
+        <img :src="imgUrl(artist.picUrl + '?param=300y300')" class="avatar" alt="" />
         <div class="info">
           <h1>{{ artist.name }}</h1>
           <div class="sub">粉丝：{{ artist.fansCount || 0 }} · 歌曲 {{ artist.musicSize || 0 }} 首</div>
@@ -63,7 +63,7 @@ onMounted(async () => {
         <div class="grid">
           <div v-for="al in albums" :key="al.id" class="card" @click="router.push('/album/' + al.id)">
             <div class="cover">
-              <img :src="al.picUrl + '?param=200y200'" alt="" loading="lazy" />
+              <img :src="imgUrl(al.picUrl + '?param=200y200')" alt="" loading="lazy" />
             </div>
             <div class="name">{{ al.name }}</div>
           </div>
@@ -75,7 +75,7 @@ onMounted(async () => {
         <div class="grid">
           <div v-for="m in mvs" :key="m.id" class="card" @click="router.push('/mv/' + m.id)">
             <div class="cover">
-              <img :src="m.cover + '?param=200y200'" alt="" loading="lazy" />
+              <img :src="imgUrl(m.cover + '?param=200y200')" alt="" loading="lazy" />
               <span class="play-badge">▶</span>
             </div>
             <div class="name">{{ m.name }}</div>
