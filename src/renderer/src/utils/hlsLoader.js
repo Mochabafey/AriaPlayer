@@ -51,6 +51,7 @@ export class NcmProxyLoader {
         callbacks.onError({ code: resp.status, text: resp.statusText }, context, null, this.stats)
         return
       }
+      this.stats.loading.first = performance.now()
 
       const buf = await resp.arrayBuffer()
       const total = buf.byteLength

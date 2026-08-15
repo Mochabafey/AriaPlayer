@@ -48,8 +48,11 @@ const navGroups = [
   }
 ]
 
-onMounted(() => {
-  settings.load()
+onMounted(async () => {
+  await settings.load()
+  // 恢复持久化音量到播放器（store 默认 0.8，不同步会导致显示与实际音量不一致）
+  const v = Number(settings.settings.volume)
+  if (Number.isFinite(v) && v >= 0 && v <= 1) player.setVolume(v)
   ncm.onServerStatus((s) => (serverState.value = s))
   ncm.serverStatus().then((s) => (serverState.value = s))
 })

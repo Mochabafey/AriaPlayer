@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
@@ -17,6 +17,8 @@ let timer = null
 async function load() {
   loading.value = true
   notFound.value = false
+  playlist.value = null
+  tracks.value = []
   try {
     const d = await api('playlist_detail', { id: route.params.id })
     if (!d.playlist) throw new Error('not found')
@@ -53,6 +55,14 @@ onMounted(() => {
   setTimeout(() => clearInterval(timer), 30000)
 })
 onUnmounted(() => clearInterval(timer))
+
+// /playlist/1 → /playlist/2 组件复用，需监听参数变化重新加载
+watch(
+  () => route.params.id,
+  (id, old) => {
+    if (id && id !== old) load().then(loadAll)
+  }
+)
 </script>
 
 <template>

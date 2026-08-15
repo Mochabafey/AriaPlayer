@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
@@ -15,7 +15,13 @@ const albums = ref([])
 const mvs = ref([])
 const desc = ref('')
 
-onMounted(async () => {
+async function load() {
+  loading.value = true
+  artist.value = null
+  hotSongs.value = []
+  albums.value = []
+  mvs.value = []
+  desc.value = ''
   try {
     const [d, descRes] = await Promise.allSettled([
       api('artist_detail', { id: route.params.id }),
@@ -34,7 +40,17 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(load)
+
+// /artist/1 → /artist/2 组件复用，需监听参数变化重新加载
+watch(
+  () => route.params.id,
+  (id, old) => {
+    if (id && id !== old) load()
+  }
+)
 </script>
 
 <template>

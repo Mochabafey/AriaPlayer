@@ -43,13 +43,36 @@ onMounted(async () => {
 })
 
 async function playDaily() {
-  const res = await api('recommend_songs')
-  dailySongs.value = res.data?.dailySongs || []
-  await player.playList(dailySongs.value)
+  try {
+    const res = await api('recommend_songs')
+    dailySongs.value = res.data?.dailySongs || []
+    if (!dailySongs.value.length) {
+      alert('暂无每日推荐（需登录网易云账号后使用）')
+      return
+    }
+    await player.playList(dailySongs.value)
+  } catch (e) {
+    alert('获取每日推荐失败：' + e.message)
+  }
 }
 
 async function playAll(songs) {
   await player.playList(songs)
+}
+
+/** 播放整个歌单：先拉取曲目再入队（歌单对象本身不是可播放的歌曲） */
+async function playPlaylist(p) {
+  try {
+    const d = await api('playlist_track_all', { id: p.id, limit: 1000 })
+    const songs = d.songs || []
+    if (!songs.length) {
+      alert('歌单曲目为空或加载失败')
+      return
+    }
+    await player.playList(songs)
+  } catch (e) {
+    alert('播放歌单失败：' + e.message)
+  }
 }
 
 async function downloadSong(song) {
@@ -76,6 +99,14 @@ async function downloadSong(song) {
 function goToplist(id) {
   router.push(`/playlist/${id}`)
 }
+
+/** Banner 跳转：targetType 10=专辑 1000=歌单 1=歌曲 1004=MV（其余不支持） */
+function goBanner(b) {
+  if (!b.targetId) return
+  if (b.targetType === 10) router.push(`/album/${b.targetId}`)
+  else if (b.targetType === 1000) router.push(`/playlist/${b.targetId}`)
+  else if (b.targetType === 1004) router.push(`/mv/${b.targetId}`)
+}
 </script>
 
 <template>
@@ -88,7 +119,7 @@ function goToplist(id) {
         v-for="b in banner"
         :key="b.bannerId"
         class="banner-card"
-        @click="b.targetType === 10 && b.targetId ? goToplist(b.targetId) : null"
+        @click="goBanner(b)"
       >
         <img :src="imgUrl(b.imageUrl + '?param=520y220')" alt="" loading="lazy" />
         <div class="banner-title">{{ b.typeTitle || b.titleColor }}</div>
@@ -117,7 +148,7 @@ function goToplist(id) {
       </div>
       <div class="grid">
         <div
-          v-for="(p, idx) in recommendPlaylists"
+          v-for="p in recommendPlaylists"
           :key="p.id"
           class="playlist-card"
           @click="router.push('/playlist/' + p.id)"
@@ -125,7 +156,7 @@ function goToplist(id) {
           <div class="cover-wrap">
             <img :src="imgUrl(p.picUrl + '?param=300y300')" alt="" loading="lazy" />
             <div class="play-count">▶ {{ fmtCount(p.playCount) }}</div>
-            <div class="play-float" @click.stop="playAll(recommendPlaylists.slice(idx))">▶</div>
+            <div class="play-float" @click.stop="playPlaylist(p)">▶</div>
           </div>
           <div class="name">{{ p.name }}</div>
         </div>

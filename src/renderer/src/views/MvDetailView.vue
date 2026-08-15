@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Hls from 'hls.js'
 import { api } from '../api'
@@ -25,11 +25,16 @@ async function initPlayer() {
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (!data.fatal) return
         if (data.type === 'networkError') {
-          error.value = '网络错误，播放失败'
-          hls?.recoverMediaError()
+          // 网络错误：重新拉流（recoverMediaError 是媒体错误的恢复手段，用错会导致黑屏）
+          hls?.startLoad()
         } else if (data.type === 'mediaError') {
           error.value = '媒体解码错误'
           hls?.destroy()
+          hls = null
+        } else {
+          error.value = '播放失败：' + (data.details || data.type)
+          hls?.destroy()
+          hls = null
         }
       })
       video.play().catch(() => {})
@@ -44,7 +49,25 @@ async function initPlayer() {
   }
 }
 
-onMounted(async () => {
+/** 停止并清理当前播放（HLS 实例 + video 元素） */
+function cleanup() {
+  if (hls) {
+    hls.destroy()
+    hls = null
+  }
+  const video = videoRef.value
+  if (video) {
+    video.pause()
+    video.removeAttribute('src')
+    video.load()
+  }
+}
+
+async function loadData() {
+  loading.value = true
+  error.value = ''
+  mv.value = null
+  url.value = ''
   try {
     const [d, u] = await Promise.allSettled([
       api('mv_detail', { mvid: route.params.id }),
@@ -63,11 +86,21 @@ onMounted(async () => {
     await nextTick()
     await initPlayer()
   }
-})
+}
 
-onBeforeUnmount(() => {
-  if (hls) hls.destroy()
-})
+onMounted(loadData)
+
+// /mv/1 → /mv/2 组件复用，需清理旧播放器并重新加载
+watch(
+  () => route.params.id,
+  async (id, old) => {
+    if (!id || id === old) return
+    cleanup()
+    await loadData()
+  }
+)
+
+onBeforeUnmount(cleanup)
 </script>
 
 <template>
@@ -85,7 +118,8 @@ onBeforeUnmount(() => {
           autoplay
           class="video"
         />
-        <div v-else class="no-video">{{ error || '暂无播放地址' }}</div>
+        <div v-if="!url" class="no-video">{{ error || '暂无播放地址' }}</div>
+        <div v-else-if="error" class="no-video err-overlay">{{ error }}</div>
       </div>
     </template>
   </div>
@@ -104,6 +138,7 @@ onBeforeUnmount(() => {
   margin-bottom: 18px;
 }
 .player-wrap {
+  position: relative;
   background: #000;
   border-radius: 12px;
   overflow: hidden;
@@ -113,12 +148,21 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
 }
+.player-wrap .err-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
 .video {
   width: 100%;
   height: 100%;
 }
 .no-video {
   color: var(--text-faint);
+}
+.player-wrap .no-video {
+  padding: 16px;
+  text-align: center;
 }
 .placeholder {
   color: var(--text-faint);

@@ -58,6 +58,17 @@ function coverOf(s) {
 onMounted(() => {
   library.load()
   downloads.watch()
+  // 订阅主进程转换进度事件（否则批量转换时进度条恒为 0%）
+  ncm.onConvertProgress((p) => {
+    if (!p) return
+    convertProgress.value = {
+      done: p.done ?? convertProgress.value.done,
+      total: p.total ?? convertProgress.value.total,
+      ok: p.ok ?? convertProgress.value.ok,
+      fail: p.fail ?? convertProgress.value.fail,
+      current: p.current ?? convertProgress.value.current
+    }
+  })
 })
 
 async function pickFolder() {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
@@ -53,6 +53,17 @@ onMounted(() => {
     doSearch(q)
   }
 })
+
+// 已在 /search 页时侧边栏再次搜索只改 query，组件复用不会重新 mount，需监听
+watch(
+  () => route.query.q,
+  (q) => {
+    if (q && q !== keyword.value) {
+      keyword.value = q
+      doSearch(q)
+    }
+  }
+)
 
 function goPlaylist(id) {
   router.push('/playlist/' + id)

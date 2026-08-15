@@ -42,7 +42,7 @@ export const usePlayerStore = defineStore('player', () => {
     audioEl.addEventListener('pause', () => (playing.value = false))
     audioEl.addEventListener('waiting', () => (buffering.value = true))
     audioEl.addEventListener('playing', () => (buffering.value = false))
-    audioEl.addEventListener('ended', () => next())
+    audioEl.addEventListener('ended', () => next(true))
     audioEl.addEventListener('error', () => {
       playing.value = false
       buffering.value = false
@@ -52,11 +52,12 @@ export const usePlayerStore = defineStore('player', () => {
     audioEl.volume = volume.value
   }
 
-  /** 音频格式不支持时，用 ffmpeg 转码为 wav 再播 */
+  /** 音频格式不支持时，用 ffmpeg 转码为 wav 再播（每首歌只尝试一次，防死循环） */
   async function fallbackTranscode() {
     const song = current.value
-    if (!song || song.fromLocal || song._transcoding || !song.audioUrl) return
+    if (!song || song.fromLocal || song._transcoding || song._transcodeTried || !song.audioUrl) return
     song._transcoding = true
+    song._transcodeTried = true
     setPlayError('当前音频无法直接播放，正在转码…')
     try {
       const outPath = await window.ncm.invoke('ncm:ffmpeg-transcode', {
@@ -182,11 +183,20 @@ export const usePlayerStore = defineStore('player', () => {
     settings.set('volume', v)
   }
 
-  async function next() {
+  /**
+   * 切歌。auto=true 表示由「播放结束」触发：
+   * 单曲循环模式下重播当前曲；手动点击下一首始终切歌。
+   */
+  async function next(auto = false) {
     const settings = useSettingsStore()
     const mode = settings.settings.playMode
     const len = queue.value.length
     if (!len) return
+    if (auto && mode === 'loop') {
+      seek(0)
+      audioEl?.play().catch(() => {})
+      return
+    }
     let idx
     if (mode === 'shuffle') idx = Math.floor(Math.random() * len)
     else idx = currentIndex.value + 1 >= len ? 0 : currentIndex.value + 1

@@ -24,6 +24,19 @@ watch(active, async (idx) => {
   const el = listRef.value.querySelector(`[data-idx="${idx}"]`)
   el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
 })
+
+// 切歌后歌词数组被替换：若新旧 active 索引相同上面的 watch 不会触发，
+// 需主动把列表滚回当前行，避免停留在上一首的滚动位置
+watch(
+  () => player.lyrics,
+  async () => {
+    await nextTick()
+    if (!listRef.value) return
+    const el = listRef.value.querySelector(`[data-idx="${active.value}"]`)
+    if (el) el.scrollIntoView({ block: 'center' })
+    else listRef.value.scrollTop = 0
+  }
+)
 </script>
 
 <template>

@@ -44,14 +44,29 @@ async function loadUserData() {
   const [pl, lk, rc] = await Promise.allSettled([
     api('user_playlist', { uid, limit: 100 }),
     api('likelist', { uid }),
-    api('record_recent_song', { uid, limit: 1 })
+    api('record_recent_song', { limit: 100 })
   ])
   if (pl.status === 'fulfilled') myPlaylists.value = pl.value.playlist || []
   if (lk.status === 'fulfilled' && lk.value.ids?.length) {
     const d = await api('song_detail', { ids: lk.value.ids.slice(0, 50).join(',') })
     likeSongs.value = d.songs || []
   }
-  if (rc.status === 'fulfilled') recentSongs.value = rc.value.data?.list || []
+  if (rc.status === 'fulfilled') {
+    // 接口返回的是播放记录（每项仅含 data.songId），不是完整歌曲对象，
+    // 需汇总 id 再查 song_detail，否则 SongTable 渲染出空白行
+    const list = rc.value.data?.list || []
+    const ids = list.map((x) => x?.data?.songId ?? x?.songId).filter(Boolean)
+    if (ids.length) {
+      try {
+        const d = await api('song_detail', { ids: ids.slice(0, 100).join(',') })
+        recentSongs.value = d.songs || []
+      } catch {
+        recentSongs.value = []
+      }
+    } else {
+      recentSongs.value = list
+    }
+  }
 }
 
 async function startQr() {
@@ -76,32 +91,32 @@ async function startQr() {
 
 async function checkQr() {
   if (!qrKey.value) return
+  // 注意：login_qr_check 的 800（过期）/802（已扫码）通过 body.code 返回，
+  // api() 封装对非 200 code 会抛异常，因此成功与异常两条路径都要取 code
+  let code = null
   try {
     const r = await api('login_qr_check', { key: qrKey.value, timestamp: Date.now() })
-    if (r.code === 800) {
-      qrState.value = 'expired'
-      qrTip.value = '二维码已过期，请点击刷新'
-      clearInterval(qrTimer)
-    } else if (r.code === 802) {
-      qrState.value = 'scanned'
-      qrTip.value = '已扫码，请在手机上确认'
-    } else if (r.code === 803) {
-      qrState.value = 'done'
-      qrTip.value = '登录成功！'
-      clearInterval(qrTimer)
-      // 需要调用一次 check 返回的 cookie 更新
-      const st = await api('login_status')
-      if (st.data?.profile) {
-        user.value = st.data.profile
-        await loadUserData()
-      } else {
-        // 部分版本需用 cookie 再确认
-        const s2 = await api('login_status')
-        if (s2.data?.profile) user.value = s2.data.profile
-        await loadUserData()
-      }
+    code = r.code
+  } catch (e) {
+    code = e.code
+  }
+  if (code === 800) {
+    qrState.value = 'expired'
+    qrTip.value = '二维码已过期，请点击刷新'
+    clearInterval(qrTimer)
+  } else if (code === 802) {
+    qrState.value = 'scanned'
+    qrTip.value = '已扫码，请在手机上确认'
+  } else if (code === 803) {
+    qrState.value = 'done'
+    qrTip.value = '登录成功！'
+    clearInterval(qrTimer)
+    const st = await api('login_status')
+    if (st.data?.profile && !st.data.account?.anonimousUser) {
+      user.value = st.data.profile
+      await loadUserData()
     }
-  } catch { /* ignore */ }
+  }
 }
 
 async function phoneLogin() {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
@@ -11,7 +11,10 @@ const loading = ref(true)
 const album = ref(null)
 const songs = ref([])
 
-onMounted(async () => {
+async function load() {
+  loading.value = true
+  album.value = null
+  songs.value = []
   try {
     const d = await api('album', { id: route.params.id })
     album.value = d.album
@@ -19,7 +22,17 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(load)
+
+// /album/1 → /album/2 组件复用，需监听参数变化重新加载
+watch(
+  () => route.params.id,
+  (id, old) => {
+    if (id && id !== old) load()
+  }
+)
 </script>
 
 <template>

@@ -75,7 +75,8 @@ export const ncm = {
   // NCM 转换
   convertPickFile: () => bridge.invoke('ncm:convert-pick-file'),
   convertPickDir: () => bridge.invoke('ncm:convert-pick-dir'),
-  convertBatch: (opts) => bridge.invoke('ncm:convert-batch', opts)
+  convertBatch: (opts) => bridge.invoke('ncm:convert-batch', opts),
+  onConvertProgress: (cb) => bridge.on('ncm:convert-progress', cb)
 }
 
 /** 网易云链接 → {type, id} */
