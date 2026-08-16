@@ -19,9 +19,9 @@ export async function waitServerReady() {
   return false
 }
 
-/** 调用本地 api-enhanced 接口 */
-export async function api(method, params = {}) {
-  const data = await bridge.invoke('ncm:api', { method: routeOf(method), params })
+/** 调用本地 api-enhanced 接口；opts.noCache=true 跳过本地缓存（断流恢复强制刷新用） */
+export async function api(method, params = {}, opts = {}) {
+  const data = await bridge.invoke('ncm:api', { method: routeOf(method), params, noCache: !!opts.noCache })
   if (data && data.code !== undefined && data.code !== 200 && data.code !== 0) {
     const err = new Error(data.message || data.msg || `接口错误 code=${data.code}`)
     err.code = data.code

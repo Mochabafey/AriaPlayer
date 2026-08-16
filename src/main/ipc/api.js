@@ -152,8 +152,18 @@ export function registerApiIpc(getServer) {
     return `${route}?${qs}`
   }
 
+  /** song/url/v1 只有网易自家 CDN 地址才值得缓存：解灰替换出的第三方地址
+   *（kuwo/qijieya 等）时效短且不稳定，缓存了反而让断流恢复反复拿到同一个死地址 */
+  function isCacheable(route, json) {
+    if (route === 'song/url/v1') {
+      const url = json?.data?.[0]?.url || ''
+      return /126\.net|netease|music\.163/i.test(url)
+    }
+    return true
+  }
+
   // ---- 通用 API 转发（私有 socket 通道）+ SQLite 缓存 ----
-  ipcMain.handle('ncm:api', async (_e, { method, params }) => {
+  ipcMain.handle('ncm:api', async (_e, { method, params, noCache }) => {
     const srv = getServer()
     if (!srv || srv.status !== 'ready') throw new Error('NCM_SERVER_NOT_READY')
     // api-enhanced 路由规则：下划线转斜杠（song_url_v1 → /song/url/v1）
@@ -161,9 +171,9 @@ export function registerApiIpc(getServer) {
     const realTime = FORCE_FETCH_RE.test(route)
     const cacheRule = realTime ? null : API_CACHE_RULES.find((r) => r.re.test(route))
 
-    // 1. 命中本地 SQLite 缓存直接返回（切歌回听同曲秒出歌词/音源）
+    // 1. 命中本地 SQLite 缓存直接返回（切歌回听同曲秒出歌词/音源）；noCache 用于断流恢复强制刷新
     const key = cacheKey(route, params)
-    if (cacheRule) {
+    if (cacheRule && !noCache) {
       const hit = apiCacheRepo.get(key)
       if (hit) return hit
     }
@@ -179,8 +189,8 @@ export function registerApiIpc(getServer) {
     if (/^logout/.test(route)) clearSession()
     let json
     try { json = JSON.parse(text) } catch { json = { code: res.statusCode, message: 'bad json from upstream' } }
-    // 2. 业务成功才写缓存（网易云约定 code === 200）
-    if (cacheRule && json.code === 200) apiCacheRepo.set(key, json, cacheRule.ttl)
+    // 2. 业务成功且值得缓存才写（网易云约定 code === 200）
+    if (cacheRule && json.code === 200 && isCacheable(route, json)) apiCacheRepo.set(key, json, cacheRule.ttl)
     return json
   })
 

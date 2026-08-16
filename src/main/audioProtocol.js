@@ -28,8 +28,21 @@ const MIME = {
 /**
  * 用 Node 原生 http/https 请求上游（绕开 Chromium 网络栈）。
  * net.fetch 在代理环境对 http 目标常报 ERR_BLOCKED_BY_CLIENT，导致音频无法代理。
+ * 手动跟随 3xx 重定向（Node http.get 不跟随；kuwo 等第三方源常跳转）。
  */
-function fetchUpstream(url, headers) {
+async function fetchUpstream(url, headers, redirects = 0) {
+  if (redirects > 5) throw new Error('too many redirects')
+  const res = await fetchOnce(url, headers)
+  const loc = res.headers.location
+  if ([301, 302, 303, 307, 308].includes(res.statusCode) && loc) {
+    const next = new URL(loc, url).toString()
+    res.resume() // 丢弃重定向响应体再请求下一跳
+    return fetchUpstream(next, headers, redirects + 1)
+  }
+  return res
+}
+
+function fetchOnce(url, headers) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http
     let gotHeaders = false
@@ -115,7 +128,14 @@ export function registerAudioProtocol() {
       if (!target || !/^https?:\/\//.test(target)) {
         return new Response('invalid url', { status: 400 })
       }
-      if (!/\.(mp3|flac|m4a|aac|ogg|wav|mp4|m4s|m3u8|ts)$/i.test(target) && !/netease|126\.net|music\.163/i.test(target)) {
+      // 白名单校验取 pathname（排除查询参数）：解灰地址形如
+      // http://bd-er.kuwo.cn/.../xxx.flac?from=bodian，带 query 时全串正则永远匹配不上，
+      // 会被误杀成 403 → 触发 ffmpeg 转码（整首下载从头播）或直接播放失败
+      let targetPath = ''
+      try { targetPath = new URL(target).pathname } catch { /* 上面已校验过协议 */ }
+      const extOk = /\.(mp3|flac|m4a|aac|ogg|wav|mp4|m4s|m3u8|ts)$/i.test(targetPath)
+      const hostOk = /netease|126\.net|music\.163/i.test(target)
+      if (!extOk && !hostOk) {
         return new Response('url rejected', { status: 403 })
       }
 

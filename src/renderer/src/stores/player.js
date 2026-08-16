@@ -5,7 +5,12 @@ import { useSettingsStore } from './settings'
 
 let audioEl = null
 let playEpoch = 0      // 切歌代次号：旧请求的异步结果若晚于切歌则丢弃
-let networkRetries = 0 // 断流轻量重试计数（成功 playing 后清零）
+let networkRetries = 0 // 断流恢复计数（成功 playing / 切歌 / 手动重试后清零）
+let recoverQueued = false // error 风暴合并窗口：风暴平息后统一恢复一次
+
+function levelOf(q) {
+  return q === 'lossless' ? 'lossless' : q === '320000' ? 'exhigh' : 'standard'
+}
 
 /**
  * 全局播放器单例。audio 元素挂载在 PlayerBar，
@@ -41,7 +46,12 @@ export const usePlayerStore = defineStore('player', () => {
       duration.value = audioEl.duration || 0
     })
     audioEl.addEventListener('play', () => (playing.value = true))
-    audioEl.addEventListener('pause', () => (playing.value = false))
+    audioEl.addEventListener('pause', () => {
+      // 切歌流程会先拆 src 再 pause（见 startCurrent）：无 src 的 pause 是程序性
+      // 停流而非用户暂停，保留乐观播放态，否则播放键会闪成暂停再弹回（抽搐来源）
+      if (!audioEl.src) return
+      playing.value = false
+    })
     audioEl.addEventListener('waiting', () => (buffering.value = true))
     audioEl.addEventListener('playing', () => {
       buffering.value = false
@@ -49,61 +59,105 @@ export const usePlayerStore = defineStore('player', () => {
     })
     audioEl.addEventListener('ended', () => next(true))
     audioEl.addEventListener('error', () => {
-      playing.value = false
-      buffering.value = false
       const code = audioEl.error?.code
-      // 4=音源格式不支持 / 3=解码错误 → ffmpeg 转码回退；
-      // 2=网络错误 → 轻量重连续传（转码会把整首歌下完从头播，正是「卡住重播」的元凶）；
-      // 1=aborted（切歌正常现象）忽略
-      if (code === 4 || code === 3) fallbackTranscode()
-      else if (code === 2) recoverNetwork()
+      if (code === 1) return // aborted：切歌拆流正常现象
+      // 合并 error 风暴：800ms 内连续 error 只在平息后统一恢复一次。
+      // 逐个响应会让 playing 高频震荡 → 播放键在 播放/暂停/转圈 间疯狂抽搐
+      if (recoverQueued) return
+      recoverQueued = true
+      setTimeout(() => {
+        recoverQueued = false
+        if (!audioEl?.error) return
+        if (!current.value || current.value.fromLocal) return
+        recoverPlayback(audioEl.error.code)
+      }, 800)
     })
     audioEl.volume = volume.value
   }
 
-  /** 网络断流恢复：重拉音源并跳回中断位置，最多重试 2 次 */
-  function recoverNetwork() {
+  /** 恢复播放后跳回中断位置（epoch 保护：中途切歌则丢弃，防误 seek 到新歌） */
+  function seekBack(t) {
+    if (!(t > 1)) return
+    const epoch = playEpoch
+    const onMeta = () => {
+      audioEl.removeEventListener('loadedmetadata', onMeta)
+      if (epoch !== playEpoch) return
+      if (audioEl.duration && t < audioEl.duration - 0.5) audioEl.currentTime = t
+    }
+    audioEl.addEventListener('loadedmetadata', onMeta)
+  }
+
+  /**
+   * 播放失败统一恢复：优先刷新音源地址（解灰地址时效短，复用死地址只会
+   * 立即再失败 → error 循环）。重试上限 2 次；到顶后解码类错误（3/4，
+   * 很多 403/损坏流会被 Chromium 归到 4）走 ffmpeg 转码兜底，再不行明确报错。
+   */
+  async function recoverPlayback(code) {
+    const epoch = playEpoch
     const song = current.value
-    if (!song || song.fromLocal || !song.audioUrl) return
-    if (networkRetries >= 2) {
-      setPlayError('网络不稳定，播放已中断，请稍后重试')
+    if (!song || song.fromLocal || !audioEl) return
+    const t = audioEl.currentTime || 0
+
+    if (networkRetries < 2) {
+      networkRetries++
+      buffering.value = true
+      setPlayError('播放异常，正在恢复…')
+      try {
+        // 跳过缓存拿最新音源：第三方解灰地址几分钟就失效，旧地址复活不了
+        const settings = useSettingsStore()
+        const res = await api(
+          'song_url_v1',
+          { id: song.id, level: levelOf(settings.settings.quality) },
+          { noCache: true }
+        )
+        if (epoch !== playEpoch) return
+        const fresh = res.data?.[0]?.url
+        if (fresh) song.audioUrl = fresh
+      } catch { /* 拿不到新地址就用旧地址再连一次 */ }
+      if (epoch !== playEpoch) return
+      audioEl.src = audioUrl(song)
+      seekBack(t)
+      audioEl.play().catch(() => {})
       return
     }
-    networkRetries++
-    const t = audioEl.currentTime || 0
-    setPlayError('网络波动，正在恢复播放…')
-    audioEl.src = audioUrl(song)
-    if (t > 1) {
-      const onReady = () => {
-        audioEl.removeEventListener('loadedmetadata', onReady)
-        if (audioEl.duration && t < audioEl.duration - 0.5) audioEl.currentTime = t
-      }
-      audioEl.addEventListener('loadedmetadata', onReady)
-    }
-    audioEl.play().catch(() => {})
+
+    if ((code === 3 || code === 4) && !song._transcodeTried) return fallbackTranscode()
+
+    playing.value = false
+    buffering.value = false
+    setPlayError('当前音源不稳定，播放已中断，可稍后重试或切换其他歌曲')
   }
 
   /** 音频格式不支持时，用 ffmpeg 转码为 wav 再播（每首歌只尝试一次，防死循环） */
   async function fallbackTranscode() {
     const song = current.value
     if (!song || song.fromLocal || song._transcoding || song._transcodeTried || !song.audioUrl) return
+    const epoch = playEpoch
     song._transcoding = true
     song._transcodeTried = true
+    buffering.value = true
     setPlayError('当前音频无法直接播放，正在转码…')
     try {
       const outPath = await window.ncm.invoke('ncm:ffmpeg-transcode', {
         url: song.audioUrl,
         format: 'wav'
       })
+      if (epoch !== playEpoch) return
       if (outPath) {
         audioEl.src = `ncm-audio://local?path=${encodeURIComponent(outPath)}`
         await audioEl.play()
         setPlayError('')
       } else {
+        playing.value = false
+        buffering.value = false
         setPlayError(`无法播放「${song.name || ''}」：没有可用音源（可能无版权）`)
       }
     } catch (e) {
-      setPlayError(`无法播放「${song.name || ''}」：${e.message}`)
+      if (epoch === playEpoch) {
+        playing.value = false
+        buffering.value = false
+        setPlayError(`无法播放「${song.name || ''}」：${e.message}`)
+      }
     } finally {
       song._transcoding = false
     }
@@ -160,9 +214,12 @@ export const usePlayerStore = defineStore('player', () => {
    */
   function startCurrent(song) {
     playEpoch++
+    networkRetries = 0
     if (audioEl) {
-      try { audioEl.pause() } catch { /* noop */ }
+      // 先拆 src 再 pause：pause 监听器据「无 src」识别这是切歌程序性停流，
+      // 不会把乐观播放态闪回暂停（异步 pause 事件晚于同步赋值到达）
       audioEl.removeAttribute('src')
+      try { audioEl.pause() } catch { /* noop */ }
       try { audioEl.load() } catch { /* noop */ }
     }
     currentTime.value = 0
@@ -184,10 +241,17 @@ export const usePlayerStore = defineStore('player', () => {
     } else {
       if (!song.audioUrl) {
         try {
-          const res = await api('song_url_v1', { id: song.id, level: q === 'lossless' ? 'lossless' : q === '320000' ? 'exhigh' : 'standard' })
+          const level = levelOf(q)
+          const res = await api('song_url_v1', { id: song.id, level })
           // 等地址期间用户已切歌：丢弃本次结果，避免「界面是新歌、声音是旧歌」
           if (epoch !== playEpoch) return
-          const url = res.data?.[0]?.url
+          let url = res.data?.[0]?.url
+          // 无损/极高无权限时常返回空 url：降级标准音质再试一次
+          if (!url && level !== 'standard') {
+            const std = await api('song_url_v1', { id: song.id, level: 'standard' })
+            if (epoch !== playEpoch) return
+            url = std.data?.[0]?.url
+          }
           if (!url) throw new Error('无可用播放地址（可能无版权，已尝试解灰失败）')
           song.audioUrl = url
         } catch (e) {
@@ -230,8 +294,10 @@ export const usePlayerStore = defineStore('player', () => {
 
   function toggle() {
     if (!audioEl || !current.value) return
-    if (audioEl.paused) audioEl.play().catch(() => {})
-    else audioEl.pause()
+    if (audioEl.paused) {
+      networkRetries = 0 // 手动点击视为重试：重给恢复预算
+      audioEl.play().catch(() => {})
+    } else audioEl.pause()
   }
 
   function seek(t) {

@@ -449,16 +449,19 @@ onBeforeUnmount(() => {
 }
 .track-info { text-align: center; max-width: min(30vw, 340px); }
 .t-name {
-  font-size: clamp(15px, 1.3vw, 19px);
+  font-size: clamp(18px, 1.55vw, 23px);
   font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .t-artist {
-  font-size: clamp(12px, 1vw, 14px);
-  color: var(--text-dim);
-  margin-top: 4px;
+  font-size: clamp(14px, 1.15vw, 16px);
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+  margin-top: 5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -470,34 +473,36 @@ onBeforeUnmount(() => {
   height: var(--lyric-h);
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: calc(var(--lyric-h) / 2 - 18px) 24px;
+  padding: calc(var(--lyric-h) / 2 - 22px) 24px;
   mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
   -webkit-mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
 }
 .lyric-line {
   text-align: center;
-  font-size: clamp(17px, 1.4vw, 21px);
-  line-height: 2.1;
-  color: rgba(255, 255, 255, 0.4);
-  transition: color 0.3s var(--ease), font-size 0.3s var(--ease), font-weight 0.3s;
+  font-size: clamp(17px, 1.4vw, 20px);
+  line-height: 1.55;
+  padding: 7px 14px;
+  color: rgba(255, 255, 255, 0.42);
+  /* 用 scale 做放大动画：不触发重排，上下行不被推挤，滚动丝滑 */
+  transition: color 0.4s var(--ease), transform 0.4s var(--ease);
   cursor: pointer;
 }
 .lyric-line.active {
   color: #fff;
-  font-size: clamp(19px, 1.65vw, 24px);
   font-weight: 700;
+  transform: scale(1.1);
 }
-/* 翻译行：紧跟歌词、小一号但层级协调，激活时同样提亮 */
+/* 翻译行：紧跟歌词原文（间隔收敛），激活时与原文同步高亮 */
 .lyric-trans {
   display: block;
-  margin-top: 1px;
-  line-height: 1.5;
+  margin-top: 3px;
+  line-height: 1.45;
   font-size: clamp(14px, 1.15vw, 17px);
   font-weight: 400;
   color: rgba(255, 255, 255, 0.45);
-  transition: color 0.3s var(--ease);
+  transition: color 0.4s var(--ease);
 }
-.lyric-line.active .lyric-trans { color: rgba(255, 255, 255, 0.78); }
+.lyric-line.active .lyric-trans { color: rgba(255, 255, 255, 0.92); }
 /* 翻译开关激活态 */
 .c-btn.trans-btn.on { color: #fff; }
 .c-btn.trans-btn.on::after {
