@@ -221,6 +221,8 @@ class Session {
     this.watchers = new Set()
     this.lastReadAt = Date.now()
     this.stallTimer = null
+    this.retries = 0      // 断点续传重试计数（稳定收流 15s 后回满）
+    this._lastRetryAt = 0
     this.headerReady = new Promise((resolve) => {
       this._hdrResolve = resolve
     })
@@ -232,9 +234,7 @@ class Session {
   _start() {
     try {
       this.fd = fs.openSync(this.file, 'w+') // 读写共用，供 tail 流读取
-      const headers = { ...HDRS }
-      if (this.reqOffset > 0) headers.Range = `bytes=${this.reqOffset}-`
-      fetchRedirect(this.url, headers)
+      this._connect(this.reqOffset)
         .then((res) => {
           if (res.statusCode >= 400) {
             res.resume()
@@ -247,38 +247,81 @@ class Session {
           else if (cl) this.total = this.dataStart + cl
           this.contentType = res.headers['content-type'] || this.contentType
           this._hdrResolve(true)
-
-          let lastData = Date.now()
-          this.stallTimer = setInterval(() => {
-            if (Date.now() - lastData > STALL_MS) {
-              console.warn('[audio-cache] upstream stalled >' + STALL_MS + 'ms:', this.key)
-              res.destroy(new Error('upstream stalled'))
-            }
-          }, 2000)
-          res.on('data', (c) => {
-            lastData = Date.now()
-            try {
-              // 同步写：回调式 fs.write 在 libuv 线程池可能乱序；音频速率下同步写无感知
-              fs.writeSync(this.fd, c)
-              this.written += c.length
-              this.downloaded = this.dataStart + this.written
-              this._notify()
-            } catch (e) {
-              res.destroy(e)
-            }
-          })
-          res.on('end', () => {
-            clearInterval(this.stallTimer)
-            this.done = true
-            this._persist()
-            this._notify()
-          })
-          res.on('error', (e) => this._fail(e))
+          this._pump(res)
         })
-        .catch((e) => this._fail(e))
+        .catch((e) => this._retryOrFail(e))
     } catch (e) {
       this._fail(e)
     }
+  }
+
+  _connect(offset) {
+    const headers = { ...HDRS }
+    if (offset > 0) headers.Range = `bytes=${offset}-`
+    return fetchRedirect(this.url, headers)
+  }
+
+  /** 数据泵：落盘 + 停滞看门狗。上游断开/僵死 → _retryOrFail 断点续传 */
+  _pump(res) {
+    let lastData = Date.now()
+    this.stallTimer = setInterval(() => {
+      if (Date.now() - lastData > STALL_MS) {
+        console.warn('[audio-cache] upstream stalled, reconnect:', this.key)
+        res.destroy(new Error('upstream stalled'))
+      }
+    }, 2000)
+    res.on('data', (c) => {
+      lastData = Date.now()
+      // 重连后稳定收流 15s：重试预算回满（长途反复抖动的连接也能撑完全曲）
+      if (this.retries > 0 && Date.now() - this._lastRetryAt > 15000) this.retries = 0
+      try {
+        // 同步写：回调式 fs.write 在 libuv 线程池可能乱序；音频速率下同步写无感知
+        fs.writeSync(this.fd, c)
+        this.written += c.length
+        this.downloaded = this.dataStart + this.written
+        this._notify()
+      } catch (e) {
+        res.destroy(e)
+      }
+    })
+    res.on('end', () => {
+      clearInterval(this.stallTimer)
+      this.done = true
+      this._persist()
+      this._notify()
+    })
+    res.on('error', (e) => {
+      clearInterval(this.stallTimer)
+      this._retryOrFail(e)
+    })
+  }
+
+  /** 网络层冗余：上游断开/僵死不直接判死，从已下载位置断点续传（最多 3 次，
+   *  递增退避）。期间 tail 读取流只是等待，播放完全无感；重试耗尽才真正
+   *  失败，交给渲染层换源恢复 */
+  _retryOrFail(e) {
+    if (this.done) return
+    if (this.retries >= 3) return this._fail(e)
+    this.retries++
+    this._lastRetryAt = Date.now()
+    clearInterval(this.stallTimer)
+    setTimeout(() => {
+      if (this.done || this.failed) return
+      this._connect(this.downloaded)
+        .then((res) => {
+          if (res.statusCode >= 400) {
+            res.resume()
+            throw new Error('upstream ' + res.statusCode)
+          }
+          // 上游忽略 Range 从头返回 200：与已写数据无法对齐，放弃续传
+          if (res.statusCode === 200 && this.downloaded > 0) {
+            res.resume()
+            throw new Error('resume misaligned')
+          }
+          this._pump(res)
+        })
+        .catch((err) => this._retryOrFail(err))
+    }, 400 * this.retries)
   }
 
   /** 从头下载且完整 → 转正进持久层（rename + 元数据 + LRU） */
@@ -322,9 +365,17 @@ class Session {
   destroy() {
     clearInterval(this.stallTimer)
     sessions.delete(this.key)
+    // 先标记失败再唤醒等待中的读取流：否则 waiter 永远挂起，
+    // Chromium 端表现为无限缓冲（无 error 事件，渲染层恢复链无法触发）
+    if (!this.failed) {
+      this.failed = true
+      this.error = this.error || new Error('session destroyed')
+    }
+    this._notify()
     try {
       if (this.fd >= 0) fs.closeSync(this.fd)
     } catch { /* ignore */ }
+    this.fd = -1
     if (!this.persisted) {
       try { fs.rmSync(this.file, { force: true }) } catch { /* ignore */ }
     }
@@ -333,8 +384,10 @@ class Session {
 
 function evictOld() {
   while (sessions.size > MAX_SESSIONS) {
+    // 有读取流挂靠的会话正在服役，不能杀（杀了就读取中断）
     let oldest = null
     for (const s of sessions.values()) {
+      if (s.watchers.size > 0) continue
       if (!oldest || s.lastReadAt < oldest.lastReadAt) oldest = s
     }
     if (!oldest) break
@@ -342,38 +395,84 @@ function evictOld() {
   }
 }
 
-// 完成后一段时间无人读 → 释放句柄；临时半成品删除，已转正的文件保留
+// 完成后一段时间无人读 → 释放句柄；临时半成品删除，已转正的文件保留。
+// 有读取流挂靠（watchers > 0）的会话跳过：如「暂停播放很久后恢复」场景，
+// 流还握着 fd，杀会话会让恢复后的第一次读取直接 EBADF
 setInterval(() => {
   const now = Date.now()
   for (const s of [...sessions.values()]) {
+    if (s.watchers.size > 0) continue
     if ((s.done || s.failed) && now - s.lastReadAt > 30000) s.destroy()
   }
 }, 10000).unref()
 
-/** 找覆盖 start 位置的会话（dataStart <= start，取最贴近者） */
+/** 找能「立即」服务 start 位置的会话：已下载数据必须覆盖 start。
+ *  只满足 dataStart <= start 还不够——那只是说明能「 eventually」服务，
+ *  读取流会挂在原地等顺序下载追过来（seek/断流恢复时等于卡死） */
 function findSession(url, start) {
   let best = null
   for (const s of sessions.values()) {
     if (s.url !== url || s.failed) continue
-    if (s.dataStart > start) continue
+    if (s.dataStart > start || start >= s.downloaded) continue
     if (!best || s.dataStart > best.dataStart) best = s
   }
   return best
 }
 
+/** 超前请求的直连通道：不进缓存、不开会话，单连接按 Range 拉流即抛即用。
+ *  用于 seek 超出已下载进度 / 恢复播放 / Chromium 探测容器尾部元数据
+ *  （M4A 的 moov atom 在文件尾，不立刻给尾部会卡在解码）。 */
+export async function openDirect(url, start, end, rawRange) {
+  const headers = { ...HDRS }
+  if (rawRange) {
+    headers.Range = rawRange // 后缀 Range（bytes=-N）原样透传给上游解析
+  } else if (start > 0 || end !== -1) {
+    headers.Range = end !== -1 ? `bytes=${start}-${end}` : `bytes=${start}-`
+  }
+  const res = await fetchRedirect(url, headers)
+  if (res.statusCode >= 400) {
+    res.resume()
+    throw new Error('upstream ' + res.statusCode)
+  }
+  let total = 0
+  const m = String(res.headers['content-range'] || '').match(/\/(\d+)$/)
+  if (m) total = +m[1]
+  else {
+    const cl = parseInt(res.headers['content-length'] || '0', 10)
+    if (cl) total = cl
+  }
+  const contentType = res.headers['content-type'] || 'application/octet-stream'
+  return { res, total, contentType, dataStart: res.statusCode === 200 ? 0 : start }
+}
+
 /**
- * 打开音频读通道：持久缓存命中 → 本地文件会话；否则复用/新建下载会话。
- * 等响应头就绪后返回；失败抛错（协议层转 502 触发播放器重试）。
+ * 打开音频读通道，三档策略：
+ *  1. 持久缓存命中 → 本地文件会话（任意位置，零网络）
+ *  2. 活动会话已覆盖 start → 复用（tail -f 跟随下载进度）
+ *  3. 其余（超前 seek / 后缀 Range / 无会话覆盖）→ 直连上游单流
+ * 失败抛错（协议层转 502 触发播放器重试）。
  */
-export async function openAudioStream(url, start) {
+export async function openAudioSource(url, start, end, rawRange) {
+  // 后缀 Range（取文件末尾）本地无法定位总长时透传上游
+  if (rawRange) return { kind: 'direct', ...(await openDirect(url, 0, -1, rawRange)) }
   const hit = lookupPersisted(url)
-  if (hit) return persistedSession(hit)
+  if (hit) return { kind: 'session', sess: persistedSession(hit) }
+  let created = false
   let sess = findSession(url, start)
-  if (!sess) sess = new Session(url, start)
+  if (!sess) {
+    // 全新 URL：建会话走预缓冲（起播等待首块数据 = 正常的初始缓冲）
+    sess = new Session(url, start)
+    created = true
+  }
   await sess.headerReady
   if (sess.failed) throw sess.error || new Error('audio cache failed')
-  sess.touch()
-  return sess
+  if (created || start < sess.downloaded) {
+    sess.touch()
+    return { kind: 'session', sess }
+  }
+  // 会话存在但进度未覆盖 start（超前 seek / 恢复播放）：直连上游立即服务，
+  // 不等顺序下载追赶（等 = 卡死转圈），后台会话继续为缓存补完整文件
+  return { kind: 'direct', ...(await openDirect(url, start, end)) }
 }
 
 /**

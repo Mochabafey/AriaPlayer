@@ -7,6 +7,7 @@ let audioEl = null
 let playEpoch = 0      // 切歌代次号：旧请求的异步结果若晚于切歌则丢弃
 let networkRetries = 0 // 断流恢复计数（成功 playing / 切歌 / 手动重试后清零）
 let recoverQueued = false // error 风暴合并窗口：风暴平息后统一恢复一次
+let prefetching = false   // 下一曲音源预解析进行中标记
 
 function levelOf(q) {
   return q === 'lossless' ? 'lossless' : q === '320000' ? 'exhigh' : 'standard'
@@ -41,6 +42,7 @@ export const usePlayerStore = defineStore('player', () => {
     audioEl = el
     audioEl.addEventListener('timeupdate', () => {
       currentTime.value = audioEl.currentTime
+      prefetchNext()
     })
     audioEl.addEventListener('loadedmetadata', () => {
       duration.value = audioEl.duration || 0
@@ -103,13 +105,11 @@ export const usePlayerStore = defineStore('player', () => {
       buffering.value = true
       setPlayError('播放异常，正在恢复…')
       try {
-        // 跳过缓存拿最新音源：第三方解灰地址几分钟就失效，旧地址复活不了
+        // 跳过缓存拿最新音源：第三方解灰地址几分钟就失效，旧地址复活不了。
+        // 第二次重试降级标准音质：换一条不同的 CDN 文件路径，绕开坏地址
         const settings = useSettingsStore()
-        const res = await api(
-          'song_url_v1',
-          { id: song.id, level: levelOf(settings.settings.quality) },
-          { noCache: true }
-        )
+        const level = networkRetries >= 2 ? 'standard' : levelOf(settings.settings.quality)
+        const res = await api('song_url_v1', { id: song.id, level }, { noCache: true })
         if (epoch !== playEpoch) return
         const fresh = res.data?.[0]?.url
         if (fresh) song.audioUrl = fresh
@@ -274,6 +274,30 @@ export const usePlayerStore = defineStore('player', () => {
       buffering.value = false
       setPlayError(`播放失败：${e.message || '未知错误'}`)
     })
+  }
+
+  /** 冗余预热：当前曲临近结束（剩 30s 内）预解析下一曲音源地址。
+   *  切歌时 playCurrent 直接命中已备好的 URL，免去 1-2s 接口往返，
+   *  连播不再在两首之间卡一下 */
+  function prefetchNext() {
+    if (prefetching || !audioEl || !audioEl.duration) return
+    const remain = audioEl.duration - audioEl.currentTime
+    if (remain > 30) return
+    const settings = useSettingsStore()
+    if (settings.settings.playMode === 'loop') return // 单曲循环不会切歌
+    const len = queue.value.length
+    if (!len) return
+    const ni = currentIndex.value + 1 >= len ? 0 : currentIndex.value + 1
+    const nxt = queue.value[ni]
+    if (!nxt || nxt.fromLocal || nxt.audioUrl) return
+    prefetching = true
+    api('song_url_v1', { id: nxt.id, level: levelOf(settings.settings.quality) })
+      .then((res) => {
+        const url = res.data?.[0]?.url
+        if (url) nxt.audioUrl = url
+      })
+      .catch(() => {})
+      .finally(() => { prefetching = false })
   }
 
   async function loadLyrics(song) {

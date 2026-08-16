@@ -4,7 +4,7 @@ import path from 'path'
 import http from 'http'
 import https from 'https'
 import { Readable } from 'stream'
-import { openAudioStream, createRangeStream, sessionInfo, toWeb } from './audioCache'
+import { openAudioSource, createRangeStream, sessionInfo, toWeb } from './audioCache'
 
 const FORWARD_HEADERS = [
   'content-type',
@@ -143,18 +143,79 @@ export function registerAudioProtocol() {
       /* —— 磁盘预缓冲播放 ——
        * 起播即后台整曲下载到临时文件，播放读本地文件：
        * 网络抖动/上游限速不影响播放，seek 本地化，上游字节只拉一次。
+       * 超出下载进度的 seek / 后缀 Range → 直连上游立即服务（不等顺序下载追赶）。
        * 上游停滞由 Session 内置看门狗熔断 → 播放器报网络错误 → 渲染层换源重连。 */
       let start = 0
       let end = -1
+      let rawRange = null
       if (range) {
         const m = range.match(/bytes=(\d*)-(\d*)/)
         if (m) {
-          if (m[1] !== '') start = parseInt(m[1], 10)
-          if (m[2] !== '') end = parseInt(m[2], 10)
+          if (m[1] === '' && m[2] !== '') {
+            // 后缀 Range（bytes=-N，取文件末尾 N 字节）：Chromium 探测 M4A/MP4
+            // 尾部元数据（moov atom）必发。误解析成 bytes=0-N 会拿文件头冒充尾部，
+            // 解码器拿到垃圾数据 → 卡死。原样透传给上游解析
+            rawRange = range
+          } else {
+            if (m[1] !== '') start = parseInt(m[1], 10)
+            if (m[2] !== '') end = parseInt(m[2], 10)
+          }
         }
       }
 
-      const sess = await openAudioStream(target, start)
+      const source = await openAudioSource(target, start, end, rawRange)
+
+      // 直连通道：单连接透传，不落盘。挂停滞看门狗防上游静默僵死（无 error 事件
+      // 的卡死），熔断后 Chromium 收到网络错误 → 渲染层恢复链接手
+      if (source.kind === 'direct') {
+        const { res, total, contentType } = source
+        const headers = {
+          'Content-Type': contentType,
+          'Accept-Ranges': 'bytes'
+        }
+        if (res.headers['content-length']) headers['Content-Length'] = res.headers['content-length']
+        if (res.headers['content-range']) headers['Content-Range'] = res.headers['content-range']
+        const body = new Readable({
+          read() {
+            flowPaused = false
+            res.resume() // 下游消费恢复时继续拉上游
+          }
+        })
+        let lastData = Date.now()
+        let flowPaused = false // 下游背压主动暂停（健康），区别于上游僵死（要杀）
+        res.on('data', (c) => {
+          lastData = Date.now()
+          if (!body.push(c)) {
+            flowPaused = true
+            res.pause() // 缓冲满：暂停上游防内存堆积
+          }
+        })
+        const stall = setInterval(() => {
+          // 仅在「下游在拉、上游却 10s 零字节」时熔断：背压暂停的连接是健康的
+          if (!flowPaused && Date.now() - lastData > 10000) {
+            clearInterval(stall)
+            res.destroy(new Error('upstream stalled'))
+          }
+        }, 2000)
+        res.on('close', () => clearInterval(stall))
+        const finish = () => {
+          clearInterval(stall)
+          try { body.push(null) } catch { /* ignore */ }
+        }
+        res.on('end', finish)
+        res.on('error', () => {
+          clearInterval(stall)
+          body.destroy(new Error('upstream failed'))
+        })
+        request.signal?.addEventListener('abort', () => {
+          clearInterval(stall)
+          res.destroy()
+          body.destroy()
+        })
+        return new Response(Readable.toWeb(body), { status: res.statusCode, headers })
+      }
+
+      const sess = source.sess
       const { total, contentType } = sessionInfo(sess)
       const stream = createRangeStream(sess, start, end)
 
