@@ -121,9 +121,11 @@ export function copyFromCache(url, dest) {
 }
 
 /** 完整持久文件的伪会话：接口与下载 Session 一致，供 createRangeStream 消费。
- *  ownsFd：读取流关闭时由流自己关 fd（持久文件不进 sessions LRU） */
+ *  ownsFd + 引用计数：Chromium 对同一媒体会并行发多个 Range 请求（demuxer +
+ *  预读/seek 竞态），共享同一个 fd——全部流关闭后才真正 close。若第一个结束的
+ *  流就把 fd 关掉，幸存流下一次读取直接 EBADF → 播放中途报错（拖动高发） */
 function persistedSession(hit) {
-  return {
+  const sess = {
     fd: hit.fd,
     downloaded: hit.size,
     total: hit.size,
@@ -133,14 +135,23 @@ function persistedSession(hit) {
     error: null,
     watchers: new Set(),
     ownsFd: true,
+    readers: 0,
     lastReadAt: Date.now(),
     touch() {
       this.lastReadAt = Date.now()
+    },
+    acquire() {
+      this.readers++
+    },
+    release() {
+      this.readers--
+      if (this.readers <= 0) this.destroy()
     },
     destroy() {
       try { fs.closeSync(hit.fd) } catch { /* ignore */ }
     }
   }
+  return sess
 }
 
 /** 超限淘汰：按 lastAccessAt 升序删到限内 */
@@ -472,26 +483,47 @@ export async function openAudioSource(url, start, end, rawRange) {
     if (s.url === url && s.failed) s.destroy()
   }
 
-  const sess = findSession(url, start)
-  if (sess) {
-    await sess.headerReady
-    if (sess.failed) throw sess.error || new Error('audio cache failed')
-    sess.touch()
-    return { kind: 'session', sess }
+  /** 等待响应头期间挂一个占位 watcher：此窗口（可达数秒）会话没有读取流，
+   *  并发请求触发 evictOld/LRU 时会被当闲置会话误杀 → 刚起播就 502 */
+  const holdWatcher = (sess) => {
+    const hold = () => {}
+    sess.watchers.add(hold)
+    return () => sess.watchers.delete(hold)
   }
 
-  // 该 URL 已有会话在下载但未覆盖 start（超前 seek）：直连立即服务，
-  // 不等顺序下载追赶（等 = 卡死转圈），后台会话继续为缓存补完整文件
+  const covered = findSession(url, start)
+  if (covered) {
+    const unhold = holdWatcher(covered)
+    try {
+      await covered.headerReady
+      if (covered.failed) throw covered.error || new Error('audio cache failed')
+      covered.touch()
+      return { kind: 'session', sess: covered }
+    } finally {
+      unhold()
+    }
+  }
+
+  // 中途位置（超前 seek / 恢复播放）一律直连即抛即用：半路会话 dataStart≠0
+  // 永远无法转正持久缓存，快速拖动时徒增上游连接与临时文件
+  if (start > 0) return { kind: 'direct', ...(await openDirect(url, start, end)) }
+
+  // 该 URL 已有会话在下载但未覆盖 start（同上）：直连，后台会话继续补完整文件
   if ([...sessions.values()].some((s) => s.url === url && !s.failed)) {
-    return { kind: 'direct', ...(await openDirect(url, start, end)) }
+    return { kind: 'direct', ...(await openDirect(url, 0, end)) }
   }
 
-  // 全新 URL：建会话走预缓冲（起播等待首块数据 = 正常的初始缓冲）
-  const fresh = new Session(url, start)
-  await fresh.headerReady
-  if (fresh.failed) throw fresh.error || new Error('audio cache failed')
-  fresh.touch()
-  return { kind: 'session', sess: fresh }
+  // 全新 URL 从头播：建会话走预缓冲（起播等待首块数据 = 正常的初始缓冲）
+  const fresh = new Session(url, 0)
+  const unhold = holdWatcher(fresh)
+  try {
+    await fresh.headerReady
+    if (fresh.failed) throw fresh.error || new Error('audio cache failed')
+    fresh.touch()
+    return { kind: 'session', sess: fresh }
+  } finally {
+    unhold()
+  }
 }
 
 /**
@@ -510,6 +542,8 @@ export function createRangeStream(sess, start, end) {
   }
   const cleanup = () => sess.watchers.delete(onData)
   sess.watchers.add(onData)
+  // 持久文件会话：登记读取者（引用计数），close/error 时统一释放
+  sess.acquire?.()
 
   const stream = new Readable({
     read() {
@@ -546,15 +580,17 @@ export function createRangeStream(sess, start, end) {
       step()
     }
   })
-  stream.on('close', () => {
+  // error 之后紧随 close：released 幂等防双重释放
+  let released = false
+  const finalize = () => {
     cleanup()
-    // 持久文件会话：读取流独占 fd，流关即关 fd
-    if (sess.ownsFd) sess.destroy()
-  })
-  stream.on('error', () => {
-    cleanup()
-    if (sess.ownsFd) sess.destroy()
-  })
+    if (released) return
+    released = true
+    // 持久文件会话：最后一个读取流负责关 fd；普通会话由 LRU/完成清理管理
+    if (sess.ownsFd) (sess.release ? sess.release() : sess.destroy())
+  }
+  stream.on('close', finalize)
+  stream.on('error', finalize)
   return stream
 }
 

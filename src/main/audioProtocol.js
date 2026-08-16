@@ -171,6 +171,9 @@ export function registerAudioProtocol() {
       if (request.signal?.aborted) {
         if (source.kind === 'direct') {
           try { source.res.destroy() } catch { /* ignore */ }
+        } else if (source.sess?.ownsFd) {
+          // 持久缓存会话：fd 已打开但无人消费，直接关掉防泄漏
+          source.sess.destroy()
         }
         return new Response(null, { status: 499 })
       }

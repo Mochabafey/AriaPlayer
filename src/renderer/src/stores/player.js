@@ -81,6 +81,12 @@ export const usePlayerStore = defineStore('player', () => {
         buffering.value = false
       }
     })
+    audioEl.addEventListener('canplay', () => {
+      // 暂停状态下拖动：数据就位即可收起缓冲（不会有 playing 事件来清）
+      clearTimeout(bufferDebounce)
+      bufferDebounce = null
+      buffering.value = false
+    })
     audioEl.addEventListener('ended', () => next(true))
     audioEl.addEventListener('error', () => {
       const code = audioEl.error?.code
@@ -358,6 +364,11 @@ export const usePlayerStore = defineStore('player', () => {
   function seek(t) {
     if (audioEl && isFinite(t)) {
       lastSeekAt = Date.now()
+      networkRetries = 0 // 手动 seek 视为用户重试：恢复预算重置，别直接跳到报错
+      // 乐观收起缓冲指示：真缺数据 waiting 会在 250ms 后重新显示
+      clearTimeout(bufferDebounce)
+      bufferDebounce = null
+      buffering.value = false
       audioEl.currentTime = t
     }
   }

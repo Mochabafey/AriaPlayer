@@ -41,7 +41,7 @@ function onSeekMove(e) {
 function onSeekUp() {
   window.removeEventListener('pointermove', onSeekMove)
   window.removeEventListener('pointerup', onSeekUp)
-  if (dragging.value) player.seek(dragRatio.value * player.duration)
+  if (dragging.value && player.duration > 0) player.seek(dragRatio.value * player.duration)
   dragging.value = false
 }
 function onSeekHover(e) {
