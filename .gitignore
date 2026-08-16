@@ -24,3 +24,6 @@ scripts/samples/
 
 # api-enhanced 运行时数据（设备 ID 池等，不入库）
 server/data/deviceid.txt
+
+# 本地运行时数据（含加密登录态 session.enc，绝不入库）
+ncm-store/

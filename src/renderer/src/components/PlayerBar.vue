@@ -102,7 +102,6 @@ function cycleMode() {
   settings.set('playMode', map[settings.settings.playMode])
 }
 
-const modeIcon = computed(() => ({ list: '▸', loop: '↻', shuffle: '⇄' })[settings.settings.playMode])
 const modeTitle = computed(() => ({ list: '列表循环', loop: '单曲循环', shuffle: '随机播放' })[settings.settings.playMode])
 
 function downloadCurrent() {
@@ -174,7 +173,11 @@ onUnmounted(() => {
 
     <!-- 中：控制按钮 -->
     <div class="p-center">
-      <button class="ctrl sm" :title="modeTitle" @click="cycleMode">{{ modeIcon }}</button>
+      <button class="ctrl sm" :title="modeTitle" @click="cycleMode">
+        <svg v-if="settings.settings.playMode === 'loop'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><text x="12" y="15" font-size="7" fill="currentColor" stroke="none" text-anchor="middle">1</text></svg>
+        <svg v-else-if="settings.settings.playMode === 'shuffle'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
+      </button>
       <button class="ctrl" title="上一首" @click="player.prev()">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>
       </button>
@@ -370,6 +373,7 @@ onUnmounted(() => {
   height: 28px;
   font-size: 14px;
 }
+.ctrl.sm svg { width: 16px; height: 16px; }
 .ctrl.sm:hover { color: var(--accent); }
 .ctrl.play {
   width: 44px;

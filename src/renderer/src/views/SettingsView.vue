@@ -81,6 +81,19 @@ async function restartServer() {
       </div>
       <div class="row">
         <div class="label">
+          <div>显示歌词翻译</div>
+          <div class="hint">在歌词下方同时显示中文翻译（无翻译的歌曲不显示）</div>
+        </div>
+        <div class="value">
+          <button
+            class="switch"
+            :class="{ on: settings.settings.showTranslation }"
+            @click="settings.set('showTranslation', !settings.settings.showTranslation)"
+          ></button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
           <div>播放模式</div>
           <div class="hint">列表循环 / 单曲循环 / 随机播放</div>
         </div>

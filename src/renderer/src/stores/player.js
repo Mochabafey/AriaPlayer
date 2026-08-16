@@ -174,7 +174,7 @@ export const usePlayerStore = defineStore('player', () => {
       const res = await api('lyric', { id: song.id })
       const lrc = res.lrc?.lyric || ''
       const { parseLrc } = await import('../utils/lrc')
-      lyrics.value = parseLrc(lrc)
+      lyrics.value = parseLrc(lrc, res.tlyric?.lyric || '')
     } catch {
       lyrics.value = []
     }
@@ -217,6 +217,14 @@ export const usePlayerStore = defineStore('player', () => {
     currentIndex.value = idx
     startCurrent(queue.value[idx])
     await playCurrent()
+  }
+
+  /** 跳到队列中指定下标播放（播放列表点击切歌） */
+  function playAt(index) {
+    if (index < 0 || index >= queue.value.length) return
+    currentIndex.value = index
+    startCurrent(queue.value[index])
+    return playCurrent()
   }
 
   async function prev() {
@@ -269,6 +277,7 @@ export const usePlayerStore = defineStore('player', () => {
     attachAudio,
     playList,
     playNext,
+    playAt,
     enqueue,
     toggle,
     seek,

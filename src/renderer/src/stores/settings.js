@@ -10,6 +10,7 @@ export const useSettingsStore = defineStore('settings', {
       enableFlac: true,
       volume: 0.8,
       playMode: 'list',
+      showTranslation: true,
       lastConvertPath: ''
     },
     loaded: false
