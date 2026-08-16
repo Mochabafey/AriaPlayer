@@ -56,5 +56,8 @@ dmg:
   artifactName: ${productName}-${version}.${ext}
 
 npmRebuild: false
+# 打包后钩子：补全 resources/ncm-server 的 node_modules（electron-builder 的
+# extraResources 不复制 from 目录的依赖，缺失会导致内置服务起不来）
+afterPack: scripts/after-pack.cjs
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/
