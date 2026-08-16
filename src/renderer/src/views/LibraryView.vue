@@ -469,7 +469,7 @@ function openConvertOut() {
   justify-content: center;
   font-size: 30px;
   color: var(--text-faint);
-  background: linear-gradient(135deg, #232323, #1a1a1a);
+  background: linear-gradient(135deg, #f2f2f4, #e8e8ec);
 }
 .hover-ops {
   position: absolute;
@@ -689,15 +689,15 @@ function openConvertOut() {
 .convert-format .fmt-btn {
   padding: 5px 14px;
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--bg-hover);
   color: var(--text-dim);
   font-size: 12px;
   font-weight: 600;
-  border: 1px solid transparent;
+  border: 1px solid var(--hairline);
   transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
 }
 .convert-format .fmt-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--bg-active);
   color: var(--text);
 }
 .convert-format .fmt-btn.active {

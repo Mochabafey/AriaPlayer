@@ -200,7 +200,7 @@ function isActive(to) {
   background: var(--bg);
 }
 
-/* ---- 左侧深色导航栏（网易云风格） ---- */
+/* ---- 左侧白色导航栏（与内容区统一浅色） ---- */
 .sidebar {
   width: var(--sidebar-w);
   flex-shrink: 0;
@@ -208,7 +208,8 @@ function isActive(to) {
   flex-direction: column;
   padding: 16px 12px 12px;
   background: var(--bg-elev);
-  color: #c8c8d0;
+  border-right: 1px solid var(--hairline);
+  color: var(--text-dim);
 }
 
 /* 品牌 */
@@ -235,7 +236,7 @@ function isActive(to) {
 .brand-name {
   font-size: 16px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text);
   letter-spacing: 0.5px;
 }
 
@@ -251,7 +252,7 @@ function isActive(to) {
 .group-title {
   font-size: 11px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-faint);
   letter-spacing: 0.5px;
   padding: 0 12px 6px;
   text-transform: uppercase;
@@ -262,12 +263,12 @@ function isActive(to) {
   gap: 10px;
   padding: 8px 12px;
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--text-dim);
   font-size: 14px;
   font-weight: 500;
   transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
-.nav-item:hover { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.9); }
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .nav-item.active {
   background: var(--accent);
   color: #fff;
@@ -286,8 +287,8 @@ function isActive(to) {
   gap: 7px;
   padding: 10px 12px 2px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.3);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--text-faint);
+  border-top: 1px solid var(--hairline);
   margin-top: 10px;
 }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: #555; }
