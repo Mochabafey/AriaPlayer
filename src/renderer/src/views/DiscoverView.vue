@@ -3,8 +3,9 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, waitServerReady, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
-import { useDownloadsStore } from '../stores/downloads'
 import { useSettingsStore } from '../stores/settings'
+import { useDownloadsStore } from '../stores/downloads'
+import { toast } from '../utils/toast'
 import { fmtCount } from '../utils/format'
 
 const router = useRouter()
@@ -47,12 +48,12 @@ async function playDaily() {
     const res = await api('recommend_songs')
     dailySongs.value = res.data?.dailySongs || []
     if (!dailySongs.value.length) {
-      alert('暂无每日推荐（需登录网易云账号后使用）')
+      toast('暂无每日推荐（需登录网易云账号后使用）')
       return
     }
     await player.playList(dailySongs.value)
   } catch (e) {
-    alert('获取每日推荐失败：' + e.message)
+    toast('获取每日推荐失败：' + e.message, 'error')
   }
 }
 
@@ -66,12 +67,12 @@ async function playPlaylist(p) {
     const d = await api('playlist_track_all', { id: p.id, limit: 1000 })
     const songs = d.songs || []
     if (!songs.length) {
-      alert('歌单曲目为空或加载失败')
+      toast('歌单曲目为空或加载失败')
       return
     }
     await player.playList(songs)
   } catch (e) {
-    alert('播放歌单失败：' + e.message)
+    toast('播放歌单失败：' + e.message, 'error')
   }
 }
 
@@ -82,7 +83,7 @@ async function downloadSong(song) {
       level: settings.settings.quality === 'lossless' ? 'lossless' : settings.settings.quality === '320000' ? 'exhigh' : 'standard'
     })
     const url = res.data?.[0]?.url
-    if (!url) return alert('无可用播放地址')
+    if (!url) return toast('无可用播放地址', 'error')
     await downloads.add({
       songId: song.id,
       title: song.name,
@@ -92,7 +93,7 @@ async function downloadSong(song) {
       cover: song.al?.picUrl
     })
   } catch (e) {
-    alert('下载失败：' + e.message)
+    toast('下载失败：' + e.message, 'error')
   }
 }
 
@@ -206,10 +207,11 @@ function goBanner(b) {
 
 <style scoped>
 .page-title {
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
   margin-bottom: 22px;
+  color: var(--text);
 }
 .banner-row {
   display: grid;

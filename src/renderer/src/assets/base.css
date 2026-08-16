@@ -1,57 +1,58 @@
 /* ============================================================
-   Apple Music 风格设计系统（深色模式）
-   设计语言：纯黑底 + iOS 灰阶、Apple 红强调、毛玻璃、大圆角、
-   Large Title、spring 缓动、宽松留白
+   网易云音乐风格设计系统（浅色模式）
+   设计语言：浅灰底 + 深色侧边栏、珊瑚红强调、圆角卡片、
+   大封面、Tab 栏、宽松留白
    ============================================================ */
 
 :root {
-  /* ---- 背景层级（Apple Music 深色：纯黑 → iOS elevated 灰） ---- */
-  --bg: #000000;
-  --bg-elev: #161617;          /* 侧边栏/面板 */
-  --bg-card: #1c1c1e;          /* 卡片 */
-  --bg-hover: #2c2c2e;         /* hover 态 */
-  --bg-active: #3a3a3c;        /* 激活/按下 */
-  --bg-glass: rgba(28, 28, 30, 0.72); /* 毛玻璃底 */
+  /* ---- 背景层级（网易云浅色，整体协调） ---- */
+  --bg: #fafafa;               /* 页面底色（近白） */
+  --bg-elev: #2b2d3a;          /* 侧边栏（深蓝灰，与参考图一致） */
+  --bg-card: #ffffff;          /* 卡片白 */
+  --bg-hover: #eeeeee;         /* hover 态 */
+  --bg-active: #e4e4e4;        /* 激活/按下 */
+  --bg-glass: rgba(255, 255, 255, 0.92); /* 毛玻璃底 */
 
-  /* ---- 边框/分割线（低透明度） ---- */
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --hairline: rgba(255, 255, 255, 0.06);
+  /* ---- 边框/分割线 ---- */
+  --border: #e8e8e8;
+  --border-strong: #d4d4d4;
+  --hairline: #eee;
 
   /* ---- 文字 ---- */
-  --text: #ffffff;
-  --text-dim: #98989d;         /* 次要 */
-  --text-faint: #636366;       /* 更弱 */
+  --text: #222222;
+  --text-dim: #888888;         /* 次要 */
+  --text-faint: #aaaaaa;       /* 更弱 */
 
-  /* ---- 强调色（Apple Music 红） ---- */
-  --accent: #fa243c;
-  --accent-hover: #ff3b50;
-  --accent-soft: #fb5c74;
-  --accent-dim: rgba(250, 36, 60, 0.16);
-  --accent-glow: rgba(250, 36, 60, 0.35);
-  --green: #30d158;            /* iOS system green */
+  /* ---- 强调色（网易云珊瑚红） ---- */
+  --accent: #fe2c55;
+  --accent-hover: #ff4070;
+  --accent-soft: #ff6b8a;
+  --accent-dim: rgba(254, 44, 85, 0.1);
+  --accent-glow: rgba(254, 44, 85, 0.25);
+  --green: #34c759;
 
   /* ---- 布局 ---- */
-  --sidebar-w: 240px;
-  --player-h: 76px;
-  --content-max: 1120px;
+  --sidebar-w: 220px;
+  --header-h: 56px;
+  --player-h: 72px;
+  --content-max: 1200px;
 
   /* ---- 圆角 ---- */
-  --radius: 12px;              /* 卡片 */
-  --radius-lg: 16px;           /* 大卡片/弹窗 */
+  --radius: 10px;              /* 卡片 */
+  --radius-lg: 14px;           /* 大卡片/弹窗 */
   --radius-sm: 8px;            /* 小元素/封面 */
   --radius-xs: 6px;
 
-  /* ---- 阴影（柔和、低透明度、大模糊） ---- */
-  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.4);
-  --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.55);
-  --shadow-cover: 0 6px 20px rgba(0, 0, 0, 0.5);
+  /* ---- 阴影 ---- */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
+  --shadow-cover: 0 4px 12px rgba(0, 0, 0, 0.1);
 
   /* ---- 焦点环 ---- */
-  --ring: 0 0 0 3px rgba(250, 36, 60, 0.3);
+  --ring: 0 0 0 3px rgba(254, 44, 85, 0.25);
 
-  /* ---- 缓动（spring / iOS 标准） ---- */
+  /* ---- 缓动 ---- */
   --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
   --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -77,17 +78,14 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* ---- 滚动条（iOS 风格细滚动条） ---- */
-::-webkit-scrollbar { width: 8px; height: 8px; }
+/* ---- 滚动条（浅色细滚动条） ---- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 4px;
-  border: 2px solid transparent;
-  background-clip: content-box;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
-  background-clip: content-box;
+  background: rgba(0, 0, 0, 0.25);
 }
 ::-webkit-scrollbar-track { background: transparent; }
 
@@ -103,41 +101,41 @@ button:focus-visible, input:focus-visible { outline: none; }
 input, textarea { font-family: inherit; }
 a { color: inherit; text-decoration: none; }
 
-/* ---- 通用按钮（Apple 风格：圆角矩形 + 强调色填充） ---- */
+/* ---- 通用按钮（网易云风格：圆角矩形 + 珊瑚红填充） ---- */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 7px 16px;
-  border-radius: 8px;
+  padding: 8px 20px;
+  border-radius: 20px;
   background: var(--accent);
   color: #fff;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.1px;
+  letter-spacing: 0.2px;
   transition: background 0.18s var(--ease), transform 0.1s var(--ease), box-shadow 0.2s var(--ease);
-  box-shadow: 0 2px 10px var(--accent-glow);
+  box-shadow: 0 2px 8px var(--accent-glow);
 }
-.btn:hover { background: var(--accent-hover); box-shadow: 0 4px 18px var(--accent-glow); }
+.btn:hover { background: var(--accent-hover); box-shadow: 0 4px 14px var(--accent-glow); }
 .btn:active { transform: scale(0.97); }
 .btn.ghost {
-  background: rgba(255, 255, 255, 0.08);
+  background: #f0f0f0;
   color: var(--text);
   border: none;
   box-shadow: none;
 }
-.btn.ghost:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
-.btn.small { padding: 4px 12px; font-size: 12px; border-radius: 7px; }
+.btn.ghost:hover { background: #e5e5e5; color: var(--text); }
+.btn.small { padding: 5px 14px; font-size: 13px; border-radius: 16px; }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
 
-/* ---- 输入框（iOS 搜索框风格：浅灰底、圆角） ---- */
+/* ---- 输入框（网易云搜索框风格：浅灰底、圆角） ---- */
 .input {
   width: 100%;
   padding: 8px 14px;
-  border-radius: 9px;
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: #fff;
   color: var(--text);
   outline: none;
   font-size: 14px;
@@ -145,38 +143,38 @@ a { color: inherit; text-decoration: none; }
 }
 .input::placeholder { color: var(--text-faint); }
 .input:focus {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
-/* ---- 页面大标题（Large Title，iOS 风格） ---- */
+/* ---- 页面大标题 ---- */
 .page-title {
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  line-height: 1.15;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
 }
 
 /* ---- 通用分区标题 ---- */
 .sec-title {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.2px;
 }
 
 /* ---- 通用卡片 ---- */
 .card {
   background: var(--bg-card);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
   transition: transform 0.25s var(--ease-spring), box-shadow 0.25s var(--ease);
 }
 
 /* ---- 毛玻璃面板 ---- */
 .glass {
   background: var(--bg-glass);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
 
 /* ---- 路由过渡（淡入 + 微上浮） ---- */

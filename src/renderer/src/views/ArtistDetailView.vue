@@ -44,7 +44,6 @@ async function load() {
 
 onMounted(load)
 
-// /artist/1 → /artist/2 组件复用，需监听参数变化重新加载
 watch(
   () => route.params.id,
   (id, old) => {
@@ -63,7 +62,10 @@ watch(
           <h1>{{ artist.name }}</h1>
           <div class="sub">粉丝：{{ artist.fansCount || 0 }} · 歌曲 {{ artist.musicSize || 0 }} 首</div>
           <div class="actions">
-            <button class="btn" :disabled="!hotSongs.length" @click="player.playList(hotSongs)">▶ 播放热门歌曲</button>
+            <button class="btn primary" :disabled="!hotSongs.length" @click="player.playList(hotSongs)">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
+              播放热门歌曲
+            </button>
           </div>
           <p v-if="desc" class="desc">{{ desc }}</p>
         </div>
@@ -105,27 +107,64 @@ watch(
 <style scoped>
 .head {
   display: flex;
-  gap: 24px;
+  gap: 28px;
   margin-bottom: 26px;
+  padding: 24px;
+  background: linear-gradient(135deg, #f0e6ff 0%, #f8f0ff 50%, #fafafa 100%);
+  border-radius: var(--radius-lg);
 }
 .avatar {
   width: 160px;
   height: 160px;
   border-radius: 50%;
   flex-shrink: 0;
-  box-shadow: var(--shadow);
-  border: 2px solid var(--accent-dim);
+  box-shadow: var(--shadow-lg);
+  border: 3px solid #fff;
+}
+.info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 .info h1 {
-  font-size: 26px;
-  margin-bottom: 8px;
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: var(--text);
 }
 .sub {
   color: var(--text-dim);
   font-size: 13px;
+  margin-bottom: 6px;
 }
 .actions {
-  margin: 14px 0;
+  margin: 16px 0;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 24px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.18s var(--ease);
+}
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+.btn.primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 6px 16px var(--accent-glow);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .desc {
   color: var(--text-faint);
@@ -135,13 +174,16 @@ watch(
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  margin-top: 8px;
 }
 .sec {
   margin-bottom: 30px;
 }
 .sec h2 {
-  font-size: 17px;
-  margin-bottom: 14px;
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 16px;
+  color: var(--text);
 }
 .grid {
   display: grid;
@@ -197,6 +239,7 @@ watch(
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--text);
 }
 .placeholder {
   color: var(--text-faint);

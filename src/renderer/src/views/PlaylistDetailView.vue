@@ -56,7 +56,6 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(timer))
 
-// /playlist/1 → /playlist/2 组件复用，需监听参数变化重新加载
 watch(
   () => route.params.id,
   (id, old) => {
@@ -81,11 +80,19 @@ watch(
           </div>
           <div class="sub dim">共 {{ playlist.trackCount }} 首</div>
           <div class="actions">
-            <button class="btn" :disabled="!tracks.length" @click="player.playList(tracks)">▶ 播放全部</button>
+            <button class="btn primary" :disabled="!tracks.length" @click="player.playList(tracks)">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>
+              播放全部
+            </button>
             <button class="btn ghost" :disabled="!tracks.length" @click="player.enqueue(tracks)">加入队列</button>
           </div>
           <p v-if="playlist.description" class="desc">{{ playlist.description }}</p>
         </div>
+      </div>
+      <div class="tabs">
+        <span class="tab active">歌曲 <em>{{ tracks.length }}</em></span>
+        <span class="tab">评论</span>
+        <span class="tab">收藏者</span>
       </div>
       <SongTable :songs="tracks" />
       <p v-if="tracks.length === 0" class="placeholder">歌单曲目加载中或为空…</p>
@@ -99,16 +106,19 @@ watch(
 }
 .head {
   display: flex;
-  gap: 24px;
-  margin-bottom: 22px;
+  gap: 28px;
+  margin-bottom: 24px;
+  padding: 24px;
+  background: linear-gradient(135deg, #ffe4e8 0%, #fff0f2 50%, #fafafa 100%);
+  border-radius: var(--radius-lg);
 }
 .cover {
   width: 180px;
   height: 180px;
-  border-radius: 12px;
+  border-radius: var(--radius);
   overflow: hidden;
   flex-shrink: 0;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-lg);
 }
 .cover img {
   width: 100%;
@@ -118,26 +128,60 @@ watch(
 .info {
   flex: 1;
   min-width: 0;
-  position: relative;
-  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 .info h1 {
-  font-size: 24px;
-  margin-bottom: 10px;
+  font-size: 26px;
+  font-weight: 700;
+  margin-bottom: 12px;
   line-height: 1.3;
+  color: var(--text);
 }
 .sub {
   color: var(--text-dim);
   font-size: 13px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 .sub.dim {
   color: var(--text-faint);
 }
 .actions {
   display: flex;
-  gap: 10px;
-  margin: 14px 0;
+  gap: 12px;
+  margin: 16px 0;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 24px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.18s var(--ease);
+}
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+.btn.primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 6px 16px var(--accent-glow);
+}
+.btn.ghost {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+.btn.ghost:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .desc {
   color: var(--text-faint);
@@ -147,6 +191,35 @@ watch(
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  margin-top: 8px;
+}
+.tabs {
+  display: flex;
+  gap: 24px;
+  padding: 0 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab em {
+  font-style: normal;
+  font-size: 12px;
+  margin-left: 2px;
+}
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.tab:hover {
+  color: var(--text);
 }
 .placeholder {
   color: var(--text-faint);

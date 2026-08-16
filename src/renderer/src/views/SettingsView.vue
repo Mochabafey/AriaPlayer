@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import { ncm } from '../api'
+import { toast } from '../utils/toast'
 
 const settings = useSettingsStore()
 const restarting = ref(false)
@@ -12,7 +13,7 @@ async function restartServer() {
   restarting.value = true
   try {
     await ncm.serverRestart()
-    alert('服务已重启，设置生效')
+    toast('服务已重启，设置生效', 'success')
   } finally {
     restarting.value = false
   }

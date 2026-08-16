@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
+import { toast } from '../utils/toast'
 import SongTable from '../components/SongTable.vue'
 
 const router = useRouter()
@@ -120,7 +121,7 @@ async function checkQr() {
 }
 
 async function phoneLogin() {
-  if (!phone.value || !password.value) return alert('请输入手机号和密码')
+  if (!phone.value || !password.value) return toast('请输入手机号和密码', 'error')
   try {
     await api('login_cellphone', { phone: phone.value, password: password.value })
     const s = await api('login_status')
@@ -130,10 +131,10 @@ async function phoneLogin() {
       await loadUserData()
       showPhone.value = false
     } else {
-      alert('登录失败：未获取到有效账号信息')
+      toast('登录失败：未获取到有效账号信息', 'error')
     }
   } catch (e) {
-    alert('登录失败：' + e.message)
+    toast('登录失败：' + e.message, 'error')
   }
 }
 

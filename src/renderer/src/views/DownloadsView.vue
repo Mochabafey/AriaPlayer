@@ -1,11 +1,15 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ncm } from '../api'
 import { useDownloadsStore } from '../stores/downloads'
 import { fmtSize } from '../utils/format'
+import { toast } from '../utils/toast'
 
 const downloads = useDownloadsStore()
 const openFolders = ref({})
+
+const doneCount = computed(() => downloads.tasks.filter((t) => t.status === 'done').length)
+const failCount = computed(() => downloads.tasks.filter((t) => t.status === 'failed' || t.status === 'paused').length)
 
 const statusMeta = {
   pending: { label: '等待中', cls: '' },
@@ -28,6 +32,20 @@ function openFile(t) {
   if (t.path) ncm.openFolder(t.path)
 }
 
+async function onClearCompleted() {
+  const n = doneCount.value
+  if (!n) return
+  await downloads.clearCompleted()
+  toast(`已清空 ${n} 条完成记录`, 'success')
+}
+
+async function onRetryFailed() {
+  const n = failCount.value
+  if (!n) return
+  await downloads.retryFailed()
+  toast(`已重试 ${n} 个任务`, 'success')
+}
+
 onMounted(() => {
   downloads.load()
   downloads.watch()
@@ -36,7 +54,13 @@ onMounted(() => {
 
 <template>
   <div class="downloads">
-    <h1 class="page-title">下载</h1>
+    <div class="head">
+      <h1 class="page-title">下载</h1>
+      <div class="head-actions">
+        <button v-if="failCount" class="btn small ghost" @click="onRetryFailed">↻ 重试失败 ({{ failCount }})</button>
+        <button v-if="doneCount" class="btn small ghost" @click="onClearCompleted">✕ 清空完成 ({{ doneCount }})</button>
+      </div>
+    </div>
     <p class="desc">默认保存目录可在「设置」中修改</p>
 
     <div v-if="!downloads.tasks.length" class="placeholder">
@@ -75,11 +99,20 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.head-actions {
+  display: flex;
+  gap: 8px;
+}
 .page-title {
   font-size: 30px;
   font-weight: 800;
   letter-spacing: -0.5px;
-  margin-bottom: 6px;
 }
 .desc {
   color: var(--text-faint);

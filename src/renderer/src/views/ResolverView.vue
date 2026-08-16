@@ -5,6 +5,7 @@ import { usePlayerStore } from '../stores/player'
 import { useDownloadsStore } from '../stores/downloads'
 import { useSettingsStore } from '../stores/settings'
 import { fmtTime } from '../utils/format'
+import { toast } from '../utils/toast'
 import SongTable from '../components/SongTable.vue'
 
 const player = usePlayerStore()
@@ -120,7 +121,7 @@ async function copyUrl() {
   if (!result.value?.url) return
   try {
     await navigator.clipboard.writeText(result.value.url)
-    alert('播放地址已复制')
+    toast('播放地址已复制', 'success')
   } catch {
     error.value = '复制失败'
   }

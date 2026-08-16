@@ -102,25 +102,35 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
-  /** 播放一组歌曲（替换队列） */
-  async function playList(list, index = 0) {
+  /** 播放一组歌曲（替换队列）。歌词并行加载，不阻塞起播 */
+  function playList(list, index = 0) {
     queue.value = list.map(normalizeSong)
     currentIndex.value = index
-    await loadLyrics(queue.value[index])
-    await playCurrent()
+    startCurrent(queue.value[index])
+    return playCurrent()
   }
 
   /** 将歌曲加入队列并播放 */
-  async function playNext(song) {
+  function playNext(song) {
     const n = normalizeSong(song)
     queue.value.push(n)
     currentIndex.value = queue.value.length - 1
-    await loadLyrics(n)
-    await playCurrent()
+    startCurrent(n)
+    return playCurrent()
   }
 
   function enqueue(songs) {
     for (const s of songs) queue.value.push(normalizeSong(s))
+  }
+
+  /**
+   * 切歌的公共入口：乐观置播放态（点击立即有反馈，真实状态由 play/pause 事件校正），
+   * 歌词并行加载不阻塞起播。
+   */
+  function startCurrent(song) {
+    playing.value = true
+    buffering.value = true
+    loadLyrics(song)
   }
 
   async function playCurrent() {
@@ -139,6 +149,7 @@ export const usePlayerStore = defineStore('player', () => {
           song.audioUrl = url
         } catch (e) {
           playing.value = false
+          buffering.value = false
           setPlayError(`无法播放「${song.name || ''}」：${e.message}`)
           return e
         }
@@ -148,7 +159,10 @@ export const usePlayerStore = defineStore('player', () => {
     audioEl.volume = volume.value
     await audioEl.play().catch((e) => {
       console.error('play error', e)
+      // AbortError：src 被新的切歌请求替换所致，属正常现象，交给新请求接管
+      if (e?.name === 'AbortError') return
       playing.value = false
+      buffering.value = false
       setPlayError(`播放失败：${e.message || '未知错误'}`)
     })
   }
@@ -168,7 +182,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function toggle() {
     if (!audioEl || !current.value) return
-    if (audioEl.paused) audioEl.play()
+    if (audioEl.paused) audioEl.play().catch(() => {})
     else audioEl.pause()
   }
 
@@ -201,7 +215,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (mode === 'shuffle') idx = Math.floor(Math.random() * len)
     else idx = currentIndex.value + 1 >= len ? 0 : currentIndex.value + 1
     currentIndex.value = idx
-    await loadLyrics(queue.value[idx])
+    startCurrent(queue.value[idx])
     await playCurrent()
   }
 
@@ -213,7 +227,7 @@ export const usePlayerStore = defineStore('player', () => {
       return
     }
     currentIndex.value = currentIndex.value - 1 < 0 ? len - 1 : currentIndex.value - 1
-    await loadLyrics(queue.value[currentIndex.value])
+    startCurrent(queue.value[currentIndex.value])
     await playCurrent()
   }
 
@@ -223,6 +237,7 @@ export const usePlayerStore = defineStore('player', () => {
     else if (idx === currentIndex.value) {
       if (queue.value.length) {
         currentIndex.value = Math.min(currentIndex.value, queue.value.length - 1)
+        startCurrent(queue.value[currentIndex.value])
         await playCurrent()
       } else {
         currentIndex.value = -1

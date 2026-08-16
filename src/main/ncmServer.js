@@ -5,7 +5,7 @@ import path from 'path'
 import { app } from 'electron'
 import { stores, QUALITY_MAP } from './store/db.js'
 
-const START_TIMEOUT = 20000
+const START_TIMEOUT = 60000
 const RESTART_MAX = 3
 const RESTART_DELAY = 5000
 

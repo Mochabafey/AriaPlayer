@@ -1,11 +1,12 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ncm, imgUrl } from '../api'
 import { useLibraryStore } from '../stores/library'
 import { usePlayerStore } from '../stores/player'
 import { useDownloadsStore } from '../stores/downloads'
 import { useSettingsStore } from '../stores/settings'
 import { fmtTime } from '../utils/format'
+import { toast } from '../utils/toast'
 
 const library = useLibraryStore()
 const player = usePlayerStore()
@@ -18,6 +19,12 @@ const selected = ref(new Set())
 const filter = ref('all') // all | download | import
 const editing = ref(null) // 正在编辑元数据的歌曲
 const editForm = ref({ title: '', artist: '', album: '' })
+// 封面加载失败集合：图片加载出错时回退到 ♪ 占位
+const coverErrors = ref(new Set())
+
+function onCoverError(id) {
+  coverErrors.value = new Set(coverErrors.value).add(id)
+}
 
 // ---- .ncm 批量转换 ----
 const showConvert = ref(false)
@@ -69,7 +76,19 @@ onMounted(() => {
       current: p.current ?? convertProgress.value.current
     }
   })
+  window.addEventListener('keydown', onKeydown)
 })
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+})
+
+function onKeydown(e) {
+  if (e.key === 'Escape') {
+    if (editing.value) editing.value = null
+    else if (showConvert.value) showConvert.value = false
+  }
+}
 
 async function pickFolder() {
   const dir = await ncm.librarySelectFolder()
@@ -111,7 +130,7 @@ async function exportLibrary(type) {
 async function importLibrary() {
   const n = await ncm.libraryImport()
   await library.load()
-  if (n > 0) alert(`已导入 ${n} 首`)
+  if (n > 0) toast(`已导入 ${n} 首`, 'success')
 }
 
 // 简单判断：以 .ncm 结尾视为文件，否则视为目录（仅用于预填显示）
@@ -142,7 +161,7 @@ async function pickConvertFile() {
     }
   } catch (e) {
     convertError.value = e.message || '打开文件选择失败'
-    alert('打开文件选择失败：' + (e.message || '未知错误'))
+    toast('打开文件选择失败：' + (e.message || '未知错误'), 'error')
   }
 }
 
@@ -155,7 +174,7 @@ async function pickConvertDir() {
     }
   } catch (e) {
     convertError.value = e.message || '打开目录选择失败'
-    alert('打开目录选择失败：' + (e.message || '未知错误'))
+    toast('打开目录选择失败：' + (e.message || '未知错误'), 'error')
   }
 }
 
@@ -222,7 +241,13 @@ function openConvertOut() {
         @dblclick="playLocal(s)"
       >
         <div class="cover">
-          <img v-if="s.coverPath" :src="imgUrl(coverOf(s))" alt="" loading="lazy" />
+          <img
+            v-if="s.coverPath && !coverErrors.has(s.id)"
+            :src="imgUrl(coverOf(s))"
+            alt=""
+            loading="lazy"
+            @error="onCoverError(s.id)"
+          />
           <div v-else class="no-cover">♪</div>
           <div class="hover-ops" @click.stop>
             <button class="op" title="播放" @click.stop="playLocal(s)">▶</button>

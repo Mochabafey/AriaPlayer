@@ -13,7 +13,9 @@ const player = usePlayerStore()
 const keyword = ref('')
 const tab = ref('songs')
 const results = ref({ songs: [], playlists: [], artists: [], albums: [], mvs: [] })
+const fetchedTabs = ref({})
 const loading = ref(false)
+const tabLoading = ref(false)
 const searched = ref(false)
 
 const tabs = [
@@ -24,25 +26,45 @@ const tabs = [
   { key: 'mvs', label: 'MV' }
 ]
 
+const types = { songs: 1, playlists: 1000, artists: 100, albums: 10, mvs: 1004 }
+
+/** 拉取某个类型的搜索结果并缓存 */
+async function fetchTab(key, kw) {
+  const res = await api('cloudsearch', { keywords: kw, type: types[key], limit: 20 })
+  results.value[key] = res.result?.[key] || []
+  fetchedTabs.value[key] = true
+}
+
 async function doSearch(kw = keyword.value) {
-  if (!kw.trim()) return
+  kw = (kw || '').trim()
+  if (!kw) return
+  keyword.value = kw
   loading.value = true
   searched.value = true
+  tab.value = 'songs'
+  results.value = { songs: [], playlists: [], artists: [], albums: [], mvs: [] }
+  fetchedTabs.value = {}
   try {
-    const types = { songs: 1, playlists: 1000, artists: 100, albums: 10, mvs: 1004 }
-    const entries = await Promise.all(
-      Object.entries(types).map(async ([key, type]) => {
-        try {
-          const res = await api('cloudsearch', { keywords: kw, type, limit: 20 })
-          return [key, res.result?.[key] || []]
-        } catch {
-          return [key, []]
-        }
-      })
-    )
-    results.value = Object.fromEntries(entries)
+    // 只请求当前 tab，其余 tab 点击时再懒加载（减少接口压力）
+    await fetchTab('songs', kw)
+  } catch {
+    results.value.songs = []
   } finally {
     loading.value = false
+  }
+}
+
+/** 切换 tab：未拉取过则懒加载 */
+async function switchTab(key) {
+  tab.value = key
+  if (fetchedTabs.value[key] || !searched.value) return
+  tabLoading.value = true
+  try {
+    await fetchTab(key, keyword.value)
+  } catch {
+    results.value[key] = []
+  } finally {
+    tabLoading.value = false
   }
 }
 
@@ -93,15 +115,17 @@ function goMv(id) {
         :key="t.key"
         class="tab"
         :class="{ active: tab === t.key }"
-        @click="tab = t.key"
+        @click="switchTab(t.key)"
       >
-        {{ t.label }}({{ results[t.key]?.length || 0 }})
+        {{ t.label }}<span v-if="fetchedTabs[t.key]" class="tab-count">({{ results[t.key]?.length || 0 }})</span>
       </button>
     </div>
 
     <div class="content-area">
+      <p v-if="tabLoading" class="empty">加载中…</p>
+
       <!-- 歌曲 -->
-      <SongTable v-if="tab === 'songs'" :songs="results.songs || []" />
+      <SongTable v-else-if="tab === 'songs'" :songs="results.songs || []" />
 
       <!-- 歌单 -->
       <div v-else-if="tab === 'playlists'" class="grid">
@@ -145,7 +169,7 @@ function goMv(id) {
         </div>
       </div>
 
-      <p v-if="searched && !loading && !(results[tab] || []).length" class="empty">没有找到相关内容</p>
+      <p v-if="searched && !loading && !tabLoading && !(results[tab] || []).length" class="empty">没有找到相关内容</p>
     </div>
   </div>
 </template>
@@ -188,6 +212,12 @@ function goMv(id) {
   border-bottom-color: var(--accent);
   font-weight: 600;
 }
+.tab-count {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-left: 4px;
+}
+.tab.active .tab-count { color: var(--accent); }
 .content-area {
   min-height: 200px;
 }

@@ -61,6 +61,8 @@ watch(
             :data-idx="i"
             class="lyric-line"
             :class="{ active: i === active }"
+            title="跳转到此句"
+            @click="player.seek(line.time)"
           >
             {{ line.text || '♪' }}
           </p>

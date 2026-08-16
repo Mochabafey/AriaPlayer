@@ -1,43 +1,114 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { usePlayerStore } from '../stores/player'
 import { useSettingsStore } from '../stores/settings'
+import { useDownloadsStore } from '../stores/downloads'
 import { imgUrl } from '../api'
 import { fmtTime } from '../utils/format'
 
 const player = usePlayerStore()
 const settings = useSettingsStore()
+const downloads = useDownloadsStore()
 const audioRef = ref(null)
 
 const progress = computed(() => {
+  if (dragging.value) return dragRatio.value * 100
   if (!player.duration) return 0
   return (player.currentTime / player.duration) * 100
 })
 
-function onSeek(e) {
-  const rect = e.currentTarget.getBoundingClientRect()
-  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
-  player.seek(ratio * player.duration)
+/* ---- 进度条：点击 + 拖拽 ---- */
+const seekTrackRef = ref(null)
+const dragging = ref(false)
+const dragRatio = ref(0)
+const hoverRatio = ref(-1)
+
+function ratioFromEvent(el, e) {
+  const rect = el.getBoundingClientRect()
+  return Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
 }
 
-function onVolume(e) {
-  const rect = e.currentTarget.getBoundingClientRect()
-  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
-  player.setVolume(ratio)
+function onSeekDown(e) {
+  dragging.value = true
+  dragRatio.value = ratioFromEvent(seekTrackRef.value, e)
+  window.addEventListener('pointermove', onSeekMove)
+  window.addEventListener('pointerup', onSeekUp)
 }
+function onSeekMove(e) {
+  if (!dragging.value || !seekTrackRef.value) return
+  dragRatio.value = ratioFromEvent(seekTrackRef.value, e)
+}
+function onSeekUp() {
+  window.removeEventListener('pointermove', onSeekMove)
+  window.removeEventListener('pointerup', onSeekUp)
+  if (dragging.value) player.seek(dragRatio.value * player.duration)
+  dragging.value = false
+}
+function onSeekHover(e) {
+  if (seekTrackRef.value) hoverRatio.value = ratioFromEvent(seekTrackRef.value, e)
+}
+
+/* ---- 音量条：点击 + 拖拽 + 静音 ---- */
+const volTrackRef = ref(null)
+let volDragging = false
+const muted = ref(false)
+const mutedVolume = ref(0.8)
+const volHover = ref(-1)
+
+/** 音量条显示的百分比：静音时恒为 0 */
+const volumeDisplay = computed(() => (muted.value ? 0 : Math.round(player.volume * 100)))
+
+function setVolFromEvent(e) {
+  if (volTrackRef.value) player.setVolume(ratioFromEvent(volTrackRef.value, e))
+}
+function onVolDown(e) {
+  volDragging = true
+  setVolFromEvent(e)
+  window.addEventListener('pointermove', onVolMove)
+  window.addEventListener('pointerup', onVolUp)
+}
+function onVolMove(e) {
+  if (volDragging) setVolFromEvent(e)
+}
+function onVolUp() {
+  volDragging = false
+  window.removeEventListener('pointermove', onVolMove)
+  window.removeEventListener('pointerup', onVolUp)
+}
+function onVolHover(e) {
+  if (volTrackRef.value) volHover.value = ratioFromEvent(volTrackRef.value, e)
+}
+/** 静音/取消静音：静音时记住当前音量，取消时恢复 */
+function toggleMute() {
+  if (muted.value) {
+    player.setVolume(mutedVolume.value)
+    muted.value = false
+  } else {
+    mutedVolume.value = player.volume
+    player.setVolume(0)
+    muted.value = true
+  }
+}
+// 拖拽音量到非 0 时自动解除静音
+watch(
+  () => player.volume,
+  (v) => {
+    if (v > 0 && muted.value) muted.value = false
+  }
+)
 
 function cycleMode() {
   const map = { list: 'loop', loop: 'shuffle', shuffle: 'list' }
   settings.set('playMode', map[settings.settings.playMode])
 }
 
-const modeIcon = computed(() => ({ list: '▸▸', loop: '↻', shuffle: '⇄' })[settings.settings.playMode])
+const modeIcon = computed(() => ({ list: '▸', loop: '↻', shuffle: '⇄' })[settings.settings.playMode])
 const modeTitle = computed(() => ({ list: '列表循环', loop: '单曲循环', shuffle: '随机播放' })[settings.settings.playMode])
 
 function downloadCurrent() {
   const song = player.current
   if (!song || song.fromLocal) return
-  window.ncm.invoke('ncm:download-add', {
+  downloads.add({
     songId: song.id,
     title: song.name,
     artist: song.artist,
@@ -50,22 +121,47 @@ function downloadCurrent() {
 onMounted(() => {
   player.attachAudio(audioRef.value)
 })
+
+onUnmounted(() => {
+  // 清理拖拽残留的全局事件监听器，防止组件卸载后内存泄漏
+  window.removeEventListener('pointermove', onSeekMove)
+  window.removeEventListener('pointerup', onSeekUp)
+  window.removeEventListener('pointermove', onVolMove)
+  window.removeEventListener('pointerup', onVolUp)
+})
 </script>
 
 <template>
-  <div class="player-bar glass" :class="{ playing: player.playing }">
+  <div class="player-bar" :class="{ playing: player.playing }">
     <audio ref="audioRef" preload="metadata" class="hidden-audio" />
     <div v-if="player.playError" class="play-error">{{ player.playError }}</div>
 
-    <!-- 顶部进度条（全宽、hover 变粗） -->
-    <div class="seek-track" @click="onSeek">
+    <!-- 顶部进度条 -->
+    <div
+      ref="seekTrackRef"
+      class="seek-track"
+      :class="{ dragging }"
+      @pointerdown.left="onSeekDown"
+      @mousemove="onSeekHover"
+      @mouseleave="hoverRatio = -1"
+    >
       <div class="seek-fill" :style="{ width: progress + '%' }"></div>
+      <div class="seek-knob" :style="{ left: progress + '%' }"></div>
+      <div v-if="hoverRatio >= 0" class="seek-tip" :style="{ left: hoverRatio * 100 + '%' }">
+        {{ fmtTime(hoverRatio * player.duration) }}
+      </div>
     </div>
 
-    <!-- 左：封面 + 信息 -->
+    <!-- 左：圆形封面 + 信息 -->
     <div class="p-left">
-      <div class="cover" v-if="player.current">
+      <div
+        class="cover clickable"
+        v-if="player.current"
+        title="展开播放页"
+        @click="player.showLyrics = !player.showLyrics"
+      >
         <img :src="imgUrl(player.current.pic)" alt="" loading="lazy" />
+        <span v-if="player.playing" class="cover-eq"><i></i><i></i><i></i></span>
       </div>
       <div class="cover placeholder" v-else>
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V6l11-2v12.5"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16.5" r="2.5"/></svg>
@@ -77,8 +173,9 @@ onMounted(() => {
       <div class="meta empty" v-else>未在播放</div>
     </div>
 
-    <!-- 中：控制 -->
+    <!-- 中：控制按钮 -->
     <div class="p-center">
+      <button class="ctrl sm" :title="modeTitle" @click="cycleMode">{{ modeIcon }}</button>
       <button class="ctrl" title="上一首" @click="player.prev()">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>
       </button>
@@ -95,14 +192,35 @@ onMounted(() => {
       <span class="time total">{{ fmtTime(player.duration) }}</span>
     </div>
 
-    <!-- 右：模式/歌词/下载/音量 -->
+    <!-- 右：歌词/下载/音量 -->
     <div class="p-right">
-      <button class="ctrl sm" :title="modeTitle" @click="cycleMode">{{ modeIcon }}</button>
       <button class="ctrl sm" title="歌词" :class="{ active: player.showLyrics }" @click="player.showLyrics = !player.showLyrics">≣</button>
       <button class="ctrl sm" title="下载当前歌曲" @click="downloadCurrent">⇩</button>
-      <button class="ctrl sm" title="清空队列" @click="player.clearQueue()">✕</button>
-      <div class="volume" @click="onVolume" title="音量">
-        <div class="volume-fill" :style="{ width: settings.settings.volume * 100 + '%' }"></div>
+      <div class="vol-wrap">
+        <button
+          class="vol-icon"
+          :class="{ muted }"
+          :title="muted ? '取消静音' : '静音'"
+          @click="toggleMute"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5 6 9H3v6h3l5 4V5Z"/>
+            <path v-if="!muted" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>
+            <path v-else d="M16 9l6 6M22 9l-6 6"/>
+          </svg>
+        </button>
+        <div
+          ref="volTrackRef"
+          class="volume"
+          :class="{ muted }"
+          title="音量（点击或拖动调节）"
+          @pointerdown.left="onVolDown"
+          @mousemove="onVolHover"
+          @mouseleave="volHover = -1"
+        >
+          <div class="volume-fill" :style="{ width: volumeDisplay + '%' }"></div>
+          <span v-if="volHover >= 0" class="vol-tip">{{ Math.round(volHover * 100) }}%</span>
+        </div>
       </div>
     </div>
   </div>
@@ -115,12 +233,13 @@ onMounted(() => {
   right: 0;
   bottom: 0;
   height: var(--player-h);
-  border-top: 1px solid var(--hairline);
+  border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
   padding: 0 20px;
   gap: 20px;
   z-index: 100;
+  background: #fff;
 }
 
 /* 顶部全宽进度条 */
@@ -130,64 +249,113 @@ onMounted(() => {
   left: 0;
   right: 0;
   height: 3px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--border);
   cursor: pointer;
   transition: height 0.15s var(--ease);
 }
-.seek-track:hover { height: 6px; }
+.seek-track:hover,
+.seek-track.dragging { height: 5px; }
 .seek-fill {
   height: 100%;
   background: var(--accent);
   border-radius: 0 3px 3px 0;
   transition: width 0.1s linear;
 }
-
-.play-error {
-  position: fixed;
-  bottom: calc(var(--player-h) + 14px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(250, 36, 60, 0.95);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 8px 16px;
-  border-radius: 8px;
-  z-index: 200;
-  max-width: 70vw;
-  box-shadow: var(--shadow);
+.seek-knob {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  transform: translate(-50%, -50%) scale(0);
+  transition: transform 0.15s var(--ease);
+  pointer-events: none;
 }
-.hidden-audio { display: none; }
+.seek-track:hover .seek-knob,
+.seek-track.dragging .seek-knob { transform: translate(-50%, -50%) scale(1); }
+.seek-tip {
+  position: absolute;
+  bottom: 10px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 
-/* 左 */
+/* 左：圆形封面 + 信息 */
 .p-left {
   display: flex;
   align-items: center;
   gap: 12px;
-  width: 300px;
-  flex-shrink: 0;
-  min-width: 0;
+  min-width: 200px;
 }
 .cover {
-  width: 46px;
-  height: 46px;
-  border-radius: 7px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
   overflow: hidden;
   flex-shrink: 0;
-  background: var(--bg-card);
+  background: var(--bg-hover);
   box-shadow: var(--shadow-cover);
 }
 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover.clickable {
+  cursor: pointer;
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.cover.clickable:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
 .cover.placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-faint);
 }
-.cover.placeholder svg { width: 20px; height: 20px; }
-.meta { min-width: 0; }
+.cover.placeholder svg { width: 24px; height: 24px; }
+.cover-eq {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 10px;
+  padding: 2px 3px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+}
+.cover-eq i {
+  width: 2px;
+  background: var(--green);
+  border-radius: 1px;
+  transform-origin: bottom;
+  animation: cover-eq-bounce 0.9s ease-in-out infinite;
+}
+.cover-eq i:nth-child(1) { height: 6px; animation-delay: 0s; }
+.cover-eq i:nth-child(2) { height: 9px; animation-delay: 0.25s; }
+.cover-eq i:nth-child(3) { height: 4px; animation-delay: 0.5s; }
+@keyframes cover-eq-bounce {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -199,72 +367,127 @@ onMounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 2px;
 }
-.meta.empty { color: var(--text-faint); font-size: 13px; }
+.meta.empty {
+  font-size: 13px;
+  color: var(--text-faint);
+}
 
-/* 中：控制 */
+/* 中：控制按钮 */
 .p-center {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 22px;
+  gap: 16px;
 }
 .ctrl {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-dim);
-  padding: 6px;
-  border-radius: 50%;
-  transition: color 0.15s, transform 0.1s var(--ease);
+  transition: color 0.15s, background 0.15s;
 }
-.ctrl:hover { color: var(--text); }
-.ctrl:active { transform: scale(0.92); }
+.ctrl:hover { color: var(--text); background: var(--bg-hover); }
 .ctrl svg { width: 20px; height: 20px; }
-.ctrl.sm { font-size: 15px; }
-.ctrl.active { color: var(--accent); }
+.ctrl.sm {
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+}
+.ctrl.sm:hover { color: var(--accent); }
 .ctrl.play {
   width: 44px;
   height: 44px;
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text);
-  transition: background 0.15s, transform 0.1s var(--ease);
+  background: var(--accent);
+  color: #fff;
 }
-.ctrl.play:hover { background: rgba(255, 255, 255, 0.18); }
-.ctrl.play svg { width: 20px; height: 20px; }
-.spin { animation: spin 0.9s linear infinite; }
+.ctrl.play:hover { background: var(--accent-hover); color: #fff; }
+.ctrl.play svg { width: 22px; height: 22px; }
+.ctrl.active { color: var(--accent); }
+.spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
 .time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
-.time-divider { color: var(--text-faint); font-size: 11px; }
+.time-divider { color: var(--text-faint); }
 
-/* 右 */
+/* 右：歌词/下载/音量 */
 .p-right {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 300px;
-  flex-shrink: 0;
+  gap: 8px;
+  min-width: 200px;
   justify-content: flex-end;
 }
-.volume {
-  width: 78px;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.14);
-  cursor: pointer;
-  transition: height 0.12s var(--ease);
+.vol-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.volume:hover { height: 6px; }
+.vol-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  transition: color 0.15s, background 0.15s;
+}
+.vol-icon:hover { color: var(--text); background: var(--bg-hover); }
+.vol-icon.muted { color: var(--accent); }
+.vol-icon svg { width: 16px; height: 16px; }
+.volume {
+  width: 80px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+  transition: height 0.15s var(--ease);
+}
+.volume:hover,
+.volume.dragging { height: 6px; }
+.volume.muted .volume-fill { background: var(--text-faint); }
 .volume-fill {
   height: 100%;
-  background: var(--text-dim);
+  background: var(--accent);
   border-radius: 2px;
+  transition: width 0.1s;
 }
-.volume:hover .volume-fill { background: #fff; }
+.vol-tip {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.hidden-audio { display: none; }
+.play-error {
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
 </style>
