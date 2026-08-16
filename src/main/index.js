@@ -11,9 +11,15 @@ import { registerNcmConvertIpc } from './ipc/ncmConvert.js'
 import { initDb, closeDb } from './db/index.js'
 import { initAudioCache } from './audioCache.js'
 
-// 自定义协议需在 app ready 前注册特权
+// 自定义协议需在 app ready 前注册特权。
+// standard+secure：让 Chromium 按标准协议（类似 http）处理 ncm-audio://，
+// media 元素对「标准协议」的 seek/缓存/取消语义与自定义 scheme 不同——
+// 缺 standard 时 media seek 可能被误判失败（MEDIA_ERR_NETWORK 卡死）
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'ncm-audio', privileges: { stream: true, supportFetchAPI: true, bypassCSP: true } }
+  {
+    scheme: 'ncm-audio',
+    privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true }
+  }
 ])
 
 // 关键：Chromium 网络栈只认系统代理（不认 NO_PROXY 环境变量）。

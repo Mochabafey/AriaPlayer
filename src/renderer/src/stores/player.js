@@ -11,6 +11,9 @@ let prefetching = false   // 下一曲音源预解析进行中标记
 let lastSeekAt = 0        // 最近一次 seek 时刻：快速拖动期间推迟 error 恢复
 let bufferDebounce = null // waiting→buffering 防抖计时器
 let seekGuard = null      // seek 卡死看门狗：5s 未完成强制换源恢复，绝不无限卡死
+let recovering = false    // recoverPlayback 互斥锁：error 调度与 seek() 直接调用并发触发时，
+                          // 两个 recover 都会重置 src → 新请求互相取消 → 恢复死循环
+let pendingRecoverAt = null // error 态 seek 的目标位置：调度器恢复时用它，而不是回退旧 currentTime
 // 诊断日志开关：开发模式自动开；生产在控制台执行
 // localStorage.setItem('ncm-debug','1') 后刷新可临时打开（排障用）
 const DIAG =
@@ -151,7 +154,10 @@ export const usePlayerStore = defineStore('player', () => {
       recoverQueued = false
       if (!audioEl?.error) return
       if (!current.value || current.value.fromLocal) return
-      recoverPlayback(audioEl.error.code)
+      // 用用户最后一次拖到的位置恢复（error 态 currentTime 是旧位置，丢了会跳回老地方）
+      const at = pendingRecoverAt
+      pendingRecoverAt = null
+      recoverPlayback(audioEl.error.code, at ?? undefined)
     }, wait)
   }
 
@@ -173,41 +179,54 @@ export const usePlayerStore = defineStore('player', () => {
    * 很多 403/损坏流会被 Chromium 归到 4）走 ffmpeg 转码兜底，再不行明确报错。
    */
   async function recoverPlayback(code, targetAt) {
-    const epoch = playEpoch
-    const song = current.value
-    if (!song || song.fromLocal || !audioEl) return
-    clearTimeout(seekGuard) // 恢复流程接管，撤 seek 看门狗防误判
-    seekGuard = null
-    // error 状态下 seek 传入目标位置；否则回到中断位置
-    const t = targetAt ?? (audioEl.currentTime || 0)
-    if (DIAG) console.log(`[audio-ev] recoverPlayback code=${code} at=${t.toFixed(2)} retries=${networkRetries}`)
+    // 互斥锁：error 事件调度与 seek() 直接调用可能并发进入（networkRetries < 2
+    // 是同步检查，await api() 期间另一个 recover 也能通过），两个 recover 都会
+    // 重置 src → 新加载互相取消 → 恢复死循环且恢复预算被快速耗尽。加锁串行化。
+    if (recovering) return
+    recovering = true
+    try {
+      const epoch = playEpoch
+      const song = current.value
+      if (!song || song.fromLocal || !audioEl) return
+      clearTimeout(seekGuard) // 恢复流程接管，撤 seek 看门狗防误判
+      seekGuard = null
+      // error 状态下 seek 传入目标位置；否则回到中断位置
+      const t = targetAt ?? (audioEl.currentTime || 0)
+      if (DIAG) {
+        console.log(
+          `[audio-ev] recoverPlayback code=${code} at=${t.toFixed(2)} retries=${networkRetries} src=${(audioEl.src || '').slice(0, 60)} err=${audioEl.error?.code}`
+        )
+      }
 
-    if (networkRetries < 2) {
-      networkRetries++
-      buffering.value = true
-      setPlayError('播放异常，正在恢复…')
-      try {
-        // 跳过缓存拿最新音源：第三方解灰地址几分钟就失效，旧地址复活不了。
-        // 第二次重试降级标准音质：换一条不同的 CDN 文件路径，绕开坏地址
-        const settings = useSettingsStore()
-        const level = networkRetries >= 2 ? 'standard' : levelOf(settings.settings.quality)
-        const res = await api('song_url_v1', { id: song.id, level }, { noCache: true })
+      if (networkRetries < 2) {
+        networkRetries++
+        buffering.value = true
+        setPlayError('播放异常，正在恢复…')
+        try {
+          // 跳过缓存拿最新音源：第三方解灰地址几分钟就失效，旧地址复活不了。
+          // 第二次重试降级标准音质：换一条不同的 CDN 文件路径，绕开坏地址
+          const settings = useSettingsStore()
+          const level = networkRetries >= 2 ? 'standard' : levelOf(settings.settings.quality)
+          const res = await api('song_url_v1', { id: song.id, level }, { noCache: true })
+          if (epoch !== playEpoch) return
+          const fresh = res.data?.[0]?.url
+          if (fresh) song.audioUrl = fresh
+        } catch { /* 拿不到新地址就用旧地址再连一次 */ }
         if (epoch !== playEpoch) return
-        const fresh = res.data?.[0]?.url
-        if (fresh) song.audioUrl = fresh
-      } catch { /* 拿不到新地址就用旧地址再连一次 */ }
-      if (epoch !== playEpoch) return
-      audioEl.src = audioUrl(song)
-      seekBack(t)
-      audioEl.play().catch(() => {})
-      return
+        audioEl.src = audioUrl(song)
+        seekBack(t)
+        audioEl.play().catch(() => {})
+        return
+      }
+
+      if ((code === 3 || code === 4) && !song._transcodeTried) return fallbackTranscode()
+
+      playing.value = false
+      buffering.value = false
+      setPlayError('当前音源不稳定，播放已中断，可稍后重试或切换其他歌曲')
+    } finally {
+      recovering = false
     }
-
-    if ((code === 3 || code === 4) && !song._transcodeTried) return fallbackTranscode()
-
-    playing.value = false
-    buffering.value = false
-    setPlayError('当前音源不稳定，播放已中断，可稍后重试或切换其他歌曲')
   }
 
   /** 音频格式不支持时，用 ffmpeg 转码为 wav 再播（每首歌只尝试一次，防死循环） */
@@ -297,6 +316,7 @@ export const usePlayerStore = defineStore('player', () => {
   function startCurrent(song) {
     playEpoch++
     networkRetries = 0
+    pendingRecoverAt = null
     clearTimeout(seekGuard) // 切歌重置：旧 seek 的看门狗不再有效
     seekGuard = null
     // 先拆 src 再 pause：pause 监听器据「无 src」识别这是切歌程序性停流，
@@ -426,6 +446,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function seek(t) {
     if (!audioEl || !isFinite(t)) return
+    if (DIAG) console.log(`[audio-ev] seek(${t.toFixed(2)}) err=${audioEl.error ? 'Y' : 'N'} src=${(audioEl.src || '').slice(0, 60)}`)
     lastSeekAt = Date.now()
     networkRetries = 0 // 手动 seek 视为用户重试：恢复预算重置，别直接跳到报错
     // 乐观收起缓冲指示：真缺数据 waiting 会在 250ms 后重新显示
@@ -437,10 +458,14 @@ export const usePlayerStore = defineStore('player', () => {
     if (isFinite(dur) && dur > 0) t = Math.max(0, Math.min(t, dur - 0.05))
 
     // 元素已处 error 状态：设 currentTime 无效（规范要求必须 load 重置），
-    // 用户此刻的拖动就是「给我恢复到这」——立即刷新音源从目标位置重播
+    // 用户此刻的拖动就是「给我恢复到这」——立即刷新音源从目标位置重播。
+    // 但恢复已在 error 调度链（recoverQueued）或进行中（recovering）时只更新
+    // 目标位置，避免并发 recover 互相重置 src 导致死循环
     if (audioEl.error) {
       currentTime.value = t
-      recoverPlayback(audioEl.error.code, t)
+      lastSeekAt = Date.now()
+      pendingRecoverAt = t
+      if (!recoverQueued && !recovering) recoverPlayback(audioEl.error.code, t)
       return
     }
 

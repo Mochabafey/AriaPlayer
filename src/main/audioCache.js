@@ -549,6 +549,18 @@ export function createRangeStream(sess, start, end) {
       }
       sess.touch()
       step()
+    },
+    // 取消类错误（Chromium 主动放弃请求：快速 seek 合并 / 切歌拆流）不视为
+    // 错误：cb(null) 走正常清理。否则 error 会经 Electron 协议桥接层上报，
+    // URLLoader 完成码 ≠ ERR_ABORTED，Chromium 媒体栈（ResourceMultiBuffer
+    // DataProvider::OnComplete 只放行 ERR_ABORTED）误判 MEDIA_ERR_NETWORK
+    // → seek 后报 ERR=2 卡死。真错误（fd 损坏、会话失败）照常传播。
+    destroy(err, cb) {
+      if (err && (err.name === 'AbortError' || err.message === 'The operation was aborted')) {
+        cb(null)
+      } else {
+        cb(err)
+      }
     }
   })
   // error 之后紧随 close：released 幂等防双重释放

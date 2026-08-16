@@ -57,7 +57,9 @@ const EVENT_ALLOWLIST = new Set([
   'win:maximized',
   'ncm:server-status',
   'ncm:library-updated',
-  'ncm:convert-progress'
+  'ncm:convert-progress',
+  'ncm:download-progress',
+  'ncm:download-done'
 ])
 
 const api = {
