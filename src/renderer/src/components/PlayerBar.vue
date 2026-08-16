@@ -161,7 +161,6 @@ onUnmounted(() => {
         @click="player.showLyrics = !player.showLyrics"
       >
         <img :src="imgUrl(player.current.pic)" alt="" loading="lazy" />
-        <span v-if="player.playing" class="cover-eq"><i></i><i></i><i></i></span>
       </div>
       <div class="cover placeholder" v-else>
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V6l11-2v12.5"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16.5" r="2.5"/></svg>
@@ -289,7 +288,7 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* 左：圆形封面 + 信息 */
+/* 左：方形封面 + 信息 */
 .p-left {
   display: flex;
   align-items: center;
@@ -299,7 +298,7 @@ onUnmounted(() => {
 .cover {
   width: 48px;
   height: 48px;
-  border-radius: 50%;
+  border-radius: 6px;
   overflow: hidden;
   flex-shrink: 0;
   background: var(--bg-hover);
@@ -321,33 +320,6 @@ onUnmounted(() => {
   color: var(--text-faint);
 }
 .cover.placeholder svg { width: 24px; height: 24px; }
-.cover-eq {
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 10px;
-  padding: 2px 3px;
-  border-radius: 5px;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
-}
-.cover-eq i {
-  width: 2px;
-  background: var(--green);
-  border-radius: 1px;
-  transform-origin: bottom;
-  animation: cover-eq-bounce 0.9s ease-in-out infinite;
-}
-.cover-eq i:nth-child(1) { height: 6px; animation-delay: 0s; }
-.cover-eq i:nth-child(2) { height: 9px; animation-delay: 0.25s; }
-.cover-eq i:nth-child(3) { height: 4px; animation-delay: 0.5s; }
-@keyframes cover-eq-bounce {
-  0%, 100% { transform: scaleY(0.35); }
-  50% { transform: scaleY(1); }
-}
 .meta {
   display: flex;
   flex-direction: column;

@@ -186,7 +186,9 @@ function isActive(to) {
       </main>
     </div>
 
-    <LyricPanel v-if="player.showLyrics && player.current" />
+    <Transition name="player-full">
+      <LyricPanel v-if="player.showLyrics && player.current" />
+    </Transition>
     <PlayerBar />
     <AppToast />
   </div>

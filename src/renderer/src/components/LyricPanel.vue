@@ -127,6 +127,8 @@ watch(
   height: 420px;
   overflow-y: auto;
   scroll-behavior: smooth;
+  /* 上下留白约容器高度一半：让首尾歌词也能滚动到居中位置 */
+  padding: 190px 24px;
   mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
   -webkit-mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
 }
@@ -146,7 +148,6 @@ watch(
 .no-lyric {
   text-align: center;
   color: var(--text-faint);
-  margin-top: 60px;
 }
 .close-btn {
   position: absolute;
@@ -165,4 +166,65 @@ watch(
 }
 .close-btn svg { width: 15px; height: 15px; }
 .close-btn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
+
+/* ---- 进入/离开播放页动效 ---- */
+/* 整体淡入 */
+.player-full-enter-active {
+  transition: opacity 0.35s var(--ease);
+}
+.player-full-leave-active {
+  transition: opacity 0.25s var(--ease);
+}
+.player-full-enter-from,
+.player-full-leave-to {
+  opacity: 0;
+}
+/* 模糊背景：从清晰快速铺开 */
+.player-full-enter-active .lyric-bg {
+  transition: opacity 0.4s ease;
+}
+.player-full-enter-from .lyric-bg {
+  opacity: 0;
+}
+/* 大封面：从小圆角块放大展开 + 弹性回弹 */
+.player-full-enter-active .cover-large {
+  transition:
+    transform 0.55s var(--ease-spring),
+    opacity 0.4s var(--ease),
+    box-shadow 0.55s var(--ease);
+  transform-origin: center;
+}
+.player-full-enter-from .cover-large {
+  opacity: 0;
+  transform: scale(0.6) translateY(14px);
+  box-shadow: none;
+}
+/* 歌曲信息与歌词：错开上浮 */
+.player-full-enter-active .track-info,
+.player-full-enter-active .lyric-list,
+.player-full-enter-active .close-btn {
+  transition:
+    opacity 0.45s var(--ease),
+    transform 0.45s var(--ease);
+}
+.player-full-enter-from .track-info {
+  opacity: 0;
+  transform: translateY(18px);
+}
+.player-full-enter-from .lyric-list {
+  opacity: 0;
+  transform: translateY(26px);
+}
+.player-full-enter-from .close-btn {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+/* 离开时轻微缩小收拢 */
+.player-full-leave-active .cover-large {
+  transition: transform 0.25s var(--ease), opacity 0.25s var(--ease);
+}
+.player-full-leave-to .cover-large {
+  opacity: 0;
+  transform: scale(0.85) translateY(8px);
+}
 </style>
