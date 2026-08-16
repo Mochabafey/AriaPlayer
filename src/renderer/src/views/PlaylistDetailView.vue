@@ -109,7 +109,7 @@ watch(
   gap: 28px;
   margin-bottom: 24px;
   padding: 24px;
-  background: linear-gradient(135deg, #ffe4e8 0%, #fff0f2 50%, #fafafa 100%);
+  background: linear-gradient(135deg, #f2f2f4 0%, #f7f7f8 50%, #fafafa 100%);
   border-radius: var(--radius-lg);
 }
 .cover {
