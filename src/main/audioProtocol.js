@@ -4,6 +4,7 @@ import path from 'path'
 import http from 'http'
 import https from 'https'
 import { Readable } from 'stream'
+import { openAudioStream, createRangeStream, sessionInfo, toWeb } from './audioCache'
 
 const FORWARD_HEADERS = [
   'content-type',
@@ -139,29 +140,38 @@ export function registerAudioProtocol() {
         return new Response('url rejected', { status: 403 })
       }
 
-      const headers = {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-        Referer: 'https://music.163.com/'
+      /* —— 磁盘预缓冲播放 ——
+       * 起播即后台整曲下载到临时文件，播放读本地文件：
+       * 网络抖动/上游限速不影响播放，seek 本地化，上游字节只拉一次。
+       * 上游停滞由 Session 内置看门狗熔断 → 播放器报网络错误 → 渲染层换源重连。 */
+      let start = 0
+      let end = -1
+      if (range) {
+        const m = range.match(/bytes=(\d*)-(\d*)/)
+        if (m) {
+          if (m[1] !== '') start = parseInt(m[1], 10)
+          if (m[2] !== '') end = parseInt(m[2], 10)
+        }
       }
-      if (range) headers['Range'] = range
 
-      const upstream = await fetchUpstream(target, headers)
-      if (upstream.statusCode >= 400) {
-        upstream.resume()
-        return new Response('upstream error ' + upstream.statusCode, { status: upstream.statusCode })
-      }
+      const sess = await openAudioStream(target, start)
+      const { total, contentType } = sessionInfo(sess)
+      const stream = createRangeStream(sess, start, end)
 
-      const respHeaders = {}
-      for (const k of FORWARD_HEADERS) {
-        const v = upstream.headers[k]
-        if (v !== undefined) respHeaders[k] = v
+      const respHeaders = {
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes'
       }
-      if (upstream.statusCode === 206) respHeaders['Accept-Ranges'] = 'bytes'
-      const webStream = Readable.toWeb(upstream)
-      // Chromium 取消请求（切歌/seek 抛弃旧流）时同步断开上游，避免旧下载继续抢带宽
-      request.signal?.addEventListener('abort', () => upstream.destroy())
-      return new Response(webStream, { status: upstream.statusCode, headers: respHeaders })
+      if (total) {
+        const last = end === -1 ? total - 1 : Math.min(end, total - 1)
+        respHeaders['Content-Length'] = String(last - start + 1)
+        if (start > 0 || end !== -1) {
+          respHeaders['Content-Range'] = `bytes ${start}-${last}/${total}`
+        }
+      }
+      // Chromium 取消请求（切歌/seek 抛弃旧流）时结束读取流（下载会话由 LRU 管理）
+      request.signal?.addEventListener('abort', () => stream.destroy())
+      return new Response(toWeb(stream), { status: start > 0 ? 206 : 200, headers: respHeaders })
     } catch (e) {
       console.error('[ncm-audio] proxy error', e.message)
       return new Response('proxy error', { status: 502 })

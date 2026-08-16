@@ -9,6 +9,7 @@ import { settingsRepo } from '../db/settings.js'
 import { sessionRepo } from '../db/session.js'
 import { apiCacheRepo } from '../db/apiCache.js'
 import { ffmpegAvailable, ffmpegVersion, transcodeToWav } from '../ffmpeg.js'
+import { cacheStats, cacheClear, enforceLimit } from '../audioCache.js'
 
 /* 可缓存的 API 及 TTL（命中 SQLite 缓存免走子进程请求网易云） */
 const API_CACHE_RULES = [
@@ -146,10 +147,17 @@ export function registerApiIpc(getServer) {
     })
   }
 
-  /** 稳定缓存键：route + 按 key 排序的 query */
+  /** 稳定缓存键：route + 按 key 排序的 query。
+   *  song/url/v1 的结果与登录态强相关（会员拿高清官方源、匿名只有低音质/试听），
+   *  缓存键混入 MUSIC_U 指纹，避免匿名时期的结果串给登录后的会员会话（反之亦然） */
   function cacheKey(route, params) {
     const qs = Object.keys(params || {}).sort().map((k) => `${k}=${params[k]}`).join('&')
-    return `${route}?${qs}`
+    let salt = ''
+    if (/^song\/url\/v1/.test(route)) {
+      const mu = cookieJar.get('MUSIC_U') || ''
+      salt = mu ? `&mu=${crypto.createHash('sha1').update(mu).digest('hex').slice(0, 12)}` : ''
+    }
+    return `${route}?${qs}${salt}`
   }
 
   /** song/url/v1 只有网易自家 CDN 地址才值得缓存：解灰替换出的第三方地址
@@ -265,6 +273,12 @@ export function registerApiIpc(getServer) {
   ipcMain.handle('ncm:settings-get', () => settingsRepo.getAll())
   ipcMain.handle('ncm:settings-set', (_e, key, value) => {
     settingsRepo.set(key, value)
+    // 缓存上限调整后立即收敛到新限额
+    if (key === 'audioCacheLimitMB') enforceLimit()
     return settingsRepo.getAll()
   })
+
+  // ---- 音频缓存管理 ----
+  ipcMain.handle('ncm:cache-stats', () => cacheStats())
+  ipcMain.handle('ncm:cache-clear', () => cacheClear())
 }

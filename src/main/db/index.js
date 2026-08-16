@@ -67,6 +67,16 @@ CREATE TABLE IF NOT EXISTS api_cache (
   payload   TEXT NOT NULL,
   expiresAt INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS audio_cache (
+  key          TEXT PRIMARY KEY,
+  url          TEXT NOT NULL,
+  file         TEXT NOT NULL,
+  size         INTEGER NOT NULL,
+  contentType  TEXT,
+  createdAt    INTEGER NOT NULL,
+  lastAccessAt INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audio_cache_lru ON audio_cache(lastAccessAt);
 `
 
 let db = null

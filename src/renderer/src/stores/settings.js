@@ -11,6 +11,7 @@ export const useSettingsStore = defineStore('settings', {
       volume: 0.8,
       playMode: 'list',
       showTranslation: true,
+      audioCacheLimitMB: 2048,
       lastConvertPath: ''
     },
     loaded: false

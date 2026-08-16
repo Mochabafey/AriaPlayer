@@ -6,8 +6,39 @@ import { toast } from '../utils/toast'
 
 const settings = useSettingsStore()
 const restarting = ref(false)
+const cache = ref({ count: 0, bytes: 0, limitMB: 2048 })
+const clearing = ref(false)
 
-onMounted(() => settings.load())
+onMounted(() => {
+  settings.load()
+  refreshCache()
+})
+
+async function refreshCache() {
+  cache.value = await ncm.cacheStats()
+}
+
+function fmtBytes(b) {
+  if (b >= 1024 * 1024 * 1024) return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+  if (b >= 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB'
+  return Math.round(b / 1024) + ' KB'
+}
+
+async function clearCache() {
+  clearing.value = true
+  try {
+    cache.value = await ncm.cacheClear()
+    toast('播放缓存已清空', 'success')
+  } finally {
+    clearing.value = false
+  }
+}
+
+async function onLimitChange() {
+  await settings.set('audioCacheLimitMB', settings.settings.audioCacheLimitMB)
+  await refreshCache()
+  toast(settings.settings.audioCacheLimitMB ? '缓存上限已更新' : '持久缓存已关闭', 'success')
+}
 
 async function restartServer() {
   restarting.value = true
@@ -47,6 +78,41 @@ async function restartServer() {
         <div class="value dir">
           <span class="path">{{ settings.settings.downloadDir || '（未设置）' }}</span>
           <button class="btn small ghost" @click="settings.pickDownloadDir()">选择</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>播放缓存</h2>
+      <div class="row">
+        <div class="label">
+          <div>缓存上限</div>
+          <div class="hint">播放过的歌曲缓存在本地，再次播放无需联网；超出上限自动清理最久未播的</div>
+        </div>
+        <div class="value">
+          <select
+            v-model="settings.settings.audioCacheLimitMB"
+            class="input select"
+            @change="onLimitChange"
+          >
+            <option :value="0">不缓存</option>
+            <option :value="512">512 MB</option>
+            <option :value="1024">1 GB</option>
+            <option :value="2048">2 GB</option>
+            <option :value="4096">4 GB</option>
+            <option :value="8192">8 GB</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <div>当前占用</div>
+          <div class="hint">{{ cache.count }} 首歌曲 · {{ fmtBytes(cache.bytes) }}</div>
+        </div>
+        <div class="value">
+          <button class="btn small ghost" :disabled="clearing || !cache.count" @click="clearCache">
+            {{ clearing ? '清理中…' : '清空缓存' }}
+          </button>
         </div>
       </div>
     </section>

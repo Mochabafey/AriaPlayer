@@ -68,6 +68,10 @@ export const ncm = {
   settingsGet: () => bridge.invoke('ncm:settings-get'),
   settingsSet: (k, v) => bridge.invoke('ncm:settings-set', k, v),
 
+  // 音频缓存
+  cacheStats: () => bridge.invoke('ncm:cache-stats'),
+  cacheClear: () => bridge.invoke('ncm:cache-clear'),
+
   // 系统
   openFolder: (p) => bridge.invoke('ncm:open-folder', p),
   saveDialog: (opts) => bridge.invoke('ncm:save-dialog', opts),

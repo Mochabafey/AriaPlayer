@@ -6,6 +6,7 @@ import crypto from 'crypto'
 import { settingsRepo } from './db/settings.js'
 import { downloadsRepo } from './db/downloads.js'
 import { QUALITY_MAP } from './constants.js'
+import { copyFromCache } from './audioCache.js'
 
 const CONCURRENCY = 2
 
@@ -137,6 +138,18 @@ export class DownloadManager {
     this.send('ncm:download-progress', { ...task })
 
     try {
+      // 播放缓存命中：直接拷贝本地文件（零网络，秒完成）。未命中/拷贝失败回退网络下载
+      const cached = copyFromCache(task.url, dest)
+      if (cached.ok) {
+        task.received = cached.size
+        task.total = cached.size
+        task.status = 'done'
+        this.send('ncm:download-progress', { ...task })
+        this.send('ncm:download-done', { ...task })
+        this.persist(task)
+        return
+      }
+
       let received = fs.existsSync(dest) ? fs.statSync(dest).size : 0
       const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36'

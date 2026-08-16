@@ -335,16 +335,15 @@ async function constructServer(moduleDefs) {
         // 夹带私货部分：如果开启了通用解锁，并且是获取歌曲URL的接口，则尝试解锁（如果需要的话）ヾ(≧▽≦*)o
         // 注：此处用 req.path 而非 req.baseUrl —— app.all 直接挂载时 baseUrl 恒为空字符串，
         // 原条件永远为 false，导致解灰永不触发（无版权歌 url 永远为 null）
+        // 触发条件只看「是否真的拿不到完整音源」（url 为空 / 只有试听片段）：
+        // fee=1/4 是 VIP/付费标记，会员登录时官方已返回完整音源，此时再解灰会把
+        // 官方源换成不稳定的第三方源（kuwo 等），白白丢掉会员权益
         if (
           req.path === '/song/url/v1' &&
           process.env.ENABLE_GENERAL_UNBLOCK === 'true'
         ) {
           const song = moduleResponse.body.data[0]
-          if (
-            song.freeTrialInfo !== null ||
-            !song.url ||
-            [1, 4].includes(song.fee)
-          ) {
+          if (song.freeTrialInfo !== null || !song.url) {
             const {
               matchID,
             } = require('@neteasecloudmusicapienhanced/unblockmusic-utils')

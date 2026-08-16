@@ -9,6 +9,7 @@ import { registerLibraryIpc } from './ipc/library.js'
 import { registerPlaylistIpc } from './ipc/playlist.js'
 import { registerNcmConvertIpc } from './ipc/ncmConvert.js'
 import { initDb, closeDb } from './db/index.js'
+import { initAudioCache } from './audioCache.js'
 
 // 自定义协议需在 app ready 前注册特权
 protocol.registerSchemesAsPrivileged([
@@ -293,6 +294,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     initDb() // SQLite（含旧 JSON 数据自动迁移）——必须在所有 IPC 注册前就绪
+    initAudioCache() // 音频持久缓存：建目录、清半成品、LRU 收敛
     registerAudioProtocol()
     bootstrap()
     app.on('activate', () => {
