@@ -236,6 +236,8 @@ onBeforeUnmount(() => {
 <template>
   <div class="lyric-panel" :class="{ immersed: idle }">
     <div class="lyric-bg" :style="bgStyle"></div>
+    <!-- 无边框窗口拖拽条：全屏播放页也可移动窗口（不遮挡任何交互） -->
+    <div class="drag-zone"></div>
     <div class="lyric-inner">
       <div class="left-col">
         <div class="cover-large" v-if="player.current">
@@ -718,6 +720,18 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   transition: opacity 0.4s var(--ease), background 0.15s, color 0.15s;
+  -webkit-app-region: no-drag;
+  z-index: 6;
+}
+/* 顶部拖拽条（无边框窗口）：低于 close 按钮与队列抽屉 */
+.drag-zone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  -webkit-app-region: drag;
+  z-index: 5;
 }
 .close-btn svg { width: 15px; height: 15px; }
 .close-btn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }

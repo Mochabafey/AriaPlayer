@@ -89,10 +89,14 @@ onMounted(async () => {
   if (Number.isFinite(v) && v >= 0 && v <= 1) player.setVolume(v)
   ncm.onServerStatus((s) => (serverState.value = s))
   ncm.serverStatus().then((s) => (serverState.value = s))
+  // 窗口最大化状态（初始查询 + 订阅变化）
+  window.ncm.invoke('win:is-maximized').then((m) => (winMaximized.value = !!m))
+  offMaxListener = window.ncm.on('win:maximized', (m) => (winMaximized.value = !!m))
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
+  offMaxListener?.()
 })
 
 function onSidebarSearch() {
@@ -109,6 +113,15 @@ function focusSearch() {
 function isActive(to) {
   return route.path === to || route.path.startsWith(to + '/')
 }
+
+/* ================= 自定义标题栏：窗口控制 ================= */
+const winMaximized = ref(false)
+const win = {
+  minimize: () => window.ncm.invoke('win:minimize'),
+  toggleMax: () => window.ncm.invoke('win:toggle-maximize'),
+  close: () => window.ncm.invoke('win:close')
+}
+let offMaxListener = null
 </script>
 
 <template>
@@ -170,6 +183,19 @@ function isActive(to) {
           </button>
           <div class="avatar" title="我的" @click="router.push('/profile')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-7 8-7s8 3 8 7"/></svg>
+          </div>
+          <!-- 窗口控制：最小化 / 最大化(还原) / 关闭 -->
+          <div class="win-controls">
+            <button class="w-btn" title="最小化" @click="win.minimize">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+            </button>
+            <button class="w-btn" :title="winMaximized ? '还原' : '最大化'" @click="win.toggleMax">
+              <svg v-if="winMaximized" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5h10v10"/><path d="M5 9h10v10"/></svg>
+              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+            </button>
+            <button class="w-btn w-close" title="关闭" @click="win.close">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+            </button>
           </div>
         </div>
       </header>
@@ -313,10 +339,19 @@ function isActive(to) {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  padding: 0 20px;
+  padding: 0 0 0 20px;
   gap: 12px;
   background: var(--bg);
   border-bottom: 1px solid var(--hairline);
+  /* 无边框窗口：header 即拖拽区，内部交互元素需逐个声明 no-drag */
+  -webkit-app-region: drag;
+}
+/* header 内可交互元素退出拖拽区 */
+.top-header .header-btn,
+.top-header .header-search,
+.top-header .header-right,
+.top-header .avatar {
+  -webkit-app-region: no-drag;
 }
 .header-btn {
   width: 32px;
@@ -363,7 +398,29 @@ function isActive(to) {
   align-items: center;
   gap: 8px;
   margin-left: auto;
+  height: 100%;
 }
+/* 窗口控制三键：贴 header 右缘（Windows 惯例位），细线图标 */
+.win-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  margin-left: 4px;
+}
+.w-btn {
+  width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  transition: background 0.15s, color 0.15s;
+}
+.w-btn svg { width: 14px; height: 14px; }
+.w-btn:hover { background: var(--bg-hover); color: var(--text); }
+.w-btn:active { opacity: 0.7; }
+.w-close:hover { background: #e81123; color: #fff; }
 .header-icon { width: 20px; height: 20px; }
 .avatar {
   width: 32px;

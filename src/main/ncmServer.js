@@ -31,14 +31,28 @@ export class NcmServer {
   }
 
   serverDir() {
-    if (app.isPackaged) {
+    // electron-vite dev 模式下 app.isPackaged 可能错误返回 true，
+    // 故以路径存在性为准：开发路径优先，打包路径兜底
+    const devPath = path.join(app.getAppPath(), 'server', 'app.js')
+    if (fs.existsSync(devPath)) {
+      return path.join(app.getAppPath(), 'server')
+    }
+    const pkgPath = path.join(process.resourcesPath, 'ncm-server', 'app.js')
+    if (fs.existsSync(pkgPath)) {
       return path.join(process.resourcesPath, 'ncm-server')
     }
-    return path.join(app.getAppPath(), 'server')
+    // 兜底：按 isPackaged 的原始逻辑
+    return app.isPackaged
+      ? path.join(process.resourcesPath, 'ncm-server')
+      : path.join(app.getAppPath(), 'server')
   }
 
   /** 私有通道入口：开发期在源码目录，打包后随 extraResources 复制到 resources 根 */
   bridgePath() {
+    const devBridge = path.join(app.getAppPath(), 'src', 'main', 'ncm', 'bridge.cjs')
+    if (fs.existsSync(devBridge)) return devBridge
+    const pkgBridge = path.join(process.resourcesPath, 'bridge.cjs')
+    if (fs.existsSync(pkgBridge)) return pkgBridge
     return app.isPackaged
       ? path.join(process.resourcesPath, 'bridge.cjs')
       : path.join(app.getAppPath(), 'src', 'main', 'ncm', 'bridge.cjs')

@@ -44,6 +44,7 @@ function createWindow() {
     title: '网易牛具 - Netease Track Resolver',
     backgroundColor: '#121212',
     autoHideMenuBar: true,
+    frame: false, // 无边框：去掉系统标题栏白条，窗口控制嵌在页面 header 内
     show: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -52,6 +53,24 @@ function createWindow() {
       sandbox: false
     }
   })
+
+  // ---- 自定义标题栏：窗口控制（渲染层经通用 invoke 桥调用） ----
+  ipcMain.handle('win:minimize', () => mainWindow?.minimize())
+  ipcMain.handle('win:toggle-maximize', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  })
+  ipcMain.handle('win:close', () => mainWindow?.close())
+  ipcMain.handle('win:is-maximized', () => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized())
+  // 最大化状态变化广播（渲染层切换 还原/最大化 图标）
+  const sendMaxState = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('win:maximized', mainWindow.isMaximized())
+    }
+  }
+  mainWindow.on('maximize', sendMaxState)
+  mainWindow.on('unmaximize', sendMaxState)
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
 
