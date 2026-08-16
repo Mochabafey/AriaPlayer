@@ -175,7 +175,7 @@ export function registerAudioProtocol() {
         }
       }
 
-      const source = await openAudioSource(target, start, end, rawRange)
+      const source = await openAudioSource(target, start, end, rawRange, request.signal)
       diag(`open kind=${source.kind} start=${start} end=${end} range="${range}"`)
 
       // 等待音源期间请求已被取消（快速拖动 seek 时极常见）：AbortSignal 一旦
@@ -201,30 +201,75 @@ export function registerAudioProtocol() {
           'Content-Type': contentType,
           'Accept-Ranges': 'bytes'
         }
-        // 规范化响应：上游可能忽略 Range 回 200（Content-Length 为全长）。
-        // 统一改写为与请求对齐的 206 + Content-Range + 区间 Content-Length，
-        // 否则 Chromium media cache 按 200 完整实体管理 → seek 时 200/206 实体
-        // 冲突 → ERR=2（与 session 通道同源的问题）
+        // 铁律：发给 Chromium 的头必须与实际转发的字节数严格一致。差一个字节，
+        // Chromium 都会挂在等数据上——readyState=4 / NETWORK_IDLE 的静默卡死
         let status = res.statusCode
-        if (range && total) {
+        let skip = 0   // 上游 200 忽略 Range（body 从 0 开始）时需丢弃的头部字节数
+        let limit = -1 // 至多转发的字节数（-1 = 到上游 EOF）
+
+        if (rawRange) {
+          // 后缀 Range（bytes=-N）：Chromium 探测 M4A/MP4 尾部元数据（moov atom）
+          // 必发，seek 到后面高发。body 实际只有末尾 N 字节——若按「0 到 total」
+          // 改写（旧 bug），声明与实体不符 → demuxer 拿错数据 → 拖后必卡死。
+          // 上游 206 时区间/长度以上游为准原样透传
+          if (res.statusCode === 206 || res.headers['content-range']) {
+            status = 206
+            if (res.headers['content-range']) headers['Content-Range'] = res.headers['content-range']
+            if (res.headers['content-length']) {
+              headers['Content-Length'] = res.headers['content-length']
+              limit = parseInt(res.headers['content-length'], 10) || -1
+            }
+          } else if (total) {
+            // 上游 200 忽略后缀 Range（body 是整个文件）：丢弃头部对齐末尾 N 字节
+            const n = parseInt(rawRange.match(/bytes=-(\d+)/)?.[1] || '0', 10) || 0
+            const s0 = Math.max(0, total - n)
+            skip = s0
+            limit = total - s0
+            status = 206
+            headers['Content-Length'] = String(limit)
+            headers['Content-Range'] = `bytes ${s0}-${total - 1}/${total}`
+          } else if (res.headers['content-length']) {
+            headers['Content-Length'] = res.headers['content-length'] // 长度未知：透传
+          }
+        } else if (range && total) {
+          // 规范化响应：统一改写为与请求对齐的 206 + Content-Range + 区间
+          // Content-Length，否则 Chromium media cache 按 200 完整实体管理 →
+          // seek 时 200/206 实体冲突 → ERR=2。上游忽略 Range 回 200 时 body
+          // 从 0 开始：skip 丢头部对齐；声明了 end 的请求 limit 截断——多发
+          // 越界字节会污染连接，Chromium 实体解析错乱
           const last = end === -1 ? total - 1 : Math.min(end, total - 1)
+          skip = res.statusCode === 200 ? start : 0
+          limit = last - start + 1
           status = 206
-          headers['Content-Length'] = String(last - start + 1)
+          headers['Content-Length'] = String(limit)
           headers['Content-Range'] = `bytes ${start}-${last}/${total}`
         } else {
+          // 无 Range / 长度未知：透传上游头
           if (res.headers['content-length']) headers['Content-Length'] = res.headers['content-length']
           if (res.headers['content-range']) headers['Content-Range'] = res.headers['content-range']
         }
+
         const body = new Readable({
           read() {
             flowPaused = false
             res.resume() // 下游消费恢复时继续拉上游
           }
         })
-        // 上游忽略 Range 回 200 时 body 从 0 开始：丢弃头部 start 字节对齐声明区间
-        let skip = res.statusCode === 200 && start > 0 ? start : 0
         let lastData = Date.now()
         let flowPaused = false // 下游背压主动暂停（健康），区别于上游僵死（要杀）
+        let cut = false // 已按声明区间截断（正常收尾，非上游故障）
+        let served = 0  // 已向 Chromium 转发的字节数
+        let finished = false
+        const finish = () => {
+          if (finished) return
+          finished = true
+          clearInterval(stall)
+          diag('direct upstream end')
+          try { body.push(null) } catch { /* ignore */ }
+          if (cut) {
+            try { res.destroy() } catch { /* ignore */ }
+          }
+        }
         res.on('data', (c) => {
           lastData = Date.now()
           if (skip > 0) {
@@ -235,10 +280,16 @@ export function registerAudioProtocol() {
             c = c.subarray(skip)
             skip = 0
           }
-          if (!body.push(c)) {
+          if (limit !== -1 && served + c.length >= limit) {
+            c = c.subarray(0, limit - served)
+            cut = true
+          }
+          served += c.length
+          if (c.length && !body.push(c)) {
             flowPaused = true
             res.pause() // 缓冲满：暂停上游防内存堆积
           }
+          if (cut) return finish() // 声明区间发满：立即收尾，别让多余字节泄漏
         })
         const stall = setInterval(() => {
           // 仅在「下游在拉、上游却 10s 零字节」时熔断：背压暂停的连接是健康的
@@ -251,14 +302,11 @@ export function registerAudioProtocol() {
           clearInterval(stall)
           diag(`direct upstream closed${request.signal?.aborted ? ' [aborted]' : ''}`)
         })
-        const finish = () => {
-          clearInterval(stall)
-          diag('direct upstream end')
-          try { body.push(null) } catch { /* ignore */ }
-        }
         res.on('end', finish)
         res.on('error', (e) => {
           clearInterval(stall)
+          // 截断收尾触发的 destroy 不是故障：body 已正常结束，别把它毁掉
+          if (cut) return
           diag(`direct upstream ERROR: ${e.message}`)
           body.destroy(new Error('upstream failed'))
         })
