@@ -52,6 +52,9 @@ export function transcode(input, output, extraArgs = []) {
         '-headers',
         'Referer: https://music.163.com/\r\n'
       )
+    } else if (input.startsWith('-')) {
+      // 防御 flag 注入：本地路径以 - 开头会被 ffmpeg 当选项解析，加 ./ 前缀归一为路径
+      input = `./${input}`
     }
     args.push('-i', input, ...extraArgs, output)
     const p = spawn(ffmpegPath(), args, { windowsHide: true })

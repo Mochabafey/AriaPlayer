@@ -11,6 +11,11 @@ let prefetching = false   // 下一曲音源预解析进行中标记
 let lastSeekAt = 0        // 最近一次 seek 时刻：快速拖动期间推迟 error 恢复
 let bufferDebounce = null // waiting→buffering 防抖计时器
 let seekGuard = null      // seek 卡死看门狗：5s 未完成强制换源恢复，绝不无限卡死
+// 诊断日志开关：开发模式自动开；生产在控制台执行
+// localStorage.setItem('ncm-debug','1') 后刷新可临时打开（排障用）
+const DIAG =
+  import.meta.env.DEV ||
+  (typeof localStorage !== 'undefined' && localStorage.getItem('ncm-debug') === '1')
 
 function levelOf(q) {
   return q === 'lossless' ? 'lossless' : q === '320000' ? 'exhigh' : 'standard'
@@ -43,9 +48,9 @@ export const usePlayerStore = defineStore('player', () => {
 
   /** 事件绑定：handler 只响应 audioEl 元素的事件 */
   function bindAudioEvents(el) {
-    // 诊断时间线：audio 元素事件序列（协议层日志见 [audio-diag]）
+    // 诊断时间线：audio 元素事件序列（协议层日志见 [audio-diag]，DIAG 开关门控）
     const evLog = (ev, e) => {
-      if (e.target !== audioEl) return
+      if (!DIAG || e.target !== audioEl) return
       console.log(
         `[audio-ev] ${(performance.now() / 1000).toFixed(2)}s ${ev.padEnd(9)} rs=${el.readyState} net=${el.networkState} ct=${el.currentTime?.toFixed?.(2) ?? '-'}${el.error ? ' ERR=' + el.error.code : ''}`
       )
@@ -175,7 +180,7 @@ export const usePlayerStore = defineStore('player', () => {
     seekGuard = null
     // error 状态下 seek 传入目标位置；否则回到中断位置
     const t = targetAt ?? (audioEl.currentTime || 0)
-    console.log(`[audio-ev] recoverPlayback code=${code} at=${t.toFixed(2)} retries=${networkRetries}`)
+    if (DIAG) console.log(`[audio-ev] recoverPlayback code=${code} at=${t.toFixed(2)} retries=${networkRetries}`)
 
     if (networkRetries < 2) {
       networkRetries++
@@ -413,7 +418,7 @@ export const usePlayerStore = defineStore('player', () => {
       if (epoch !== playEpoch || !audioEl || !current.value) return
       const stuck = audioEl.seeking || Math.abs((audioEl.currentTime || 0) - t) > 1
       if (stuck && !audioEl.ended) {
-        console.log(`[audio-ev] seek guard fired: target=${t.toFixed(2)} cur=${audioEl.currentTime?.toFixed?.(2) ?? '-'} seeking=${audioEl.seeking}`)
+        if (DIAG) console.log(`[audio-ev] seek guard fired: target=${t.toFixed(2)} cur=${audioEl.currentTime?.toFixed?.(2) ?? '-'} seeking=${audioEl.seeking}`)
         recoverPlayback(audioEl.error?.code || 2, t)
       }
     }, 5000)

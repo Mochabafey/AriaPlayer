@@ -1,11 +1,10 @@
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
-import http from 'http'
-import https from 'https'
 import { Readable } from 'stream'
 import { app } from 'electron'
 import { getDb } from './db/index.js'
+import { HDRS, fetchUpstream } from './upstream.js'
 
 /**
  * 音频缓存（双层）：
@@ -20,10 +19,6 @@ const STALL_MS = 10000
 const CHUNK = 1 << 16
 const MAX_SESSIONS = 6
 const DEFAULT_LIMIT_MB = 2048
-
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
-const HDRS = { 'User-Agent': UA, Referer: 'https://music.163.com/' }
 
 function cacheRoot() {
   return path.join(app.getPath('userData'), 'audio-cache')
@@ -193,39 +188,6 @@ export function cacheClear() {
 
 /* ---- 会话层（预缓冲下载） ---- */
 
-/** 请求上游并手动跟随 3xx（Node http.get 不跟随）。
- *  超时只熔断「等响应头」阶段：正文阶段下游背压暂停（如播放暂停后缓冲读满）
- *  是健康空闲，按空闲杀连接会让恢复播放瞬间断流。
- *  signal 集成：客户端放弃请求（快速拖动 seek 抛弃旧流）时立即断开上游，
- *  否则旧连接要挂满 15s 超时才死——快速拖动 N 次 = N 条僵尸连接抢带宽，越拖越卡 */
-function fetchRedirect(url, headers, redirects = 0, signal) {
-  return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('too many redirects'))
-    const mod = url.startsWith('https') ? https : http
-    let gotHeaders = false
-    const req = mod.get(url, { headers }, (res) => {
-      gotHeaders = true
-      const loc = res.headers.location
-      if ([301, 302, 303, 307, 308].includes(res.statusCode) && loc) {
-        res.resume()
-        return resolve(fetchRedirect(new URL(loc, url).toString(), headers, redirects + 1, signal))
-      }
-      resolve(res)
-    })
-    req.on('error', reject)
-    if (signal) {
-      if (signal.aborted) {
-        req.destroy()
-        return reject(new Error('client aborted'))
-      }
-      signal.addEventListener('abort', () => req.destroy(new Error('client aborted')))
-    }
-    req.setTimeout(15000, () => {
-      if (!gotHeaders) req.destroy(new Error('upstream timeout'))
-    })
-  })
-}
-
 const sessions = new Map() // key -> Session
 
 class Session {
@@ -284,7 +246,7 @@ class Session {
   _connect(offset) {
     const headers = { ...HDRS }
     if (offset > 0) headers.Range = `bytes=${offset}-`
-    return fetchRedirect(this.url, headers)
+    return fetchUpstream(this.url, headers)
   }
 
   /** 数据泵：落盘 + 停滞看门狗。上游断开/僵死 → _retryOrFail 断点续传 */
@@ -455,7 +417,7 @@ export async function openDirect(url, start, end, rawRange, signal) {
   } else if (start > 0 || end !== -1) {
     headers.Range = end !== -1 ? `bytes=${start}-${end}` : `bytes=${start}-`
   }
-  const res = await fetchRedirect(url, headers, 0, signal)
+  const res = await fetchUpstream(url, headers, signal)
   if (res.statusCode >= 400) {
     res.resume()
     throw new Error('upstream ' + res.statusCode)

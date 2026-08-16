@@ -22,6 +22,21 @@ scripts/samples/
 .vscode/
 .idea/
 
+# 代码索引/分析产物
+server/.codegraph/
+
+# 本地排障脚本与截图（不入库）
+_*.png
+_*.ps1
+ntr-*.png
+screenshot*.png
+final_state.png
+scan*.ps1
+cap*.ps1
+winutil.ps1
+act.ps1
+activate.ps1
+
 # api-enhanced 运行时数据（设备 ID 池等，不入库）
 server/data/deviceid.txt
 

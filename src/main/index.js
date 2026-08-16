@@ -31,6 +31,10 @@ process.on('uncaughtException', (e) => {
   if (e && (e.code === 'EPIPE' || e.code === 'ECONNRESET' || e.code === 'ENOTCONN')) return
   console.error('[main] uncaughtException', e)
 })
+// Promise 内炸掉的错默认静默丢弃（Node 行为），统一落日志便于排障
+process.on('unhandledRejection', (e) => {
+  console.error('[main] unhandledRejection', e)
+})
 
 let mainWindow = null
 const server = new NcmServer()
@@ -51,7 +55,7 @@ function createWindow() {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true // preload 只用 contextBridge/ipcRenderer，无 Node 依赖
     }
   })
 

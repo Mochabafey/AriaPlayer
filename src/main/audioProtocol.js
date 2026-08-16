@@ -1,10 +1,9 @@
 import { protocol } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import http from 'http'
-import https from 'https'
 import { Readable } from 'stream'
 import { openAudioSource, createRangeStream, sessionInfo, toWeb } from './audioCache'
+import { UA, HDRS, fetchUpstream, parseSafeHttpUrl } from './upstream.js'
 
 const FORWARD_HEADERS = [
   'content-type',
@@ -17,7 +16,9 @@ const FORWARD_HEADERS = [
 ]
 
 let diagSeq = 0
-
+// 诊断日志开关：NCM_DEBUG=1 或开发模式（ELECTRON_RENDERER_URL 存在）才打
+// [audio-diag]，生产环境每个请求 4-6 行日志纯属刷屏
+const DIAG_ENABLED = !!process.env.NCM_DEBUG || !!process.env.ELECTRON_RENDERER_URL
 const MIME = {
   '.mp3': 'audio/mpeg',
   '.flac': 'audio/flac',
@@ -26,40 +27,6 @@ const MIME = {
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg',
   '.wav': 'audio/wav'
-}
-
-/**
- * 用 Node 原生 http/https 请求上游（绕开 Chromium 网络栈）。
- * net.fetch 在代理环境对 http 目标常报 ERR_BLOCKED_BY_CLIENT，导致音频无法代理。
- * 手动跟随 3xx 重定向（Node http.get 不跟随；kuwo 等第三方源常跳转）。
- */
-async function fetchUpstream(url, headers, redirects = 0) {
-  if (redirects > 5) throw new Error('too many redirects')
-  const res = await fetchOnce(url, headers)
-  const loc = res.headers.location
-  if ([301, 302, 303, 307, 308].includes(res.statusCode) && loc) {
-    const next = new URL(loc, url).toString()
-    res.resume() // 丢弃重定向响应体再请求下一跳
-    return fetchUpstream(next, headers, redirects + 1)
-  }
-  return res
-}
-
-function fetchOnce(url, headers) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? https : http
-    let gotHeaders = false
-    const req = mod.get(url, { headers }, (res) => {
-      gotHeaders = true
-      resolve(res)
-    })
-    req.on('error', reject)
-    // 超时只熔断「等响应头」阶段：正文阶段 Chromium 缓冲读满会暂停读取（正常背压），
-    // 若按空闲销毁连接，缓冲播完上游已被杀 → 断流卡死。此为「播一会就卡住重播」的元凶。
-    req.setTimeout(20000, () => {
-      if (!gotHeaders) req.destroy(new Error('upstream timeout'))
-    })
-  })
 }
 
 /**
@@ -72,7 +39,9 @@ export function registerAudioProtocol() {
     // 诊断日志：定位 seek 断流的真实环节。日志开头带序号，便于关联同一请求
     const diagId = ++diagSeq
     const t0 = Date.now()
-    const diag = (msg) => console.log(`[audio-diag #${diagId}] +${Date.now() - t0}ms ${msg}`)
+    const diag = DIAG_ENABLED
+      ? (msg) => console.log(`[audio-diag #${diagId}] +${Date.now() - t0}ms ${msg}`)
+      : () => {}
     try {
       const u = new URL(request.url)
       const range = request.headers.get('range')
@@ -116,15 +85,17 @@ export function registerAudioProtocol() {
       }
 
       // 远程图片代理：ncm-audio://img?url=<远程图片>，用 Node http 请求（剥离系统代理，
-      // 避免 Chromium 网络栈被代理软件拦截导致封面/头像加载失败 ERR_BLOCKED_BY_CLIENT）
+      // 避免 Chromium 网络栈被代理软件拦截导致封面/头像加载失败 ERR_BLOCKED_BY_CLIENT）。
+      // parseSafeHttpUrl：只放行公网 http(s)，堵 SSRF 内网探测
       if (u.hostname === 'img') {
         const target = u.searchParams.get('url')
-        if (!target || !/^https?:\/\//.test(target)) return new Response('invalid url', { status: 400 })
-        const upstream = await fetchUpstream(target, {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-          Referer: 'https://music.163.com/'
-        })
+        const safe = parseSafeHttpUrl(target)
+        if (!safe) return new Response('invalid url', { status: 400 })
+        const upstream = await fetchUpstream(
+          safe.toString(),
+          { 'User-Agent': UA, Referer: 'https://music.163.com/' },
+          request.signal
+        )
         if (upstream.statusCode >= 400) {
           upstream.resume()
           return new Response('upstream ' + upstream.statusCode, { status: upstream.statusCode })
@@ -138,16 +109,16 @@ export function registerAudioProtocol() {
       }
 
       const target = u.searchParams.get('url')
-      if (!target || !/^https?:\/\//.test(target)) {
-        return new Response('invalid url', { status: 400 })
-      }
-      // 白名单校验取 pathname（排除查询参数）：解灰地址形如
-      // http://bd-er.kuwo.cn/.../xxx.flac?from=bodian，带 query 时全串正则永远匹配不上，
-      // 会被误杀成 403 → 触发 ffmpeg 转码（整首下载从头播）或直接播放失败
-      let targetPath = ''
-      try { targetPath = new URL(target).pathname } catch { /* 上面已校验过协议 */ }
-      const extOk = /\.(mp3|flac|m4a|aac|ogg|wav|mp4|m4s|m3u8|ts)$/i.test(targetPath)
-      const hostOk = /netease|126\.net|music\.163/i.test(target)
+      // 安全校验：解析真实 URL 后判协议 + 非内网（堵 SSRF）。旧实现对整个
+      // URL 串做子串匹配，`http://evil.com/?x=netease` 即可绕过
+      const safe = parseSafeHttpUrl(target)
+      if (!safe) return new Response('invalid url', { status: 400 })
+      // hostname 白名单（基于解析后的真实域名，非子串匹配）：网易系 CDN +
+      // 常见解灰源；否则回退看路径是否为音频文件后缀
+      const hostOk = /(\.|^)(music\.163\.com|126\.net|netease\.com|163\.com|kuwo\.cn|kugou\.com|migu\.cn|qq\.com)$/i.test(
+        safe.hostname
+      )
+      const extOk = /\.(mp3|flac|m4a|aac|ogg|wav|mp4|m4s|m3u8|ts)$/i.test(safe.pathname)
       if (!extOk && !hostOk) {
         return new Response('url rejected', { status: 403 })
       }
