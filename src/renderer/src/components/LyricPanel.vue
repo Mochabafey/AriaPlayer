@@ -31,22 +31,66 @@ const bgStyle = computed(() => {
     : {}
 })
 
-watch(active, async (idx) => {
-  if (idx < 0 || !listRef.value) return
-  await nextTick()
-  const el = listRef.value.querySelector(`[data-idx="${idx}"]`)
-  el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+/* ================= 歌词滚动：rAF 自定义缓动 =================
+ * 原生 scrollIntoView({behavior:'smooth'}) 的时长随距离变化且互相打断，
+ * 连续切行时顿挫感明显；改为固定时长 easeOutCubic（起步快收尾缓），
+ * 每次切行从当前位置重新起跳，观感连续。 */
+let scrollRaf = 0
+let userScrollUntil = 0 // 用户手动翻动歌词后，暂停自动跟滚直到此时间戳
+
+function centerLine(idx, animate = true) {
+  const list = listRef.value
+  if (!list) return
+  const el = list.querySelector(`[data-idx="${idx}"]`)
+  if (!el) return
+  const rect = list.getBoundingClientRect()
+  const elRect = el.getBoundingClientRect()
+  const target =
+    list.scrollTop + (elRect.top - rect.top) - (rect.height - elRect.height) / 2
+  const clamped = Math.max(0, Math.min(target, list.scrollHeight - list.clientHeight))
+  if (!animate) {
+    list.scrollTop = clamped
+    return
+  }
+  if (performance.now() < userScrollUntil) return // 用户正在翻看，别抢滚动条
+  cancelAnimationFrame(scrollRaf)
+  const from = list.scrollTop
+  if (Math.abs(clamped - from) < 1) return
+  const start = performance.now()
+  const dur = 460
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / dur)
+    const e = 1 - (1 - t) ** 3 // easeOutCubic
+    list.scrollTop = from + (clamped - from) * e
+    if (t < 1) scrollRaf = requestAnimationFrame(step)
+  }
+  scrollRaf = requestAnimationFrame(step)
+}
+
+/** 用户滚轮/触摸翻动歌词：中止动画并暂停自动跟滚 2.6s */
+function onUserScroll() {
+  cancelAnimationFrame(scrollRaf)
+  userScrollUntil = performance.now() + 2600
+}
+
+/** 点击歌词行 seek：主动恢复跟滚（点击即表示要跟着这句走） */
+function seekLine(line) {
+  userScrollUntil = 0
+  player.seek(line.time)
+}
+
+watch(active, (idx) => {
+  if (idx >= 0) centerLine(idx)
 })
 
 // 切歌后歌词数组被替换：若新旧 active 索引相同上面的 watch 不会触发，
-// 需主动把列表滚回当前行，避免停留在上一首的滚动位置
+// 需主动把列表滚回当前行（无动画直跳），避免停留在上一首的滚动位置
 watch(
   () => player.lyrics,
   async () => {
     await nextTick()
     if (!listRef.value) return
-    const el = listRef.value.querySelector(`[data-idx="${active.value}"]`)
-    if (el) el.scrollIntoView({ block: 'center' })
+    if (active.value >= 0) centerLine(active.value, false)
     else listRef.value.scrollTop = 0
   }
 )
@@ -223,6 +267,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  cancelAnimationFrame(scrollRaf)
   clearTimeout(idleTimer)
   window.removeEventListener('mousemove', poke)
   window.removeEventListener('pointerdown', poke)
@@ -248,7 +293,7 @@ onBeforeUnmount(() => {
           <div class="t-artist">{{ player.current.artist }}</div>
         </div>
       </div>
-      <div class="lyric-list" ref="listRef">
+      <div class="lyric-list" ref="listRef" @wheel.passive="onUserScroll" @touchmove.passive="onUserScroll">
         <p v-if="!hasLyric" class="no-lyric">暂无歌词</p>
         <template v-else>
           <p
@@ -258,7 +303,7 @@ onBeforeUnmount(() => {
             class="lyric-line"
             :class="{ active: i === active }"
             title="跳转到此句"
-            @click="player.seek(line.time)"
+            @click="seekLine(line)"
           >
             {{ line.text }}
             <span v-if="showTrans && line.trans" class="lyric-trans">{{ line.trans }}</span>
@@ -474,7 +519,8 @@ onBeforeUnmount(() => {
   max-width: 560px;
   height: var(--lyric-h);
   overflow-y: auto;
-  scroll-behavior: smooth;
+  /* 滚动由 rAF 逐帧驱动，禁用原生 smooth（避免每次 scrollTop 赋值被排队成动画） */
+  overscroll-behavior: contain;
   padding: calc(var(--lyric-h) / 2 - 22px) 24px;
   mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
   -webkit-mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
