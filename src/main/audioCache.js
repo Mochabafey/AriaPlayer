@@ -182,12 +182,16 @@ export function cacheClear() {
 
 /* ---- 会话层（预缓冲下载） ---- */
 
-/** 请求上游并手动跟随 3xx（Node http.get 不跟随） */
+/** 请求上游并手动跟随 3xx（Node http.get 不跟随）。
+ *  超时只熔断「等响应头」阶段：正文阶段下游背压暂停（如播放暂停后缓冲读满）
+ *  是健康空闲，按空闲杀连接会让恢复播放瞬间断流 */
 function fetchRedirect(url, headers, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('too many redirects'))
     const mod = url.startsWith('https') ? https : http
+    let gotHeaders = false
     const req = mod.get(url, { headers }, (res) => {
+      gotHeaders = true
       const loc = res.headers.location
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && loc) {
         res.resume()
@@ -196,7 +200,9 @@ function fetchRedirect(url, headers, redirects = 0) {
       resolve(res)
     })
     req.on('error', reject)
-    req.setTimeout(15000, () => req.destroy(new Error('upstream timeout')))
+    req.setTimeout(15000, () => {
+      if (!gotHeaders) req.destroy(new Error('upstream timeout'))
+    })
   })
 }
 
@@ -449,7 +455,10 @@ export async function openDirect(url, start, end, rawRange) {
  * 打开音频读通道，三档策略：
  *  1. 持久缓存命中 → 本地文件会话（任意位置，零网络）
  *  2. 活动会话已覆盖 start → 复用（tail -f 跟随下载进度）
- *  3. 其余（超前 seek / 后缀 Range / 无会话覆盖）→ 直连上游单流
+ *  3. 其余（超前 seek / 后缀 Range / 无会话）→ 直连上游单流
+ * 注意：超前 seek 一律直连，**不再**「每次 seek 新建下载会话」——快速拖动时
+ * 半路会话成堆（各自占用上游连接抢带宽、临时文件 churn），且 dataStart≠0
+ * 永远无法转正，纯浪费。原会话继续在后台补完整文件供持久化。
  * 失败抛错（协议层转 502 触发播放器重试）。
  */
 export async function openAudioSource(url, start, end, rawRange) {
@@ -457,22 +466,32 @@ export async function openAudioSource(url, start, end, rawRange) {
   if (rawRange) return { kind: 'direct', ...(await openDirect(url, 0, -1, rawRange)) }
   const hit = lookupPersisted(url)
   if (hit) return { kind: 'session', sess: persistedSession(hit) }
-  let created = false
-  let sess = findSession(url, start)
-  if (!sess) {
-    // 全新 URL：建会话走预缓冲（起播等待首块数据 = 正常的初始缓冲）
-    sess = new Session(url, start)
-    created = true
+
+  // 清掉同 URL 的失败残留会话：既不能复用，还会让新建会话撞 key 泄漏句柄
+  for (const s of [...sessions.values()]) {
+    if (s.url === url && s.failed) s.destroy()
   }
-  await sess.headerReady
-  if (sess.failed) throw sess.error || new Error('audio cache failed')
-  if (created || start < sess.downloaded) {
+
+  const sess = findSession(url, start)
+  if (sess) {
+    await sess.headerReady
+    if (sess.failed) throw sess.error || new Error('audio cache failed')
     sess.touch()
     return { kind: 'session', sess }
   }
-  // 会话存在但进度未覆盖 start（超前 seek / 恢复播放）：直连上游立即服务，
+
+  // 该 URL 已有会话在下载但未覆盖 start（超前 seek）：直连立即服务，
   // 不等顺序下载追赶（等 = 卡死转圈），后台会话继续为缓存补完整文件
-  return { kind: 'direct', ...(await openDirect(url, start, end)) }
+  if ([...sessions.values()].some((s) => s.url === url && !s.failed)) {
+    return { kind: 'direct', ...(await openDirect(url, start, end)) }
+  }
+
+  // 全新 URL：建会话走预缓冲（起播等待首块数据 = 正常的初始缓冲）
+  const fresh = new Session(url, start)
+  await fresh.headerReady
+  if (fresh.failed) throw fresh.error || new Error('audio cache failed')
+  fresh.touch()
+  return { kind: 'session', sess: fresh }
 }
 
 /**

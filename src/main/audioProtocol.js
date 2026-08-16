@@ -165,6 +165,16 @@ export function registerAudioProtocol() {
 
       const source = await openAudioSource(target, start, end, rawRange)
 
+      // 等待音源期间请求已被取消（快速拖动 seek 时极常见）：AbortSignal 一旦
+      // 已 aborted，后续 addEventListener('abort') 永远不会触发——若不在此处
+      // 显式清理，直连上游连接会僵死泄漏（占带宽 → 越拖越卡）
+      if (request.signal?.aborted) {
+        if (source.kind === 'direct') {
+          try { source.res.destroy() } catch { /* ignore */ }
+        }
+        return new Response(null, { status: 499 })
+      }
+
       // 直连通道：单连接透传，不落盘。挂停滞看门狗防上游静默僵死（无 error 事件
       // 的卡死），熔断后 Chromium 收到网络错误 → 渲染层恢复链接手
       if (source.kind === 'direct') {

@@ -8,6 +8,8 @@ let playEpoch = 0      // 切歌代次号：旧请求的异步结果若晚于切
 let networkRetries = 0 // 断流恢复计数（成功 playing / 切歌 / 手动重试后清零）
 let recoverQueued = false // error 风暴合并窗口：风暴平息后统一恢复一次
 let prefetching = false   // 下一曲音源预解析进行中标记
+let lastSeekAt = 0        // 最近一次 seek 时刻：快速拖动期间推迟 error 恢复
+let bufferDebounce = null // waiting→buffering 防抖计时器
 
 function levelOf(q) {
   return q === 'lossless' ? 'lossless' : q === '320000' ? 'exhigh' : 'standard'
@@ -49,32 +51,61 @@ export const usePlayerStore = defineStore('player', () => {
     })
     audioEl.addEventListener('play', () => (playing.value = true))
     audioEl.addEventListener('pause', () => {
+      clearTimeout(bufferDebounce)
+      bufferDebounce = null
       // 切歌流程会先拆 src 再 pause（见 startCurrent）：无 src 的 pause 是程序性
       // 停流而非用户暂停，保留乐观播放态，否则播放键会闪成暂停再弹回（抽搐来源）
       if (!audioEl.src) return
       playing.value = false
     })
-    audioEl.addEventListener('waiting', () => (buffering.value = true))
+    audioEl.addEventListener('waiting', () => {
+      // 250ms 防抖：seek 引起的瞬时 waiting 不闪转圈（快速拖动时播放键
+      // 在 播放/转圈 间高频闪烁的抽搐来源）；真卡顿 250ms 后才显示缓冲
+      if (bufferDebounce) return
+      bufferDebounce = setTimeout(() => {
+        bufferDebounce = null
+        buffering.value = true
+      }, 250)
+    })
     audioEl.addEventListener('playing', () => {
+      clearTimeout(bufferDebounce)
+      bufferDebounce = null
       buffering.value = false
       networkRetries = 0
+    })
+    audioEl.addEventListener('seeked', () => {
+      // seek 已完成但数据就位（未触发 playing，如暂停状态下拖动）：同样不显示缓冲
+      if (!audioEl.ended && audioEl.readyState >= 2) {
+        clearTimeout(bufferDebounce)
+        bufferDebounce = null
+        buffering.value = false
+      }
     })
     audioEl.addEventListener('ended', () => next(true))
     audioEl.addEventListener('error', () => {
       const code = audioEl.error?.code
-      if (code === 1) return // aborted：切歌拆流正常现象
+      if (code === 1) return // aborted：切歌/快速 seek 拆流正常现象
       // 合并 error 风暴：800ms 内连续 error 只在平息后统一恢复一次。
       // 逐个响应会让 playing 高频震荡 → 播放键在 播放/暂停/转圈 间疯狂抽搐
       if (recoverQueued) return
       recoverQueued = true
-      setTimeout(() => {
-        recoverQueued = false
-        if (!audioEl?.error) return
-        if (!current.value || current.value.fromLocal) return
-        recoverPlayback(audioEl.error.code)
-      }, 800)
+      scheduleRecover()
     })
     audioEl.volume = volume.value
+  }
+
+  /** error 恢复调度：合并风暴 + 等用户停止快速拖动。
+   *  拖动中途的错误多半是 seek 中间态（旧请求被拆/新请求在途），
+   *  停手后大多自愈；此刻重置 src 恢复反而会把位置跳回旧处（可见抽搐） */
+  function scheduleRecover() {
+    const wait = Math.max(800, lastSeekAt + 1200 - Date.now())
+    setTimeout(() => {
+      if (Date.now() - lastSeekAt < 800) return scheduleRecover() // 还在拖，继续等
+      recoverQueued = false
+      if (!audioEl?.error) return
+      if (!current.value || current.value.fromLocal) return
+      recoverPlayback(audioEl.error.code)
+    }, wait)
   }
 
   /** 恢复播放后跳回中断位置（epoch 保护：中途切歌则丢弃，防误 seek 到新歌） */
@@ -325,7 +356,10 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function seek(t) {
-    if (audioEl && isFinite(t)) audioEl.currentTime = t
+    if (audioEl && isFinite(t)) {
+      lastSeekAt = Date.now()
+      audioEl.currentTime = t
+    }
   }
 
   function setVolume(v) {

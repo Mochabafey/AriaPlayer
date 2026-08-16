@@ -263,6 +263,8 @@ onUnmounted(() => {
   border-radius: 0 3px 3px 0;
   transition: width 0.1s linear;
 }
+/* 拖动中即时跟随指针，去掉过渡追赶的拖沓感 */
+.seek-track.dragging .seek-fill { transition: none; }
 .seek-knob {
   position: absolute;
   top: 50%;
