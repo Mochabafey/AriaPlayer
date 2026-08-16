@@ -476,7 +476,7 @@ onBeforeUnmount(() => {
 }
 .lyric-line {
   text-align: center;
-  font-size: clamp(15px, 1.25vw, 18px);
+  font-size: clamp(17px, 1.4vw, 21px);
   line-height: 2.1;
   color: rgba(255, 255, 255, 0.4);
   transition: color 0.3s var(--ease), font-size 0.3s var(--ease), font-weight 0.3s;
@@ -484,19 +484,20 @@ onBeforeUnmount(() => {
 }
 .lyric-line.active {
   color: #fff;
-  font-size: clamp(17px, 1.5vw, 21px);
+  font-size: clamp(19px, 1.65vw, 24px);
   font-weight: 700;
 }
-/* 翻译行：小一号、半透明，激活时同样提亮 */
+/* 翻译行：紧跟歌词、小一号但层级协调，激活时同样提亮 */
 .lyric-trans {
   display: block;
-  margin-top: 2px;
-  font-size: clamp(12px, 1vw, 15px);
+  margin-top: 1px;
+  line-height: 1.5;
+  font-size: clamp(14px, 1.15vw, 17px);
   font-weight: 400;
-  color: rgba(255, 255, 255, 0.38);
+  color: rgba(255, 255, 255, 0.45);
   transition: color 0.3s var(--ease);
 }
-.lyric-line.active .lyric-trans { color: rgba(255, 255, 255, 0.72); }
+.lyric-line.active .lyric-trans { color: rgba(255, 255, 255, 0.78); }
 /* 翻译开关激活态 */
 .c-btn.trans-btn.on { color: #fff; }
 .c-btn.trans-btn.on::after {

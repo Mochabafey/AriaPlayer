@@ -1,8 +1,11 @@
 import { app } from 'electron'
 import fs from 'fs'
+import http from 'http'
 import path from 'path'
 import crypto from 'crypto'
-import { stores, QUALITY_MAP } from './store/db.js'
+import { settingsRepo } from './db/settings.js'
+import { downloadsRepo } from './db/downloads.js'
+import { QUALITY_MAP } from './constants.js'
 
 const CONCURRENCY = 2
 
@@ -16,43 +19,48 @@ function sanitize(name) {
 
 /**
  * 下载管理器：并发池、songId 去重、断点续传（Range）、进度推送。
+ * 任务状态持久化在 SQLite downloads 表（重启自动恢复）。
  */
 export class DownloadManager {
   constructor(getWindow, getServer) {
     this.getWindow = getWindow
     this.getServer = getServer
     this.queue = []
-    this.running = new Map() // id -> {task, stream, controller}
+    this.running = new Map() // id -> {task, controller}
     this.initialized = false
   }
 
-  /** 兜底：调用方未传 url 时，主进程向 api-enhanced 现取播放地址 */
+  /** 兜底：调用方未传 url 时，主进程经私有 socket 通道向 api-enhanced 现取播放地址 */
   async resolveUrl(songId, quality = '320000') {
     const srv = this.getServer && this.getServer()
     if (!srv || srv.status !== 'ready') return null
     const level = quality === 'lossless' ? 'lossless' : quality === '320000' ? 'exhigh' : 'standard'
-    try {
-      const res = await fetch(
-        `http://127.0.0.1:${srv.port}/song/url/v1?id=${encodeURIComponent(songId)}&level=${level}`,
-        { signal: AbortSignal.timeout(30000) }
-      )
-      const data = await res.json()
-      return data.data?.[0]?.url || null
-    } catch {
-      return null
-    }
+    return new Promise((resolve) => {
+      const req = http.request({
+        socketPath: srv.socketPath,
+        path: `/song/url/v1?id=${encodeURIComponent(songId)}&level=${level}`,
+        method: 'GET'
+      }, (res) => {
+        const chunks = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString('utf-8'))
+            resolve(data.data?.[0]?.url || null)
+          } catch { resolve(null) }
+        })
+      })
+      req.on('error', () => resolve(null))
+      req.setTimeout(30000, () => req.destroy(new Error('resolve timeout')))
+      req.end()
+    })
   }
 
   init() {
     if (this.initialized) return
     this.initialized = true
     // 恢复上次未完成任务为 paused
-    stores.downloads.update((d) => {
-      d.tasks = d.tasks || []
-      d.tasks.forEach((t) => {
-        if (t.status === 'downloading' || t.status === 'pending') t.status = 'paused'
-      })
-    })
+    downloadsRepo.pauseAllActive()
   }
 
   send(channel, payload) {
@@ -61,14 +69,20 @@ export class DownloadManager {
   }
 
   list() {
-    return stores.downloads.get('tasks') || []
+    return downloadsRepo.list()
+  }
+
+  find(id) {
+    return downloadsRepo.get(id)
   }
 
   async add({ songId, title, artist, url, quality = '320000', cover }) {
-    const tasks = stores.downloads.get('tasks') || []
     // songId 去重：已存在则拒绝
-    if (songId && tasks.some((t) => t.songId === songId && t.status !== 'failed' && t.status !== 'paused')) {
-      return { ok: false, reason: 'duplicated', message: '该歌曲已在下载列表中', task: tasks.find((t) => t.songId === songId) }
+    if (songId) {
+      const existing = downloadsRepo.getBySongId(songId)
+      if (existing && existing.status !== 'failed' && existing.status !== 'paused') {
+        return { ok: false, reason: 'duplicated', message: '该歌曲已在下载列表中', task: existing }
+      }
     }
     // 兜底：未传 url 时主进程现取播放地址
     if (!url && songId) {
@@ -94,9 +108,7 @@ export class DownloadManager {
       createdAt: Date.now(),
       cover: cover || null
     }
-    stores.downloads.update((d) => {
-      d.tasks = [task, ...(d.tasks || [])]
-    })
+    downloadsRepo.insert(task)
     this.queue.push(task)
     this.pump()
     return { ok: true, task }
@@ -111,14 +123,14 @@ export class DownloadManager {
   }
 
   async run(task) {
-    const settings = stores.settings.get()
-    const dir = settings.downloadDir || app.getPath('music')
+    const dir = settingsRepo.get('downloadDir') || app.getPath('music')
     fs.mkdirSync(dir, { recursive: true })
 
     const dest = path.join(dir, `${sanitize(task.artist)} - ${sanitize(task.title)}.${task.ext}`)
     task.path = dest
     task.status = 'downloading'
     task.error = null
+    this.persist(task)
 
     const controller = new AbortController()
     this.running.set(task.id, { task, controller })
@@ -151,6 +163,7 @@ export class DownloadManager {
         if (now - lastEmit > 200) {
           lastEmit = now
           this.send('ncm:download-progress', { ...task })
+          this.persist(task)
         }
         if (!stream.write(chunk)) await new Promise((r) => stream.once('drain', r))
       }
@@ -160,7 +173,7 @@ export class DownloadManager {
       task.status = 'done'
       this.send('ncm:download-progress', { ...task })
       this.send('ncm:download-done', { ...task })
-      this.persist()
+      this.persist(task)
     } catch (e) {
       if (e.name === 'AbortError') {
         task.status = 'paused'
@@ -169,7 +182,7 @@ export class DownloadManager {
         task.error = e.message
       }
       this.send('ncm:download-progress', { ...task })
-      this.persist()
+      this.persist(task)
     } finally {
       this.running.delete(task.id)
       this.pump()
@@ -182,7 +195,7 @@ export class DownloadManager {
     const task = this.find(id)
     if (task && (task.status === 'pending' || task.status === 'downloading')) {
       task.status = 'paused'
-      this.persist()
+      this.persist(task)
     }
   }
 
@@ -193,7 +206,7 @@ export class DownloadManager {
     task.error = null
     task.received = 0
     task.total = 0
-    this.persist()
+    this.persist(task)
     // 删掉残缺文件重新下载
     if (task.path && fs.existsSync(task.path)) {
       try { fs.unlinkSync(task.path) } catch { /* ignore */ }
@@ -209,17 +222,11 @@ export class DownloadManager {
       if (deleteFile && task.path && fs.existsSync(task.path)) {
         try { fs.unlinkSync(task.path) } catch { /* ignore */ }
       }
-      stores.downloads.update((d) => {
-        d.tasks = d.tasks.filter((t) => t.id !== id)
-      })
+      downloadsRepo.remove(id)
     }
   }
 
-  find(id) {
-    return (stores.downloads.get('tasks') || []).find((t) => t.id === id)
-  }
-
-  persist() {
-    stores.downloads.saveNow()
+  persist(task) {
+    if (task) downloadsRepo.update(task)
   }
 }

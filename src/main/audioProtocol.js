@@ -32,10 +32,16 @@ const MIME = {
 function fetchUpstream(url, headers) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http
-    const req = mod.get(url, { headers }, (res) => resolve(res))
+    let gotHeaders = false
+    const req = mod.get(url, { headers }, (res) => {
+      gotHeaders = true
+      resolve(res)
+    })
     req.on('error', reject)
+    // 超时只熔断「等响应头」阶段：正文阶段 Chromium 缓冲读满会暂停读取（正常背压），
+    // 若按空闲销毁连接，缓冲播完上游已被杀 → 断流卡死。此为「播一会就卡住重播」的元凶。
     req.setTimeout(20000, () => {
-      req.destroy(new Error('upstream timeout'))
+      if (!gotHeaders) req.destroy(new Error('upstream timeout'))
     })
   })
 }
@@ -133,6 +139,8 @@ export function registerAudioProtocol() {
       }
       if (upstream.statusCode === 206) respHeaders['Accept-Ranges'] = 'bytes'
       const webStream = Readable.toWeb(upstream)
+      // Chromium 取消请求（切歌/seek 抛弃旧流）时同步断开上游，避免旧下载继续抢带宽
+      request.signal?.addEventListener('abort', () => upstream.destroy())
       return new Response(webStream, { status: upstream.statusCode, headers: respHeaders })
     } catch (e) {
       console.error('[ncm-audio] proxy error', e.message)

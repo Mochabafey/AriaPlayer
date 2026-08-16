@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { decryptNcmFile, collectNcmFiles, writeTags } from '../ncm/ncmDecrypt.mjs'
 import { transcode } from '../ffmpeg.js'
-import { stores } from '../store/db.js'
+import { settingsRepo } from '../db/settings.js'
 
 /** 目标格式 → ffmpeg 转码参数（-vn 去视频轨；转码在 IPC 层做，ncmDecrypt 保持纯 JS） */
 const FORMAT_OPTS = {
@@ -34,7 +34,7 @@ export function registerNcmConvertIpc(getWindow) {
 
   // 计算 dialog 的 defaultPath：用上次记住的路径（文件则取所在目录）
   function lastDefaultPath() {
-    const lastPath = stores.settings.get('lastConvertPath')
+    const lastPath = settingsRepo.get('lastConvertPath')
     if (lastPath && fs.existsSync(lastPath)) {
       return fs.statSync(lastPath).isDirectory() ? lastPath : path.dirname(lastPath)
     }
@@ -42,8 +42,7 @@ export function registerNcmConvertIpc(getWindow) {
   }
 
   function saveLastPath(p) {
-    stores.settings.set('lastConvertPath', p)
-    stores.settings.saveNow()
+    settingsRepo.set('lastConvertPath', p)
   }
 
   async function showPicker(opts) {

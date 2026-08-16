@@ -1,9 +1,11 @@
 import { spawn } from 'child_process'
 import net from 'net'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { app } from 'electron'
-import { stores, QUALITY_MAP } from './store/db.js'
+import { settingsRepo } from './db/settings.js'
+import { QUALITY_MAP } from './constants.js'
 
 const START_TIMEOUT = 60000
 const RESTART_MAX = 3
@@ -11,13 +13,15 @@ const RESTART_DELAY = 5000
 
 /**
  * api-enhanced 子进程生命周期管理。
- * 以 Electron 自身可执行文件 + ELECTRON_RUN_AS_NODE=1 模式 spawn 成 Node 子进程，
- * 运行 vendored 的 api-enhanced（app.js），监听随机空闲端口。
+ * 以 Electron 自身可执行文件 + ELECTRON_RUN_AS_NODE=1 模式 spawn 为 Node 子进程，
+ * 入口是 ncm/bridge.cjs：vendored 服务不监听 TCP 端口，而是挂在
+ * Named Pipe / Unix Domain Socket 私有通道上（见 bridge.cjs）。
+ * 主进程所有请求走 http.request({ socketPath })，零 TCP 端口占用。
  */
 export class NcmServer {
   constructor() {
     this.child = null
-    this.port = null
+    this.socketPath = null
     this.status = 'down' // down | starting | ready | missing
     this.restarts = 0
     this.stopping = false
@@ -33,16 +37,20 @@ export class NcmServer {
     return path.join(app.getAppPath(), 'server')
   }
 
-  findFreePort() {
-    return new Promise((resolve, reject) => {
-      const srv = net.createServer()
-      srv.unref()
-      srv.on('error', reject)
-      srv.listen(0, '127.0.0.1', () => {
-        const p = srv.address().port
-        srv.close(() => resolve(p))
-      })
-    })
+  /** 私有通道入口：开发期在源码目录，打包后随 extraResources 复制到 resources 根 */
+  bridgePath() {
+    return app.isPackaged
+      ? path.join(process.resourcesPath, 'bridge.cjs')
+      : path.join(app.getAppPath(), 'src', 'main', 'ncm', 'bridge.cjs')
+  }
+
+  /** 每次启动生成新的通道名：Windows 命名管道 / Unix socket 文件，天然无端口冲突 */
+  newSocketPath() {
+    const uniq = `${process.pid}-${Date.now().toString(36)}`
+    if (process.platform === 'win32') {
+      return `\\\\.\\pipe\\ntr-api-${uniq}`
+    }
+    return path.join(os.tmpdir(), `ntr-api-${uniq}.sock`)
   }
 
   setStatus(s) {
@@ -51,7 +59,7 @@ export class NcmServer {
   }
 
   buildEnv() {
-    const settings = stores.settings.get()
+    const settings = settingsRepo.getAll()
     const quality = QUALITY_MAP[settings.quality] || QUALITY_MAP['320000']
     // 剥离系统代理变量：api-enhanced 启动时（注册匿名 token 后）有对外请求，
     // 若继承 HTTP(S)_PROXY 会被本机代理（如 127.0.0.1:10808）卡住，导致 listen 永远执行不到
@@ -66,8 +74,8 @@ export class NcmServer {
     return {
       ...env,
       ELECTRON_RUN_AS_NODE: '1',
-      PORT: String(this.port),
-      HOST: '127.0.0.1',
+      NTR_SOCKET: this.socketPath,
+      NTR_APP_ENTRY: path.join(this.serverDir(), 'app.js'),
       ENABLE_GENERAL_UNBLOCK: settings.enableUnblock ? 'true' : 'false',
       ENABLE_FLAC: settings.enableFlac ? 'true' : 'false',
       SELECT_MAX_BR: String(quality.br),
@@ -83,12 +91,19 @@ export class NcmServer {
       console.error('[ncm-server] app.js not found at', entry)
       return false
     }
-    this.port = await this.findFreePort()
+    const bridge = this.bridgePath()
+    if (!fs.existsSync(bridge)) {
+      this.setStatus('missing')
+      console.error('[ncm-server] bridge not found at', bridge)
+      return false
+    }
+
+    this.socketPath = this.newSocketPath()
     this.setStatus('starting')
     this.stopping = false
     this.restarts = 0
 
-    this.child = spawn(process.execPath, ['app.js'], {
+    this.child = spawn(process.execPath, [bridge], {
       cwd: dir,
       env: this.buildEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -111,6 +126,7 @@ export class NcmServer {
     this.child.on('exit', (code) => {
       console.log('[ncm-server] exited with code', code)
       this.child = null
+      this.cleanupSocket()
       if (this.stopping) {
         this.setStatus('down')
         return
@@ -131,6 +147,12 @@ export class NcmServer {
     else this.setStatus('down')
     this.startWatchServer()
     return ok
+  }
+
+  cleanupSocket() {
+    if (this.socketPath && this.socketPath.includes('/') && this.socketPath.endsWith('.sock')) {
+      try { fs.rmSync(this.socketPath, { force: true }) } catch { /* ignore */ }
+    }
   }
 
   /**
@@ -165,29 +187,32 @@ export class NcmServer {
 
   stopWatchServer() {
     if (this.fileWatcher) {
-      try { this.fileWatcher.close() } catch {}
+      try { this.fileWatcher.close() } catch { /* ignore */ }
       this.fileWatcher = null
     }
   }
 
+  /** 就绪探测：直连私有 socket，连上即 Express 已挂载 */
   waitReady() {
-    return new Promise((resolve) => {
-      const started = Date.now()
-      const tick = async () => {
-        if (!this.child || this.child.exitCode !== null) return resolve(false)
-        try {
-          // 任意 HTTP 响应（含 404）都证明 Express 已就绪
-          const res = await fetch(`http://127.0.0.1:${this.port}/`, {
-            signal: AbortSignal.timeout(2000)
-          })
-          if (res.status < 500) return resolve(true)
-        } catch {
-          /* not ready yet */
-        }
-        if (Date.now() - started > START_TIMEOUT) return resolve(false)
-        setTimeout(tick, 300)
+    const tryOnce = () => new Promise((resolve) => {
+      const s = net.connect({ path: this.socketPath }, () => {
+        s.destroy()
+        resolve(true)
+      })
+      s.on('error', () => resolve(false))
+      s.setTimeout(800, () => {
+        s.destroy()
+        resolve(false)
+      })
+    })
+    return new Promise(async (resolve) => {
+      const deadline = Date.now() + START_TIMEOUT
+      while (Date.now() < deadline) {
+        if (this.stopping || !this.child || this.child.exitCode !== null) return resolve(false)
+        if (await tryOnce()) return resolve(true)
+        await new Promise((r) => setTimeout(r, 300))
       }
-      tick()
+      resolve(false)
     })
   }
 
@@ -219,5 +244,6 @@ export class NcmServer {
         setTimeout(resolve, 2000)
       })
     }
+    this.cleanupSocket()
   }
 }

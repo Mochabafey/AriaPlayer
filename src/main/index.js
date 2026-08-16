@@ -8,7 +8,7 @@ import { registerDownloadIpc } from './ipc/download.js'
 import { registerLibraryIpc } from './ipc/library.js'
 import { registerPlaylistIpc } from './ipc/playlist.js'
 import { registerNcmConvertIpc } from './ipc/ncmConvert.js'
-import { flushAll } from './store/db.js'
+import { initDb, closeDb } from './db/index.js'
 
 // 自定义协议需在 app ready 前注册特权
 protocol.registerSchemesAsPrivileged([
@@ -273,6 +273,7 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
+    initDb() // SQLite（含旧 JSON 数据自动迁移）——必须在所有 IPC 注册前就绪
     registerAudioProtocol()
     bootstrap()
     app.on('activate', () => {
@@ -286,6 +287,6 @@ if (!gotLock) {
 
   app.on('before-quit', async () => {
     await server.stop()
-    flushAll()
+    closeDb()
   })
 }

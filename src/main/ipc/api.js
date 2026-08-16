@@ -1,11 +1,23 @@
 import { ipcMain, dialog, shell, safeStorage } from 'electron'
 import fs from 'fs'
+import http from 'http'
 import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
 import { app } from 'electron'
-import { stores, flushAll } from '../store/db.js'
+import { settingsRepo } from '../db/settings.js'
+import { sessionRepo } from '../db/session.js'
+import { apiCacheRepo } from '../db/apiCache.js'
 import { ffmpegAvailable, ffmpegVersion, transcodeToWav } from '../ffmpeg.js'
+
+/* 可缓存的 API 及 TTL（命中 SQLite 缓存免走子进程请求网易云） */
+const API_CACHE_RULES = [
+  { re: /^song\/url\/v1/, ttl: 10 * 60 * 1000 }, // 音源 URL 有时效，短缓存
+  { re: /^lyric\b/, ttl: 7 * 24 * 60 * 60 * 1000 }, // 歌词（含翻译）极少变化
+  { re: /^song\/detail\b/, ttl: 24 * 60 * 60 * 1000 } // 歌曲详情
+]
+/** 登录态/实时数据：既不用本地缓存，也强制绕过服务端缓存 */
+const FORCE_FETCH_RE = /^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin)/
 
 export function registerApiIpc(getServer) {
   // ---- Cookie Jar：模拟浏览器会话，保持登录态 ----
@@ -13,12 +25,10 @@ export function registerApiIpc(getServer) {
   // 这里手动保存每个响应返回的 cookie，并在后续请求带上。
   const cookieJar = new Map()
 
-  /* ---- 登录态加密持久化 ----
-   * session.enc 写在 userData/ncm-store/（系统目录，不在仓库内）。
+  /* ---- 登录态加密持久化（BLOB 存 SQLite session 表，见 db/session.js） ----
    * 加密优先走 Electron safeStorage（Windows DPAPI / macOS Keychain，
    * 密文绑定当前系统账户）；不可用时回退 AES-256-GCM（密钥由机器信息派生）。
    * 解密失败（换机器/系统变更）静默丢弃，退回未登录状态。 */
-  const SESSION_FILE = path.join(app.getPath('userData'), 'ncm-store', 'session.enc')
   let saveTimer = null
   let jarDirty = false
 
@@ -47,9 +57,7 @@ export function registerApiIpc(getServer) {
       } else {
         out = Buffer.concat([Buffer.from('AG01'), aesEncrypt(payload)])
       }
-      fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true })
-      fs.writeFileSync(SESSION_FILE + '.tmp', out)
-      fs.renameSync(SESSION_FILE + '.tmp', SESSION_FILE)
+      sessionRepo.save(out)
     } catch (e) {
       console.error('[session] save failed', e)
     }
@@ -59,12 +67,13 @@ export function registerApiIpc(getServer) {
     cookieJar.clear()
     jarDirty = false
     clearTimeout(saveTimer)
-    try { fs.rmSync(SESSION_FILE, { force: true }) } catch { /* 文件不存在 */ }
+    sessionRepo.clear()
   }
 
   function loadSession() {
     try {
-      const buf = fs.readFileSync(SESSION_FILE)
+      const buf = sessionRepo.load()
+      if (!buf) return
       const magic = buf.subarray(0, 4).toString('latin1')
       const body = buf.subarray(4)
       let json = ''
@@ -77,7 +86,7 @@ export function registerApiIpc(getServer) {
       }
       for (const [k, v] of JSON.parse(json)) cookieJar.set(k, v)
     } catch {
-      // 解密失败（换机器 / 系统凭据变更 / 文件损坏）：丢弃旧会话，走未登录
+      // 解密失败（换机器 / 系统凭据变更 / 数据损坏）：丢弃旧会话，走未登录
     }
   }
   loadSession()
@@ -97,15 +106,11 @@ export function registerApiIpc(getServer) {
       .join('; ')
   }
 
+  /** Node http 原生支持 socketPath（named pipe / unix socket）， absorbs set-cookie */
   function absorbCookies(res) {
-    let setCookies = []
-    if (typeof res.headers.getSetCookie === 'function') {
-      setCookies = res.headers.getSetCookie()
-    } else {
-      const v = res.headers.get('set-cookie')
-      if (v) setCookies = [v]
-    }
-    for (const sc of setCookies) {
+    let setCookies = res.headers['set-cookie']
+    if (setCookies && !Array.isArray(setCookies)) setCookies = [setCookies]
+    for (const sc of setCookies || []) {
       if (!sc) continue
       const pair = sc.split(';')[0]
       const i = pair.indexOf('=')
@@ -127,26 +132,56 @@ export function registerApiIpc(getServer) {
     }
   }
 
-  // ---- 通用 API 转发到本地 api-enhanced ----
+  /** 经私有 socket 通道请求 api-enhanced，返回 { res, text } */
+  function socketRequest(srv, urlPath, headers) {
+    return new Promise((resolve, reject) => {
+      const req = http.request({ socketPath: srv.socketPath, path: urlPath, headers, method: 'GET' }, (res) => {
+        const chunks = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('end', () => resolve({ res, text: Buffer.concat(chunks).toString('utf-8') }))
+      })
+      req.on('error', reject)
+      req.setTimeout(30000, () => req.destroy(new Error('api timeout')))
+      req.end()
+    })
+  }
+
+  /** 稳定缓存键：route + 按 key 排序的 query */
+  function cacheKey(route, params) {
+    const qs = Object.keys(params || {}).sort().map((k) => `${k}=${params[k]}`).join('&')
+    return `${route}?${qs}`
+  }
+
+  // ---- 通用 API 转发（私有 socket 通道）+ SQLite 缓存 ----
   ipcMain.handle('ncm:api', async (_e, { method, params }) => {
     const srv = getServer()
     if (!srv || srv.status !== 'ready') throw new Error('NCM_SERVER_NOT_READY')
     // api-enhanced 路由规则：下划线转斜杠（song_url_v1 → /song/url/v1）
     const route = method.replace(/_/g, '/').replace(/^\//, '')
+    const realTime = FORCE_FETCH_RE.test(route)
+    const cacheRule = realTime ? null : API_CACHE_RULES.find((r) => r.re.test(route))
+
+    // 1. 命中本地 SQLite 缓存直接返回（切歌回听同曲秒出歌词/音源）
+    const key = cacheKey(route, params)
+    if (cacheRule) {
+      const hit = apiCacheRepo.get(key)
+      if (hit) return hit
+    }
+
     const qs = new URLSearchParams(params || {}).toString()
-    const url = `http://127.0.0.1:${srv.port}/${route}${qs ? '?' + qs : ''}`
     const headers = {}
     const cookie = cookieHeader()
     if (cookie) headers['Cookie'] = cookie
-    // 登录态/实时数据接口绕过服务端 2 分钟缓存（否则登录后 login_status 命中缓存仍显示匿名）
-    if (/^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin)/.test(route)) {
-      headers['x-apicache-force-fetch'] = '1'
-    }
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(30000) })
+    if (realTime) headers['x-apicache-force-fetch'] = '1'
+    const { res, text } = await socketRequest(srv, `/${route}${qs ? '?' + qs : ''}`, headers)
     absorbCookies(res)
     // 退出登录：服务端会下发过期 cookie，本地一并清空并删除持久化会话
     if (/^logout/.test(route)) clearSession()
-    return res.json()
+    let json
+    try { json = JSON.parse(text) } catch { json = { code: res.statusCode, message: 'bad json from upstream' } }
+    // 2. 业务成功才写缓存（网易云约定 code === 200）
+    if (cacheRule && json.code === 200) apiCacheRepo.set(key, json, cacheRule.ttl)
+    return json
   })
 
   // ---- 短链跳转解析（163cn.tv 等）→ 返回真实 URL ----
@@ -216,11 +251,10 @@ export function registerApiIpc(getServer) {
     return r.canceled ? null : r.filePaths[0]
   })
 
-  // ---- 设置 ----
-  ipcMain.handle('ncm:settings-get', () => stores.settings.get())
+  // ---- 设置（SQLite） ----
+  ipcMain.handle('ncm:settings-get', () => settingsRepo.getAll())
   ipcMain.handle('ncm:settings-set', (_e, key, value) => {
-    stores.settings.set(key, value)
-    flushAll()
-    return stores.settings.get()
+    settingsRepo.set(key, value)
+    return settingsRepo.getAll()
   })
 }

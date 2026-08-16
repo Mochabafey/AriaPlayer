@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { ipcMain, dialog } from 'electron'
-import { stores } from '../store/db.js'
+import { libraryRepo } from '../db/library.js'
 import { writeFileTags } from '../tags/writeTags.mjs'
 
 // music-metadata 在主进程运行时加载（外部依赖，不打进 renderer bundle）
@@ -27,44 +27,36 @@ function hashFile(p) {
 }
 
 export function registerLibraryIpc(notifyUpdate) {
-  const notify = () => {
-    notifyUpdate()
-    stores.library.saveNow()
-  }
+  const notify = () => notifyUpdate()
 
-  ipcMain.handle('ncm:library-list', () => stores.library.get('songs') || [])
+  ipcMain.handle('ncm:library-list', () => libraryRepo.listSongs())
 
-  ipcMain.handle('ncm:library-folders', () => stores.library.get('folders') || [])
+  ipcMain.handle('ncm:library-folders', () => libraryRepo.listFolders())
 
   ipcMain.handle('ncm:library-add-folder', async (_e, folder) => {
-    const folders = stores.library.get('folders') || []
-    if (!folders.includes(folder)) {
-      folders.push(folder)
-      stores.library.set('folders', folders)
-    }
+    libraryRepo.addFolder(folder)
     const added = await scanDir(folder)
     notify()
     return added
   })
 
   ipcMain.handle('ncm:library-scan', async () => {
-    const folders = stores.library.get('folders') || []
-    const added = []
-    for (const f of folders) {
-      added.push(...(await scanDir(f)))
+    let added = 0
+    for (const f of libraryRepo.listFolders()) {
+      added += await scanDir(f)
     }
     notify()
-    return added.length
+    return added
   })
 
   ipcMain.handle('ncm:library-edit', async (_e, id, fields) => {
-    const songs = stores.library.get('songs') || []
-    const song = songs.find((s) => s.id === id)
+    const song = libraryRepo.getSong(id)
     if (!song) return { ok: false, reason: 'not found' }
 
     const { title, artist, album, cover } = fields || {}
-    Object.assign(song, { title, artist, album })
-    if (cover !== undefined) song.coverPath = cover
+    const merged = { title, artist, album }
+    if (cover !== undefined) merged.coverPath = cover
+    libraryRepo.updateSong(id, merged)
 
     // 写回文件标签：mp3(ID3v2)/flac(vorbis)/m4a(ilst)；失败仅记日志，不影响库内记录
     const tags = {}
@@ -82,13 +74,12 @@ export function registerLibraryIpc(notifyUpdate) {
   })
 
   ipcMain.handle('ncm:library-remove', (_e, id, { deleteFile = false } = {}) => {
-    const songs = stores.library.get('songs') || []
-    const song = songs.find((s) => s.id === id)
+    const song = libraryRepo.getSong(id)
     if (song) {
       if (deleteFile && fs.existsSync(song.filePath)) {
         try { fs.unlinkSync(song.filePath) } catch { /* ignore */ }
       }
-      stores.library.set('songs', songs.filter((s) => s.id !== id))
+      libraryRepo.removeSong(id)
     }
     notify()
     return true
@@ -96,7 +87,7 @@ export function registerLibraryIpc(notifyUpdate) {
 
   // 导出曲库清单 JSON 或 m3u
   ipcMain.handle('ncm:library-export', async (_e, type = 'json') => {
-    const songs = stores.library.get('songs') || []
+    const songs = libraryRepo.listSongs()
     const r = await dialog.showSaveDialog({
       title: '导出曲库',
       defaultPath: `网易牛具-曲库.${type}`,
@@ -144,15 +135,12 @@ export function registerLibraryIpc(notifyUpdate) {
   })
 
   async function importOne(filePath) {
-    // 同步去重：先标记后解析，防止并发重复
-    const songs = stores.library.get('songs') || []
-    if (songs.some((s) => s.filePath === filePath)) return false
-    const placeholder = { id: '__pending__', filePath }
-    songs.push(placeholder)
-    stores.library.set('songs', songs)
+    // SQLite 同步写入天然原子：insert 前查一次即可防并发重复，无需占位标记
+    if (libraryRepo.hasFile(filePath)) return false
     try {
       const m = await loadMeta()
       const meta = await m.parseFile(filePath, { duration: true })
+      if (libraryRepo.hasFile(filePath)) return false // 解析 await 间隙可能已被其他 worker 插入
       const id = hashFile(filePath)
       const pic = meta.common.picture?.[0]
       let coverPath = null
@@ -161,7 +149,7 @@ export function registerLibraryIpc(notifyUpdate) {
         coverPath = path.join(coversDir(), `${id}.${ext}`)
         fs.writeFileSync(coverPath, pic.data)
       }
-      const song = {
+      libraryRepo.insertSong({
         id,
         filePath,
         title: meta.common.title || path.basename(filePath, path.extname(filePath)),
@@ -174,16 +162,9 @@ export function registerLibraryIpc(notifyUpdate) {
         source: 'import',
         songId: null,
         addedAt: Date.now()
-      }
-      const cur = stores.library.get('songs') || []
-      const idx = cur.indexOf(placeholder)
-      if (idx >= 0) cur[idx] = song
-      stores.library.set('songs', cur)
+      })
       return true
     } catch (e) {
-      // 解析失败：移除占位
-      const cur = stores.library.get('songs') || []
-      stores.library.set('songs', cur.filter((s) => s !== placeholder))
       console.error('[library] parse failed', filePath, e.message)
       return false
     }
@@ -210,9 +191,7 @@ export function registerLibraryIpc(notifyUpdate) {
   async function scanDir(dir) {
     const files = []
     await collectAudioFiles(dir, files)
-    const songs = stores.library.get('songs') || []
-    const known = new Set(songs.filter((s) => s.id !== '__pending__').map((s) => s.filePath))
-    const targets = files.filter((f) => !known.has(f))
+    const targets = files.filter((f) => !libraryRepo.hasFile(f))
 
     // 有界并发 4
     let added = 0

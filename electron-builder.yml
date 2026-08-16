@@ -18,6 +18,9 @@ extraResources:
       - '**/*'
       - '!**/*.map'
       - '!**/*.md'
+  # 私有通道子进程入口（Named Pipe / Unix Socket，见 src/main/ncm/bridge.cjs）
+  - from: src/main/ncm/bridge.cjs
+    to: bridge.cjs
   # ffmpeg 二进制（scripts/fetch-ffmpeg.mjs 下载；未下载时打包需先 npm run fetch:ffmpeg）
   - from: resources/ffmpeg
     to: ffmpeg
