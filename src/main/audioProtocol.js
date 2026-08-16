@@ -16,6 +16,8 @@ const FORWARD_HEADERS = [
   'last-modified'
 ]
 
+let diagSeq = 0
+
 const MIME = {
   '.mp3': 'audio/mpeg',
   '.flac': 'audio/flac',
@@ -67,6 +69,10 @@ function fetchOnce(url, headers) {
  */
 export function registerAudioProtocol() {
   protocol.handle('ncm-audio', async (request) => {
+    // 诊断日志：定位 seek 断流的真实环节。日志开头带序号，便于关联同一请求
+    const diagId = ++diagSeq
+    const t0 = Date.now()
+    const diag = (msg) => console.log(`[audio-diag #${diagId}] +${Date.now() - t0}ms ${msg}`)
     try {
       const u = new URL(request.url)
       const range = request.headers.get('range')
@@ -86,11 +92,17 @@ export function registerAudioProtocol() {
         const headers = {
           'Content-Type': mime,
           'Content-Length': String(end - start + 1),
-          'Accept-Ranges': 'bytes',
-          'Content-Range': `bytes ${start}-${end}/${stat.size}`
+          'Accept-Ranges': 'bytes'
+        }
+        // 客户端带 Range 一律回 206（Chromium media 初始请求就带 bytes=0-，
+        // 回 200 会导致 seek 时 200/206 实体冲突 → ERR=2；规范也禁止 200 带 CR）
+        let status = 200
+        if (range) {
+          status = 206
+          headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`
         }
         const body = fs.createReadStream(p, { start, end })
-        return new Response(body, { status: start > 0 ? 206 : 200, headers })
+        return new Response(body, { status, headers })
       }
 
       if (u.hostname === 'cover') {
@@ -164,11 +176,13 @@ export function registerAudioProtocol() {
       }
 
       const source = await openAudioSource(target, start, end, rawRange)
+      diag(`open kind=${source.kind} start=${start} end=${end} range="${range}"`)
 
       // 等待音源期间请求已被取消（快速拖动 seek 时极常见）：AbortSignal 一旦
       // 已 aborted，后续 addEventListener('abort') 永远不会触发——若不在此处
       // 显式清理，直连上游连接会僵死泄漏（占带宽 → 越拖越卡）
       if (request.signal?.aborted) {
+        diag('ABORTED while opening source')
         if (source.kind === 'direct') {
           try { source.res.destroy() } catch { /* ignore */ }
         } else if (source.sess?.ownsFd) {
@@ -182,22 +196,45 @@ export function registerAudioProtocol() {
       // 的卡死），熔断后 Chromium 收到网络错误 → 渲染层恢复链接手
       if (source.kind === 'direct') {
         const { res, total, contentType } = source
+        diag(`direct upstream=${res.statusCode} total=${total} cl=${res.headers['content-length'] || '-'} cr=${res.headers['content-range'] || '-'}`)
         const headers = {
           'Content-Type': contentType,
           'Accept-Ranges': 'bytes'
         }
-        if (res.headers['content-length']) headers['Content-Length'] = res.headers['content-length']
-        if (res.headers['content-range']) headers['Content-Range'] = res.headers['content-range']
+        // 规范化响应：上游可能忽略 Range 回 200（Content-Length 为全长）。
+        // 统一改写为与请求对齐的 206 + Content-Range + 区间 Content-Length，
+        // 否则 Chromium media cache 按 200 完整实体管理 → seek 时 200/206 实体
+        // 冲突 → ERR=2（与 session 通道同源的问题）
+        let status = res.statusCode
+        if (range && total) {
+          const last = end === -1 ? total - 1 : Math.min(end, total - 1)
+          status = 206
+          headers['Content-Length'] = String(last - start + 1)
+          headers['Content-Range'] = `bytes ${start}-${last}/${total}`
+        } else {
+          if (res.headers['content-length']) headers['Content-Length'] = res.headers['content-length']
+          if (res.headers['content-range']) headers['Content-Range'] = res.headers['content-range']
+        }
         const body = new Readable({
           read() {
             flowPaused = false
             res.resume() // 下游消费恢复时继续拉上游
           }
         })
+        // 上游忽略 Range 回 200 时 body 从 0 开始：丢弃头部 start 字节对齐声明区间
+        let skip = res.statusCode === 200 && start > 0 ? start : 0
         let lastData = Date.now()
         let flowPaused = false // 下游背压主动暂停（健康），区别于上游僵死（要杀）
         res.on('data', (c) => {
           lastData = Date.now()
+          if (skip > 0) {
+            if (c.length <= skip) {
+              skip -= c.length
+              return
+            }
+            c = c.subarray(skip)
+            skip = 0
+          }
           if (!body.push(c)) {
             flowPaused = true
             res.pause() // 缓冲满：暂停上游防内存堆积
@@ -210,14 +247,19 @@ export function registerAudioProtocol() {
             res.destroy(new Error('upstream stalled'))
           }
         }, 2000)
-        res.on('close', () => clearInterval(stall))
+        res.on('close', () => {
+          clearInterval(stall)
+          diag(`direct upstream closed${request.signal?.aborted ? ' [aborted]' : ''}`)
+        })
         const finish = () => {
           clearInterval(stall)
+          diag('direct upstream end')
           try { body.push(null) } catch { /* ignore */ }
         }
         res.on('end', finish)
-        res.on('error', () => {
+        res.on('error', (e) => {
           clearInterval(stall)
+          diag(`direct upstream ERROR: ${e.message}`)
           body.destroy(new Error('upstream failed'))
         })
         request.signal?.addEventListener('abort', () => {
@@ -225,29 +267,43 @@ export function registerAudioProtocol() {
           res.destroy()
           body.destroy()
         })
-        return new Response(Readable.toWeb(body), { status: res.statusCode, headers })
+        diag(`respond status=${status} cl=${headers['Content-Length'] || '-'}`)
+        return new Response(Readable.toWeb(body), { status, headers })
       }
 
       const sess = source.sess
       const { total, contentType } = sessionInfo(sess)
       const stream = createRangeStream(sess, start, end)
+      diag(`session total=${total} downloaded=${sess.downloaded} done=${sess.done}`)
+
+      stream.on('error', (e) => diag(`session stream ERROR: ${e.message}`))
 
       const respHeaders = {
         'Content-Type': contentType,
         'Accept-Ranges': 'bytes'
       }
+      let status = start > 0 ? 206 : 200
       if (total) {
         const last = end === -1 ? total - 1 : Math.min(end, total - 1)
         respHeaders['Content-Length'] = String(last - start + 1)
-        if (start > 0 || end !== -1) {
+        // 关键修复：Chromium media 管线初始请求就带 Range: bytes=0-。
+        // 若返回 200（忽略 Range），media cache 把响应当「单一完整流实体」，
+        // seek 时发的 Range 请求收到 206 与 200 实体冲突 → 管线判资源损坏
+        // → ERR=2 网络错误（快速拖动高发）。客户端带 Range 一律回 206 +
+        // Content-Range（HTTP 规范：200 不允许带 Content-Range）
+        if (range) {
+          status = 206
           respHeaders['Content-Range'] = `bytes ${start}-${last}/${total}`
         }
       }
       // Chromium 取消请求（切歌/seek 抛弃旧流）时结束读取流（下载会话由 LRU 管理）
-      request.signal?.addEventListener('abort', () => stream.destroy())
-      return new Response(toWeb(stream), { status: start > 0 ? 206 : 200, headers: respHeaders })
+      request.signal?.addEventListener('abort', () => {
+        diag('ABORTED (client canceled)')
+        stream.destroy()
+      })
+      return new Response(toWeb(stream), { status, headers: respHeaders })
     } catch (e) {
-      console.error('[ncm-audio] proxy error', e.message)
+      console.error(`[audio-diag #${diagId}] +${Date.now() - t0}ms proxy ERROR: ${e.message}`)
       return new Response('proxy error', { status: 502 })
     }
   })

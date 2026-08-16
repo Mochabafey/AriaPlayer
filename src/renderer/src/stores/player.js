@@ -42,6 +42,14 @@ export const usePlayerStore = defineStore('player', () => {
 
   function attachAudio(el) {
     audioEl = el
+    // 诊断时间线：audio 元素事件序列（协议层日志见 [audio-diag]）
+    const evLog = (ev) =>
+      console.log(
+        `[audio-ev] ${(performance.now() / 1000).toFixed(2)}s ${ev.padEnd(9)} rs=${audioEl.readyState} net=${audioEl.networkState} ct=${audioEl.currentTime?.toFixed?.(2) ?? '-'}${audioEl.error ? ' ERR=' + audioEl.error.code : ''}`
+      )
+    ;['loadstart', 'seeking', 'seeked', 'waiting', 'playing', 'canplay', 'stalled', 'suspend', 'emptied', 'error'].forEach((ev) =>
+      audioEl.addEventListener(ev, () => evLog(ev))
+    )
     audioEl.addEventListener('timeupdate', () => {
       currentTime.value = audioEl.currentTime
       prefetchNext()
@@ -136,6 +144,7 @@ export const usePlayerStore = defineStore('player', () => {
     const song = current.value
     if (!song || song.fromLocal || !audioEl) return
     const t = audioEl.currentTime || 0
+    console.log(`[audio-ev] recoverPlayback code=${code} at=${t.toFixed(2)} retries=${networkRetries}`)
 
     if (networkRetries < 2) {
       networkRetries++
