@@ -3,6 +3,8 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 const routes = [
   { path: '/', redirect: '/discover' },
   { path: '/discover', name: 'discover', component: () => import('../views/DiscoverView.vue'), meta: { title: '发现' } },
+  { path: '/daily', name: 'daily', component: () => import('../views/DailyView.vue'), meta: { title: '每日推荐' } },
+  { path: '/more/:type', name: 'more', component: () => import('../views/MoreView.vue'), meta: { title: '更多' } },
   { path: '/library', name: 'library', component: () => import('../views/LibraryView.vue'), meta: { title: '曲库' } },
   { path: '/resolver', name: 'resolver', component: () => import('../views/ResolverView.vue'), meta: { title: '解析' } },
   { path: '/search', name: 'search', component: () => import('../views/SearchView.vue'), meta: { title: '搜索' } },

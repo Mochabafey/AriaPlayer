@@ -25,8 +25,7 @@ const icons = {
   profile: 'M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm-7 15.2C5.9 16 8.7 14.5 12 14.5s6.1 1.5 7 4.7',
   downloads: 'M12 4v9m0 0 4-4m-4 4-4-4M5 19h14',
   settings: 'M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Zm7.2 3.5c0-.5.4-1 .9-1.1l1-.2a9 9 0 0 0-1.6-3.2l-.9.6a1.1 1.1 0 0 1-1.6-.3 1.1 1.1 0 0 1 .2-1.6l.7-.7a9 9 0 0 0-3-1.9l-.4 1c-.2.5-.7.8-1.2.7a1.1 1.1 0 0 1-1-1V4a9 9 0 0 0-3.6.1l.3 1c.1.5-.1 1.1-.6 1.3-.5.3-1.1.1-1.4-.3l-.6-.9a9 9 0 0 0-3 1.9l.7.7c.4.4.5 1 .2 1.6a1.1 1.1 0 0 1-1.6.3l-.9-.6a9 9 0 0 0-1.6 3.2l1 .2c.5.1.9.6.9 1.1s-.4 1-.9 1.1l-1 .2a9 9 0 0 0 1.6 3.2l.9-.6c.5-.4 1.2-.3 1.6.3.4.5.3 1.2-.2 1.6l-.7.7a9 9 0 0 0 3 1.9l.4-1c.2-.5.7-.8 1.2-.7.5.1.9.6 1 1v.1a9 9 0 0 0 3.6-.1l-.3-1c-.1-.5.1-1.1.6-1.3.5-.3 1.1-.1 1.4.3l.6.9a9 9 0 0 0 3-1.9l-.7-.7a1.1 1.1 0 0 1-.2-1.6 1.1 1.1 0 0 1 1.6-.3l.9.6a9 9 0 0 0 1.6-3.2l-1-.2a1.1 1.1 0 0 1-.9-1.1Z',
-  back: 'M15 18l-6-6 6-6',
-  mic: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3ZM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8'
+  back: 'M15 18l-6-6 6-6'
 }
 
 const navGroups = [
@@ -87,6 +86,8 @@ onMounted(async () => {
   await settings.load()
   const v = Number(settings.settings.volume)
   if (Number.isFinite(v) && v >= 0 && v <= 1) player.setVolume(v)
+  // 恢复上次的播放队列（不自动播放，展示上次听的列表和歌曲）
+  player.restoreQueue()
   ncm.onServerStatus((s) => (serverState.value = s))
   ncm.serverStatus().then((s) => (serverState.value = s))
   // 窗口最大化状态（初始查询 + 订阅变化）
@@ -104,10 +105,6 @@ function onSidebarSearch() {
   if (!q) return
   router.push({ path: '/search', query: { q } })
   sidebarQuery.value = ''
-}
-
-function focusSearch() {
-  searchInputRef.value?.focus()
 }
 
 function isActive(to) {
@@ -178,9 +175,6 @@ let offMaxListener = null
           />
         </div>
         <div class="header-right">
-          <button class="header-btn" title="聚焦搜索" @click="focusSearch">
-            <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path :d="icons.mic"/></svg>
-          </button>
           <div class="avatar" title="我的" @click="router.push('/profile')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-7 8-7s8 3 8 7"/></svg>
           </div>

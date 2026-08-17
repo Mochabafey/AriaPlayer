@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { usePlayerStore } from '../stores/player'
 import { useDownloadsStore } from '../stores/downloads'
 import { useSettingsStore } from '../stores/settings'
-import { api } from '../api'
+import { api, imgUrl } from '../api'
 import { fmtTime } from '../utils/format'
 import { toast } from '../utils/toast'
 
@@ -76,6 +76,7 @@ async function download(song) {
   <div class="song-table">
     <div class="st-head">
       <span class="c-idx" v-if="showIndex">#</span>
+      <span class="c-cover"></span>
       <span class="c-title">歌曲</span>
       <span class="c-album" v-if="showAlbum">专辑</span>
       <span class="c-like">喜欢</span>
@@ -98,6 +99,15 @@ async function download(song) {
         <button class="idx-btn idx-pause" title="暂停" @click.stop="player.toggle()">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
         </button>
+      </span>
+      <span class="c-cover">
+        <img
+          v-if="s.al?.picUrl || s.pic"
+          class="cover-thumb"
+          :src="imgUrl((s.al?.picUrl || s.pic) + '?param=60y60')"
+          alt=""
+          loading="lazy"
+        />
       </span>
       <div class="c-title">
         <span class="t-name">{{ s.name }}</span>
@@ -209,6 +219,19 @@ async function download(song) {
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+/* 封面缩略图 */
+.c-cover {
+  width: 36px;
+  flex-shrink: 0;
+}
+.cover-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
+  box-shadow: var(--shadow-sm);
 }
 .t-name {
   font-size: 14px;

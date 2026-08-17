@@ -12,6 +12,8 @@ const INVOKE_ALLOWLIST = new Set([
   'win:toggle-maximize',
   'win:close',
   'win:is-maximized',
+  'win:set-fullscreen',
+  'win:is-fullscreen',
   // 通用 API / 设置 / 系统对话框
   'ncm:api',
   'ncm:resolve-link',

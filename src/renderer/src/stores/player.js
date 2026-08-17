@@ -1,7 +1,10 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { api, coverUrl } from '../api'
 import { useSettingsStore } from './settings'
+
+// 播放记录持久化：下次打开恢复上次的队列 / 当前歌曲 / 播放进度
+const QUEUE_KEY = 'aria:player-queue'
 
 let audioEl = null     // audio 元素（PlayerBar 挂载，事件只认它）
 let playEpoch = 0      // 切歌代次号：旧请求的异步结果若晚于切歌则丢弃
@@ -548,6 +551,61 @@ export const usePlayerStore = defineStore('player', () => {
     if (audioEl) audioEl.pause()
   }
 
+  /* ================= 播放记录持久化：下次打开恢复上次队列/歌曲/进度 ================= */
+  let persistTimer = null
+  let lastPersistTime = 0
+
+  function persistQueue() {
+    try {
+      const songs = queue.value.map((s) => ({
+        id: s.id,
+        name: s.name,
+        artist: s.artist,
+        album: s.album,
+        pic: s.pic,
+        duration: s.duration,
+        fromLocal: s.fromLocal || false,
+        localPath: s.localPath || null
+      }))
+      localStorage.setItem(
+        QUEUE_KEY,
+        JSON.stringify({ songs, index: currentIndex.value, time: currentTime.value || 0 })
+      )
+      lastPersistTime = Date.now()
+    } catch { /* storage 不可用忽略 */ }
+  }
+
+  // 播放进度防抖落盘（timeupdate 高频驱动，3s 一次）
+  function schedulePersist() {
+    if (Date.now() - lastPersistTime < 2000) {
+      clearTimeout(persistTimer)
+      persistTimer = setTimeout(persistQueue, 2500)
+      return
+    }
+    persistQueue()
+  }
+  watch(queue, persistQueue) // 列表变化立即存
+  watch(currentIndex, persistQueue)
+  watch(currentTime, schedulePersist)
+
+  /** 启动时恢复上次的队列（不自动播放；音源地址时效短，播放时再拉取） */
+  function restoreQueue() {
+    try {
+      const raw = localStorage.getItem(QUEUE_KEY)
+      if (!raw) return false
+      const data = JSON.parse(raw)
+      const songs = Array.isArray(data.songs) ? data.songs.filter((s) => s && s.id) : []
+      if (!songs.length) return false
+      queue.value = songs
+      currentIndex.value = Math.min(Math.max(0, data.index || 0), songs.length - 1)
+      currentTime.value = Math.min(data.time || 0, songs[currentIndex.value]?.duration || Infinity)
+      duration.value = songs[currentIndex.value]?.duration || 0
+      const cur = current.value
+      if (cur) loadLyrics(cur)
+      return true
+    } catch { return false }
+  }
+
   return {
     queue,
     currentIndex,
@@ -571,6 +629,7 @@ export const usePlayerStore = defineStore('player', () => {
     next,
     prev,
     removeFromQueue,
-    clearQueue
+    clearQueue,
+    restoreQueue
   }
 })

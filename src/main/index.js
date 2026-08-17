@@ -74,6 +74,13 @@ function createWindow() {
   })
   ipcMain.handle('win:close', () => mainWindow?.close())
   ipcMain.handle('win:is-maximized', () => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized())
+  // F11 沉浸全屏（渲染层歌词页/任意处调用）
+  ipcMain.handle('win:set-fullscreen', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+    mainWindow.setFullScreen(!mainWindow.isFullScreen())
+    return mainWindow.isFullScreen()
+  })
+  ipcMain.handle('win:is-fullscreen', () => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen())
   // 最大化状态变化广播（渲染层切换 还原/最大化 图标）
   const sendMaxState = () => {
     if (mainWindow && !mainWindow.isDestroyed()) {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, imgUrl } from '../api'
 import { usePlayerStore } from '../stores/player'
@@ -17,6 +17,15 @@ const fetchedTabs = ref({})
 const loading = ref(false)
 const tabLoading = ref(false)
 const searched = ref(false)
+// 各类型真实结果总数（cloudsearch 返回的 *Count，比数组长度更全）
+const counts = ref({})
+const countKeys = { songs: 'songCount', playlists: 'playlistCount', artists: 'artistCount', albums: 'albumCount', mvs: 'mvCount' }
+// 无限滚动分页状态
+const offsets = ref({})
+const hasMore = ref({})
+const loadingMore = ref(false)
+// 滚动预加载阈值（px）：滑到距底部还有这么多就提前拉下一页
+const PRELOAD_PX = 400
 
 const tabs = [
   { key: 'songs', label: '歌曲' },
@@ -28,11 +37,44 @@ const tabs = [
 
 const types = { songs: 1, playlists: 1000, artists: 100, albums: 10, mvs: 1004 }
 
-/** 拉取某个类型的搜索结果并缓存 */
+/** 拉取某个类型的搜索结果并缓存（limit 100：一次拿全，避免 20 条太少） */
 async function fetchTab(key, kw) {
-  const res = await api('cloudsearch', { keywords: kw, type: types[key], limit: 20 })
+  const res = await api('cloudsearch', { keywords: kw, type: types[key], limit: 100, offset: 0 })
   results.value[key] = res.result?.[key] || []
+  const ck = countKeys[key]
+  if (ck && res.result?.[ck] != null) counts.value[key] = res.result[ck]
+  offsets.value[key] = results.value[key].length
+  hasMore.value[key] = (counts.value[key] ?? results.value[key].length) > results.value[key].length
   fetchedTabs.value[key] = true
+}
+
+/** 无限滚动：滑近底部时追加下一页（cloudsearch offset 分页，每页 100） */
+async function loadMore() {
+  const key = tab.value
+  if (!fetchedTabs.value[key] || !hasMore.value[key] || loadingMore.value) return
+  loadingMore.value = true
+  try {
+    const res = await api('cloudsearch', {
+      keywords: keyword.value,
+      type: types[key],
+      limit: 100,
+      offset: offsets.value[key]
+    })
+    const more = res.result?.[key] || []
+    results.value[key] = [...results.value[key], ...more]
+    offsets.value[key] = results.value[key].length
+    const ck = countKeys[key]
+    hasMore.value[key] = (res.result?.[ck] ?? results.value[key].length) > results.value[key].length
+  } catch { /* 翻页失败静默，下次滚动重试 */ } finally {
+    loadingMore.value = false
+  }
+}
+
+function onScroll() {
+  const sc = document.querySelector('.content')
+  if (!sc) return
+  // 预加载：距底部还差 PRELOAD_PX 就提前拉下一页，用户滑到之前数据已就绪
+  if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - PRELOAD_PX) loadMore()
 }
 
 async function doSearch(kw = keyword.value) {
@@ -44,11 +86,18 @@ async function doSearch(kw = keyword.value) {
   tab.value = 'songs'
   results.value = { songs: [], playlists: [], artists: [], albums: [], mvs: [] }
   fetchedTabs.value = {}
+  counts.value = {}
+  offsets.value = {}
+  hasMore.value = {}
   try {
-    // 只请求当前 tab，其余 tab 点击时再懒加载（减少接口压力）
-    await fetchTab('songs', kw)
-  } catch {
-    results.value.songs = []
+    // 并行拉取所有类型：搜「赛博朋克2077」这类关键词歌曲可能很少，
+    // 但歌单/专辑有货——全部拉出来，切 tab 立即可见
+    await Promise.allSettled(Object.keys(types).map((k) => fetchTab(k, kw)))
+    // 歌曲为空时自动切到第一个有结果的类型（如歌单）
+    if (!results.value.songs.length) {
+      const first = tabs.find((t) => t.key !== 'songs' && results.value[t.key]?.length)
+      if (first) tab.value = first.key
+    }
   } finally {
     loading.value = false
   }
@@ -74,6 +123,13 @@ onMounted(() => {
     keyword.value = q
     doSearch(q)
   }
+  // 无限滚动：监听内容滚动容器，滑近底部自动加载更多
+  const sc = document.querySelector('.content')
+  sc?.addEventListener('scroll', onScroll, { passive: true })
+})
+
+onUnmounted(() => {
+  document.querySelector('.content')?.removeEventListener('scroll', onScroll)
 })
 
 // 已在 /search 页时侧边栏再次搜索只改 query，组件复用不会重新 mount，需监听
@@ -117,7 +173,7 @@ function goMv(id) {
         :class="{ active: tab === t.key }"
         @click="switchTab(t.key)"
       >
-        {{ t.label }}<span v-if="fetchedTabs[t.key]" class="tab-count">({{ results[t.key]?.length || 0 }})</span>
+        {{ t.label }}<span v-if="fetchedTabs[t.key]" class="tab-count">({{ counts[t.key] ?? (results[t.key]?.length || 0) }})</span>
       </button>
     </div>
 
@@ -170,6 +226,14 @@ function goMv(id) {
       </div>
 
       <p v-if="searched && !loading && !tabLoading && !(results[tab] || []).length" class="empty">没有找到相关内容</p>
+
+      <!-- 无限滚动：滑近底部自动加载更多 -->
+      <p v-if="searched && !loading && !tabLoading && hasMore[tab] && (results[tab] || []).length" class="load-more">
+        {{ loadingMore ? '加载中…' : '继续下滑加载更多' }}
+      </p>
+      <p v-else-if="searched && !loading && !tabLoading && (results[tab] || []).length" class="load-more done">
+        已加载全部 {{ counts[tab] ?? results[tab].length }} 条
+      </p>
     </div>
   </div>
 </template>
@@ -274,5 +338,14 @@ function goMv(id) {
   color: var(--text-faint);
   text-align: center;
   padding: 40px 0;
+}
+.load-more {
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: center;
+  padding: 18px 0 8px;
+}
+.load-more.done {
+  color: var(--text-dim);
 }
 </style>

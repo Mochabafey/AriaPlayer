@@ -14,6 +14,18 @@ const listRef = ref(null)
 const trackRef = ref(null)
 const volTrackRef = ref(null)
 
+/* 窗口控制 + F11 沉浸全屏（LyricPanel 全屏覆盖时标题栏被盖住，这里补上） */
+const winFullscreen = ref(false)
+const win = {
+  minimize: () => window.ncm.invoke('win:minimize'),
+  toggleMax: () => window.ncm.invoke('win:toggle-maximize'),
+  close: () => window.ncm.invoke('win:close')
+}
+async function toggleFullscreen() {
+  winFullscreen.value = await window.ncm.invoke('win:set-fullscreen')
+}
+window.ncm.invoke('win:is-fullscreen').then((f) => (winFullscreen.value = !!f))
+
 const active = computed(() => activeIndex(player.lyrics, player.currentTime))
 const hasLyric = computed(() => player.lyrics.length > 0)
 // 是否显示歌词翻译（设置项 showTranslation）
@@ -77,6 +89,13 @@ function onUserScroll() {
 function seekLine(line) {
   userScrollUntil = 0
   player.seek(line.time)
+}
+
+/** 窗口缩放：媒体查询改字号 → 行高/位置变化，立即把当前行重新对齐（无动画直跳） */
+function onResize() {
+  cancelAnimationFrame(scrollRaf)
+  const idx = active.value
+  if (idx >= 0) centerLine(idx, false)
 }
 
 watch(active, (idx) => {
@@ -248,6 +267,9 @@ watch(
 const idle = ref(false)
 let idleTimer = null
 const IDLE_MS = 10000
+// 鼠标是否靠近顶部热区（沉浸时只亮顶部按钮，不唤醒整个控制坞）
+const nearTop = ref(false)
+const TOP_ZONE = 90
 
 function poke() {
   idle.value = false
@@ -257,32 +279,67 @@ function poke() {
   }, IDLE_MS)
 }
 
-onMounted(() => {
+/** 分区唤醒：顶部热区只亮按钮组（保持沉浸）；其他区域移动才唤醒整个控制坞 */
+function onGlobalMove(e) {
+  const y = e.clientY
+  nearTop.value = y < TOP_ZONE
+  if (y < TOP_ZONE) {
+    clearTimeout(idleTimer) // 靠近顶部：维持沉浸，按钮组由 nearTop 独立控制显示
+    return
+  }
   poke()
+}
+
+onMounted(async () => {
+  poke()
+  // 重新进入歌词页：立即对齐当前播放行（v-if 重建时 watch(active) 不会触发）
+  await nextTick()
+  const idx = active.value
+  if (idx >= 0) centerLine(idx, false)
   // 监听 window：鼠标移到底部 PlayerBar 区域也能唤醒
-  window.addEventListener('mousemove', poke, { passive: true })
+  window.addEventListener('mousemove', onGlobalMove, { passive: true })
   window.addEventListener('pointerdown', poke, { passive: true })
   window.addEventListener('wheel', poke, { passive: true })
   window.addEventListener('keydown', poke)
+  // 窗口缩放后立即重对齐当前歌词行（字号变化导致布局偏移）
+  window.addEventListener('resize', onResize)
 })
 
 onBeforeUnmount(() => {
   cancelAnimationFrame(scrollRaf)
   clearTimeout(idleTimer)
-  window.removeEventListener('mousemove', poke)
+  window.removeEventListener('mousemove', onGlobalMove)
   window.removeEventListener('pointerdown', poke)
   window.removeEventListener('wheel', poke)
   window.removeEventListener('keydown', poke)
+  window.removeEventListener('resize', onResize)
   window.removeEventListener('pointermove', onVolMove)
   window.removeEventListener('pointerup', onVolUp)
 })
 </script>
 
 <template>
-  <div class="lyric-panel" :class="{ immersed: idle }">
+  <div class="lyric-panel" :class="{ immersed: idle, fullscreen: winFullscreen }">
     <div class="lyric-bg" :style="bgStyle"></div>
     <!-- 无边框窗口拖拽条：全屏播放页也可移动窗口（不遮挡任何交互） -->
     <div class="drag-zone"></div>
+    <!-- 顶部右上：F11 沉浸全屏 + 窗口控制（独立跟随鼠标靠近，不依赖沉浸态） -->
+    <div class="panel-winctrl" :class="{ 'edge-show': nearTop }">
+      <button class="w-ctrl" :class="{ on: winFullscreen }" :title="winFullscreen ? '退出沉浸全屏 (F11)' : '沉浸全屏 (F11)'" @click="toggleFullscreen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 4H6a2 2 0 0 0-2 2v2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/>
+        </svg>
+      </button>
+      <button class="w-ctrl" title="最小化" @click="win.minimize">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+      </button>
+      <button class="w-ctrl" title="最大化 / 还原" @click="win.toggleMax">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+      </button>
+      <button class="w-ctrl w-close" title="关闭" @click="win.close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
     <div class="lyric-inner">
       <div class="left-col">
         <div class="cover-large" v-if="player.current">
@@ -437,8 +494,8 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <button class="close-btn" @click="player.showLyrics = false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+    <button class="close-btn" :class="{ 'edge-show': nearTop }" title="收起歌词" @click="player.showLyrics = false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9.5 12 15.5 18 9.5"/></svg>
     </button>
   </div>
 </template>
@@ -496,7 +553,7 @@ onBeforeUnmount(() => {
 }
 .track-info { text-align: center; max-width: min(30vw, 340px); }
 .t-name {
-  font-size: clamp(18px, 1.55vw, 23px);
+  font-size: clamp(20px, 1.8vw, 26px);
   font-weight: 700;
   color: #fff;
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
@@ -505,7 +562,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .t-artist {
-  font-size: clamp(14px, 1.15vw, 16px);
+  font-size: clamp(15px, 1.3vw, 18px);
   color: rgba(255, 255, 255, 0.78);
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
   margin-top: 5px;
@@ -524,12 +581,18 @@ onBeforeUnmount(() => {
   padding: calc(var(--lyric-h) / 2 - 22px) 24px;
   mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
   -webkit-mask-image: linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
+  /* 隐藏滚动条：歌词页为自动滚动 + 点击跳转，竖条纯属干扰 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.lyric-list::-webkit-scrollbar {
+  display: none;
 }
 .lyric-line {
   text-align: center;
-  font-size: clamp(17px, 1.4vw, 20px);
+  font-size: clamp(18px, 1.6vw, 22px);
   line-height: 1.55;
-  padding: 7px 14px;
+  padding: 8px 14px;
   color: rgba(255, 255, 255, 0.42);
   /* 用 scale 做放大动画：不触发重排，上下行不被推挤，滚动丝滑 */
   transition: color 0.4s var(--ease), transform 0.4s var(--ease);
@@ -545,7 +608,7 @@ onBeforeUnmount(() => {
   display: block;
   margin-top: 3px;
   line-height: 1.45;
-  font-size: clamp(14px, 1.15vw, 17px);
+  font-size: clamp(15px, 1.3vw, 18px);
   font-weight: 400;
   color: rgba(255, 255, 255, 0.45);
   transition: color 0.4s var(--ease);
@@ -649,7 +712,7 @@ onBeforeUnmount(() => {
   gap: clamp(14px, 2.5vw, 26px);
 }
 .ctrl-side.left { justify-content: flex-start; }
-.ctrl-side.right { justify-content: flex-end; gap: 10px; }
+.ctrl-side.right { justify-content: flex-end; gap: 10px; padding-right: 40px; }
 
 .c-btn {
   display: flex;
@@ -678,6 +741,73 @@ onBeforeUnmount(() => {
 /* 收藏激活：红心 */
 .c-btn.like-on { color: var(--accent, #fa5151); }
 .c-btn.like-on:hover { color: var(--accent, #fa5151); }
+
+/* ---- 大窗口自适应：按视口尺寸分档放大（F11 全屏 / 最大化 / 手动拉伸都生效） ---- */
+@media (min-height: 900px) {
+  .cover-large { width: min(30vw, 48vh, 390px); }
+  .track-info { max-width: min(30vw, 390px); }
+  .t-name { font-size: clamp(22px, 1.9vw, 30px); }
+  .t-artist { font-size: clamp(16px, 1.35vw, 20px); }
+  .lyric-list { max-width: 660px; }
+  .lyric-line { font-size: clamp(21px, 1.7vw, 26px); padding: 9px 16px; }
+  .lyric-trans { font-size: clamp(16px, 1.3vw, 20px); }
+  .c-btn.ghost { width: 38px; height: 38px; }
+  .c-btn.ghost svg { width: 21px; height: 21px; }
+  .c-btn.main { width: 50px; height: 50px; }
+  .c-btn.main svg { width: 34px; height: 34px; }
+  .c-btn.main.play svg { width: 42px; height: 42px; }
+  .vol-track { width: clamp(80px, 8vw, 115px); height: 5px; }
+  .progress-dock .time { font-size: 14px; min-width: 40px; }
+  .p-track { height: 5px; }
+  .progress-dock:hover .p-track,
+  .p-track.drag { height: 8px; }
+}
+@media (min-height: 1000px) {
+  .cover-large { width: min(32vw, 52vh, 440px); }
+  .track-info { max-width: min(32vw, 430px); }
+  .t-name { font-size: clamp(24px, 2.1vw, 34px); }
+  .t-artist { font-size: clamp(17px, 1.5vw, 22px); }
+  .lyric-list { max-width: 720px; }
+  .lyric-line { font-size: clamp(24px, 1.85vw, 30px); padding: 10px 18px; }
+  .lyric-trans { font-size: clamp(18px, 1.4vw, 22px); }
+  .c-btn.ghost { width: 42px; height: 42px; }
+  .c-btn.ghost svg { width: 23px; height: 23px; }
+  .c-btn.main { width: 56px; height: 56px; }
+  .c-btn.main svg { width: 38px; height: 38px; }
+  .c-btn.main.play svg { width: 47px; height: 47px; }
+  .ctrl-row { gap: clamp(16px, 2.4vw, 28px); }
+  .vol-track { width: clamp(90px, 9vw, 130px); height: 6px; }
+  .progress-dock .time { font-size: 15px; min-width: 44px; }
+  .p-track { height: 6px; }
+  .progress-dock:hover .p-track,
+  .p-track.drag { height: 9px; }
+  .p-knob { width: 16px; height: 16px; }
+}
+/* 大窗口时底部播放条放宽，进度条随之伸长 */
+@media (min-width: 1400px) {
+  .dock-wrap { width: min(1200px, 88vw); }
+}
+@media (min-width: 1800px) {
+  .dock-wrap { width: min(1400px, 90vw); }
+}
+/* 宽屏时歌词区整体放宽：利用两侧空间，避免空旷 */
+@media (min-width: 1600px) {
+  .lyric-inner {
+    max-width: 1780px;
+    gap: clamp(56px, 7vw, 130px);
+    padding-left: 4vw;
+    padding-right: 4vw;
+  }
+  .lyric-list { max-width: 860px; }
+  .track-info { max-width: min(30vw, 430px); }
+}
+@media (min-width: 2100px) {
+  .lyric-inner {
+    max-width: 2000px;
+    gap: clamp(72px, 8vw, 150px);
+  }
+  .lyric-list { max-width: 940px; }
+}
 
 /* 队列按钮激活（抽屉打开） */
 .c-btn.queue-on { color: #fff; }
@@ -743,19 +873,29 @@ onBeforeUnmount(() => {
   transform: translate(-50%, 10px);
   pointer-events: none;
 }
-.immersed .close-btn {
-  opacity: 0;
-  pointer-events: none;
-}
 .immersed .mini-bar {
   opacity: 1;
   transform: translate(-50%, 0);
 }
+/* ---- 顶部按钮组（四大金刚 + 收起）独立逻辑：默认收起，鼠标靠近顶部热区才浮现 ---- */
+.panel-winctrl,
+.close-btn {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+}
+.panel-winctrl.edge-show,
+.close-btn.edge-show {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
 
 .close-btn {
   position: absolute;
-  top: 26px;
-  right: 30px;
+  top: 13px;
+  left: 30px;
   width: 34px;
   height: 34px;
   border-radius: 50%;
@@ -778,6 +918,46 @@ onBeforeUnmount(() => {
   height: 40px;
   -webkit-app-region: drag;
   z-index: 5;
+}
+/* 顶部右上：沉浸全屏 + 窗口控制（覆盖标题栏时补齐） */
+.panel-winctrl {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 30;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(14px);
+  -webkit-app-region: no-drag;
+}
+.w-ctrl {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.75);
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.w-ctrl:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.w-ctrl.on {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
+}
+.w-ctrl.w-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+.w-ctrl svg {
+  width: 15px;
+  height: 15px;
 }
 .close-btn svg { width: 15px; height: 15px; }
 .close-btn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }

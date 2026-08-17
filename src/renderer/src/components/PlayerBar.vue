@@ -403,6 +403,7 @@ onUnmounted(() => {
   gap: 8px;
   min-width: 200px;
   justify-content: flex-end;
+  padding-right: 26px; /* 音量条离右缘留白 */
 }
 .vol-wrap {
   display: flex;
