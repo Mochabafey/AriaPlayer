@@ -47,8 +47,12 @@ export function initAudioCache() {
   try {
     fs.mkdirSync(cacheRoot(), { recursive: true })
     fs.mkdirSync(tmpDir(), { recursive: true })
-    fs.rmSync(tmpDir(), { recursive: true, force: true })
-    fs.mkdirSync(tmpDir(), { recursive: true })
+    // 只清 .tmp 里的半成品文件、不删目录本身：
+    // WorkBuddy 沙箱把 fs.rmSync 改造成「移入回收站」机制（异步），rm 目录会在后台
+    // 把重建好的目录一并移走 → 播放时写 .tmp 报 ENOENT（ERR=4 播放失败 + ffmpeg 转码兜底）
+    for (const name of fs.readdirSync(tmpDir())) {
+      try { fs.rmSync(path.join(tmpDir(), name), { force: true }) } catch { /* ignore */ }
+    }
   } catch { /* ignore */ }
   try {
     const known = new Set()
@@ -221,6 +225,9 @@ class Session {
 
   _start() {
     try {
+      // 防御：沙箱环境的"删除进回收站"机制可能把 .tmp 目录整个移走，
+      // 播放前必须确保目录存在，否则 openSync 抛 ENOENT → 代理 502 → 播放 ERR=4
+      fs.mkdirSync(tmpDir(), { recursive: true })
       this.fd = fs.openSync(this.file, 'w+') // 读写共用，供 tail 流读取
       this._connect(this.reqOffset)
         .then((res) => {
