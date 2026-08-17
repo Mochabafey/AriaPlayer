@@ -1,26 +1,24 @@
 /**
  * QQ 扫码登录（宿主端直接对接 ssl.ptlogin2.qq.com 官方网页登录流程）。
  *
- * 流程（与官方 QQ 登录页一致）：
- *  1. createQr()  -> GET /ptqrshow 拿到二维码图片 + qrsig（hash33 得 ptqrtoken）
- *  2. checkQr()   -> 轮询 GET /ptqrlogin：
- *       65 等待扫码 | 66 已扫码待确认 | 67 已失效 | 0 成功（收集 Set-Cookie）
+ * 完整流程（对齐 Rain120/qq-music-api 官方实现 + 实测修正）：
+ *  1. createQr()  -> GET /ptqrshow 拿二维码图片 + qrsig（hash33 得 ptqrtoken）
+ *  2. checkQr()   -> 轮询 GET /ptqrlogin，直到「登录成功」
+ *  3. 成功后跟随授权跳转（check_sig）拿 p_skey，g_tk = hash5381(p_skey)
+ *  4. POST graph.qq.com/oauth2.0/authorize（g_tk + client_id=100497308）拿授权 code
+ *  5. POST u.y.qq.com/cgi-bin/musicu.fcg（QQConnectLogin.QQLogin，带 code）拿 qm_keyst
+ *  6. 汇总全部 Set-Cookie（uin/skey/p_skey/pt4_token/qm_keyst...）注入 QQ 音乐子服务
  *
- * 登录业务参数说明：
- *  - QQ 音乐登录（appid=716027609, daid=383）在部分出口 IP 会被腾讯定向风控
- *    直接 403（ptqrshow/ptqrlogin 均被拒），而 QQ 空间（appid=549000912,
- *    daid=5）不受影响。
- *  - 扫码登录成功后拿到的 uin/skey/p_skey 是 **QQ 账号级登录态**（ptlogin2
- *    统一签发，domain=qq.com），QQ 音乐 webapi（u.y.qq.com）用同样的
- *    uin + skey 鉴权，因此用 QQ 空间的授权流程登录、把 cookie 喂给 QQ 音乐
- *    子服务，即可解锁 VIP/版权歌曲（前提：该 QQ 号开通了绿钻/会员）。
+ * 风控说明：当前出口 IP 对 daid=383（QQ 音乐）的 ptqrshow/ptqrlogin 请求
+ * 在 u1=y.qq.com 时返回 403（IP 级业务风控）。把 u1 换成
+ * graph.qq.com/oauth2.0/login_jump（QQ 音乐官方 OAuth 授权域名）即可绕过，
+ * 且该流程签发的 p_skey/qm_keyst 正是 QQ 音乐 VIP 播放鉴权所需。
  */
 
-const QR_APPID = '549000912' // QQ 空间 appid（避开 QQ 音乐 daid=383 的出口风控）
-const QR_DAID = '5' // QQ 空间 daid
-const QR_AID = '100497308' // pt_3rd_aid = QQ 音乐网页版三方应用号（触发 p_skey 等完整登录态签发）
-const U1 = 'https%3A%2F%2Fqzone.qq.com' // 登录后回调地址（仅用于协议，不实际跳转；换 y.qq.com 会被风控 403）
-const PT_REDIR_PTTYPE = '8' // QQ 音乐回调类型
+const QR_APPID = '716027609' // QQ 音乐网页版 appid
+const QR_DAID = '383' // QQ 音乐 daid
+const QR_AID = '100497308' // pt_3rd_aid / client_id = QQ 音乐三方应用号
+const U1 = 'https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump'
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
@@ -31,86 +29,160 @@ function hash33(t) {
   return 2147483647 & e
 }
 
-/** 解析 Set-Cookie 列表，返回 {name: value}（只取首个分号前的键值对） */
+/** p_skey -> g_tk（QQ 音乐 API 的 CSRF token） */
+function getGtk(pSkey) {
+  let hash = 5381
+  for (let i = 0; i < pSkey.length; i++) hash += (hash << 5) + pSkey.charCodeAt(i)
+  return hash & 0x7fffffff
+}
+
+/** 随机 uuid（authorize 的 ui 参数） */
+function getGuid() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
+    .replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      const v = c === 'x' ? r : (r & 0x3) | 0x8
+      return v.toString(16)
+    })
+    .toUpperCase()
+}
+
+/** 解析 Set-Cookie 列表，返回 {name: value}（只取首个分号前的键值对；跳过空值清除型 cookie） */
 function parseSetCookies(headers) {
   const out = {}
   for (const c of headers.getSetCookie()) {
     const kv = c.split(';')[0].trim()
     const i = kv.indexOf('=')
-    if (i > 0) out[kv.slice(0, i)] = kv.slice(i + 1)
+    if (i > 0) {
+      const v = kv.slice(i + 1)
+      // 跳过空值：同名的「清除型」Set-Cookie（如 p_skey=）不能覆盖前面已签发的真实值
+      if (v !== '') out[kv.slice(0, i)] = v
+    }
   }
   return out
 }
 
-/**
- * 第一步：生成登录二维码。
- * @returns {{ qrsig: string, token: number, cookie: string, image: string }}
- *   image 是 data:image/png;base64 可直接 <img> 展示；cookie 是会话 cookie（含 qrsig）
- */
-export async function createQr() {
-  const ts = Date.now() / 1000
-  const url =
-    `https://ssl.ptlogin2.qq.com/ptqrshow?appid=${QR_APPID}&e=2&l=M&s=3&d=72&v=4&t=${ts}` +
-    `&da=1&daid=${QR_DAID}&pt_3rd_aid=${QR_AID}&u1=${U1}&pt_feedback_link=${U1}` +
-    `&pt_redirect_aid=${QR_AID}&pt_redir_pttype=${PT_REDIR_PTTYPE}`
-  const res = await fetch(url, { headers: { 'User-Agent': UA, Referer: 'https://xui.ptlogin2.qq.com/' } })
-  if (!res.ok) throw new Error(`ptqrshow HTTP ${res.status}`)
-  const buf = Buffer.from(await res.arrayBuffer())
-  const cookies = parseSetCookies(res.headers)
-  const qrsig = cookies.qrsig || ''
-  if (!qrsig) throw new Error('ptqrshow 未返回 qrsig')
-  // 把会话 cookie（qrsig 等）原样带回，轮询时必须带上才能识别二维码会话
-  const cookie = res.headers
-    .getSetCookie()
-    .map((c) => c.split(';')[0].trim())
+function toCookieStr(obj) {
+  return Object.entries(obj)
+    .filter(([, v]) => v !== '')
+    .map(([k, v]) => `${k}=${v}`)
     .join('; ')
-  return { qrsig, token: hash33(qrsig), cookie, image: `data:image/png;base64,${buf.toString('base64')}` }
 }
 
 /**
- * 第二步：轮询扫码状态。
- * @param {string} qrsig createQr 返回的 qrsig
- * @param {number} token createQr 返回的 ptqrtoken
- * @param {string} sessionCookie createQr 返回的会话 cookie（必带 qrsig）
- * @returns {{ code: number, nick: string, cookie: string }}
- *   code: 0 成功（cookie 已拼好）/ 65 等待扫码 / 66 已扫码待确认 / 67 已失效
+ * 第一步：生成登录二维码。
+ * @returns {{ qrsig, token, cookie, image }} image 为 data:image/png;base64
+ */
+export async function createQr() {
+  const ts = (Math.random() * 2).toFixed(16) // 官方用随机 0.x 时间戳
+  const url =
+    `https://ssl.ptlogin2.qq.com/ptqrshow?appid=${QR_APPID}&e=2&l=M&s=3&d=72&v=4&t=${ts}` +
+    `&daid=${QR_DAID}&pt_3rd_aid=${QR_AID}&u1=${U1}`
+  const res = await fetch(url, { headers: { 'User-Agent': UA, Referer: 'https://xui.ptlogin2.qq.com/' } })
+  if (!res.ok) throw new Error(`ptqrshow HTTP ${res.status}`)
+  const buf = Buffer.from(await res.arrayBuffer())
+  const all = parseSetCookies(res.headers)
+  const qrsig = all.qrsig || ''
+  if (!qrsig) throw new Error('ptqrshow 未返回 qrsig')
+  return {
+    qrsig,
+    token: hash33(qrsig),
+    cookie: toCookieStr(all),
+    image: `data:image/png;base64,${buf.toString('base64')}`
+  }
+}
+
+/**
+ * 第二步：轮询扫码状态；成功后执行授权链（check_sig -> authorize -> QQLogin）拿完整 cookie。
+ * @param {string} qrsig
+ * @param {number} token
+ * @param {string} sessionCookie
+ * @returns {{ code, nick, msg, cookie, isOk }}
  */
 export async function checkQr(qrsig, token, sessionCookie = '') {
   const action = `0-0-${Date.now()}`
+  const loginSig = encodeURIComponent('du-YS1h8*0GqVqcrru0pXkpwVg2DYw-DtbFulJ62IgPf6vfiJe*4ONVrYc5hMUNE')
   const url =
     `https://ssl.ptlogin2.qq.com/ptqrlogin?u1=${U1}&ptqrtoken=${token}` +
-    `&pt_3rd_aid=${QR_AID}&pt_feedback_link=${U1}&pt_redirect_aid=${QR_AID}&pt_redir_pttype=${PT_REDIR_PTTYPE}` +
-    `&ptredirect=1&h=1&t=1&g=1&from_ui=1&ptlang=2052&action=${action}&js_ver=26071711&js_type=1` +
-    `&login_sig=&pt_uistyle=40&aid=${QR_APPID}&daid=${QR_DAID}&`
+    `&ptredirect=0&h=1&t=1&g=1&from_ui=1&ptlang=2052&action=${action}` +
+    `&js_ver=23111510&js_type=1&login_sig=${loginSig}&pt_uistyle=40&aid=${QR_APPID}&daid=${QR_DAID}` +
+    `&pt_3rd_aid=${QR_AID}&o1vId=3674fc47871e9c407d8838690b355408&pt_js_version=v1.48.1&`
   const res = await fetch(url, {
     headers: { 'User-Agent': UA, Referer: 'https://xui.ptlogin2.qq.com/', Cookie: sessionCookie || `qrsig=${qrsig}` }
   })
   const text = await res.text()
-  // 形如 ptuiCB('0','0','https://...','QQ昵称','提示消息',...) —— 参数个数不固定，
-  // 只取前 5 个参数（code/url/nick/msg），不要求立即闭合
   const m = text.match(/ptuiCB\('(\d+)','[^']*','([^']*)','([^']*)'(?:,'([^']*)')?/)
-  if (!m) return { code: -1, nick: '', cookie: '', msg: '' }
+  if (!m) return { code: -1, nick: '', cookie: '', msg: '', isOk: false }
   const code = Number(m[1])
   const nick = m[3] || ''
   const msg = m[4] || ''
-  let loginCookie = ''
-  if (code === 0) {
-    const all = parseSetCookies(res.headers)
-    // 全量收集（不只白名单），避免遗漏 p_skey/p_uin/pt4_token 等关键登录态 cookie
-    loginCookie = Object.entries(all)
-      .filter(([, v]) => v !== '')
-      .map(([k, v]) => `${k}=${v}`)
-      .join('; ')
-    // 兜底：ptuiCB 的 URL 里也带 skey（某些情况 Set-Cookie 不全）
-    if (!all.skey && m[2]) {
-      const sm = m[2].match(/[?&]skey=([^&]+)/)
-      if (sm) loginCookie = `${loginCookie}; skey=${decodeURIComponent(sm[1])}`.replace(/^; /, '')
-    }
-    // 兜底：uin 缺失时从回调 URL 的 uin 参数取
-    if (!all.uin && m[2]) {
-      const um = m[2].match(/[?&]uin=([^&]+)/)
-      if (um) loginCookie = `${loginCookie}; uin=${decodeURIComponent(um[1])}`.replace(/^; /, '')
-    }
+  // 非成功：把 ptqrlogin 的 Set-Cookie（如 qrsig 刷新）带回去，但只返回状态
+  if (code !== 0) {
+    return { code, nick, msg, cookie: '', isOk: false }
   }
-  return { code, nick, msg, cookie: loginCookie }
+
+  // ===== 登录成功：执行授权链拿 p_skey / qm_keyst =====
+  let all = parseSetCookies(res.headers)
+  try {
+    // 1) 跟随 check_sig 跳转拿 p_skey（redirect: manual 手动收集 Set-Cookie）
+    const checkSigUrl = m[2]
+    if (!checkSigUrl) throw new Error('no checkSigUrl')
+    console.log(`[qq-login] checkSigUrl=${checkSigUrl.slice(0, 150)}`)
+    const r1 = await fetch(checkSigUrl, {
+      redirect: 'manual',
+      headers: { 'User-Agent': UA, Referer: 'https://xui.ptlogin2.qq.com/', Cookie: toCookieStr(all) }
+    })
+    const sigCookies = parseSetCookies(r1.headers)
+    console.log(`[qq-login] checkSig status=${r1.status} loc=${(r1.headers.get('location') || '').slice(0, 120)}`)
+    console.log(`[qq-login] checkSig rawSetCookie=${r1.headers.getSetCookie().map((c) => c.split(';')[0]).join(' | ').slice(0, 300)}`)
+    console.log(`[qq-login] checkSig setCookie=[${Object.keys(sigCookies).join(',')}]`)
+    Object.assign(all, sigCookies)
+    const pSkey = all.p_skey || ''
+    console.log(`[qq-login] p_skey=${pSkey ? pSkey.slice(0, 8) + '...' : 'MISSING'}`)
+    const gtk = pSkey ? getGtk(pSkey) : 0
+
+    // 2) graph.qq.com OAuth 授权，拿 code
+    const authForm = new FormData()
+    authForm.append('response_type', 'code')
+    authForm.append('client_id', QR_AID)
+    authForm.append('redirect_uri', 'https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/')
+    authForm.append('scope', 'get_user_info,get_app_friends')
+    authForm.append('state', 'state')
+    authForm.append('switch', '')
+    authForm.append('from_ptlogin', '1')
+    authForm.append('src', '1')
+    authForm.append('update_auth', '1')
+    authForm.append('openapi', '1010_1030')
+    authForm.append('g_tk', String(gtk))
+    authForm.append('auth_time', String(Date.now()))
+    authForm.append('ui', getGuid())
+    const r2 = await fetch('https://graph.qq.com/oauth2.0/authorize', {
+      method: 'POST',
+      body: authForm,
+      redirect: 'manual',
+      headers: { 'User-Agent': UA, Cookie: toCookieStr(all) }
+    })
+    Object.assign(all, parseSetCookies(r2.headers))
+    const loc = r2.headers.get('location') || ''
+    console.log(`[qq-login] authorize status=${r2.status} loc=${loc.slice(0, 100)}`)
+    const codeMatch = loc.match(/[?&]code=([^&]+)/)
+    if (!codeMatch) throw new Error(`authorize no code, loc=${loc.slice(0, 80)}`)
+    const authCode = codeMatch[1]
+
+    // 3) u.y.qq.com QQLogin 换 qm_keyst
+    const loginData = JSON.stringify({
+      comm: { g_tk: gtk, platform: 'yqq', ct: 24, cv: 0 },
+      req: { module: 'QQConnectLogin.LoginServer', method: 'QQLogin', param: { code: authCode } }
+    })
+    const r3 = await fetch('https://u.y.qq.com/cgi-bin/musicu.fcg', {
+      method: 'POST',
+      body: loginData,
+      headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded', Cookie: toCookieStr(all) }
+    })
+    Object.assign(all, parseSetCookies(r3.headers))
+  } catch (e) {
+    console.log('[qq-login] authorize chain fail:', e?.message || e)
+  }
+  const cookie = toCookieStr(all)
+  return { code: 0, nick, msg, cookie, isOk: !!cookie }
 }

@@ -56,4 +56,37 @@ if (fs.existsSync(cfgPath)) {
   }
 }
 
+// 本地补丁：request.ts 的出站 axios 请求注入登录 cookie。
+// Rain120 上游请求默认不带 Cookie（匿名），导致 VIP/版权歌曲永远 104003 无法播放。
+// 修复前需先确认补丁标识不存在，避免重复替换。
+const reqPath = path.join(dir, 'src', 'util', 'request.ts')
+if (fs.existsSync(reqPath)) {
+  let src = fs.readFileSync(reqPath, 'utf-8')
+  if (!src.includes('userInfo')) {
+    src = src.replace(
+      "import { requestConfig } from '../config';",
+      "import { requestConfig, userInfo } from '../config';"
+    )
+    src = src.replace(
+      `  const requestConfigOptions: AxiosRequestConfig = {
+    ...options,
+    url: baseURL,
+    method: axiosMethod,
+  };`,
+      `  const requestConfigOptions: AxiosRequestConfig = {
+    ...options,
+    url: baseURL,
+    method: axiosMethod,
+    // 注入 QQ 音乐登录 cookie（含 p_skey/qm_keyst 等），否则上游永远匿名、VIP 无法播放
+    headers: {
+      ...(options.headers || {}),
+      ...(userInfo.cookie ? { Cookie: userInfo.cookie } : {}),
+    },
+  };`
+    )
+    fs.writeFileSync(reqPath, src)
+    console.log('[vendor-qqmusic] 已应用 request.ts 补丁（出站请求携带登录 cookie）')
+  }
+}
+
 console.log('[vendor-qqmusic] 完成！qqmusic/ 已就绪。')
