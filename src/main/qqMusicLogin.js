@@ -109,5 +109,5 @@ export async function checkQr(qrsig, token, sessionCookie = '') {
       if (um) loginCookie = `${loginCookie}; uin=${decodeURIComponent(um[1])}`.replace(/^; /, '')
     }
   }
-  return { code, nick, msg, cookie }
+  return { code, nick, msg, cookie: loginCookie }
 }

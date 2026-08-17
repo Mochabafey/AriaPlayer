@@ -180,7 +180,9 @@ async function qqStartQr() {
     qqQrTip.value = '请使用 QQ 手机版扫码登录'
     qqQrTimer = setInterval(qqCheckQr, 2000)
   } catch (e) {
-    qqQrTip.value = '二维码生成失败：' + (e?.message || e) + '，请检查网络后重试'
+    const msg = '二维码生成失败：' + (e?.message || e)
+    qqQrTip.value = msg + '，请检查网络后重试'
+    toast(msg, 'error')
   }
 }
 
@@ -206,7 +208,13 @@ async function qqCheckQr() {
     } else {
       qqQrTip.value = '等待扫码…'
     }
-  } catch { /* 轮询瞬时失败忽略，下个周期重试 */ }
+  } catch (e) {
+    // 轮询出错：停止轮询并提示（避免无限静默重试）
+    if (qqQrTimer) clearInterval(qqQrTimer)
+    qqQrTimer = null
+    qqQrTip.value = '轮询出错：' + (e?.message || e) + '，请点击刷新重试'
+    toast('QQ 登录轮询出错：' + (e?.message || e), 'error')
+  }
 }
 
 async function qqLogout() {
