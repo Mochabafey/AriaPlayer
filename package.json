@@ -1,7 +1,7 @@
 {
   "name": "aria-player",
   "productName": "Aria Player",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "咏叹调 — 网易云音乐解析/播放/下载桌面工具（基于 api-enhanced）",
   "main": "./dist/out/main/index.js",
   "author": "NTR",

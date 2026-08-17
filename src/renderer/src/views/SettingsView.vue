@@ -187,7 +187,7 @@ async function restartServer() {
     <section class="sec">
       <h2>关于</h2>
       <div class="about">
-        <p><b>咏叹调</b> Aria Player v0.2.0</p>
+        <p><b>咏叹调</b> Aria Player v0.2.1</p>
         <p class="hint">基于 <a href="https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced" target="_blank">api-enhanced</a>（MIT License）</p>
         <p class="hint">仅供学习交流使用，请尊重版权，勿用于商业用途</p>
       </div>
