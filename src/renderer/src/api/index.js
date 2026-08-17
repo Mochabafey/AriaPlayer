@@ -45,7 +45,14 @@ export const qqmusic = {
   onServerStatus: (cb) => bridge.on('qqmusic:server-status', cb),
   /** QQ 音乐 Cookie（解锁 VIP/版权歌曲） */
   getCookie: () => bridge.invoke('qqmusic:get-cookie'),
-  setCookie: (cookie) => bridge.invoke('qqmusic:set-cookie', cookie)
+  setCookie: (cookie) => bridge.invoke('qqmusic:set-cookie', cookie),
+  /** QQ 音乐扫码登录 */
+  loginQr: () => bridge.invoke('qqmusic:login-qr'),
+  loginCheck: (qrsig, token, cookie) => bridge.invoke('qqmusic:login-check', { qrsig, token, cookie }),
+  loginClear: () => bridge.invoke('qqmusic:login-clear'),
+  getNick: () => bridge.invoke('qqmusic:get-nick'),
+  /** QQ 智能聚合搜索（歌手/专辑/MV） */
+  smartbox: (keyword) => bridge.invoke('qqmusic:smartbox', { keyword })
 }
 
 export const ncm = {

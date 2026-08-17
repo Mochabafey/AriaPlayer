@@ -1,13 +1,15 @@
 # 咏叹调 · Aria Player
 
-> 基于 [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) 的网易云音乐解析/播放/下载桌面工具。
+> 基于 [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) + [Rain120/qq-music-api](https://github.com/Rain120/qq-music-api) 的**双音源**（网易云 + QQ 音乐）解析/播放/下载桌面工具。
 
-咏叹调（Aria Player）是一台「轻量级网易云音乐客户端」：把整个 api-enhanced 服务内置进 Electron，绕开 web 端各种限制，桌面化体验（歌词滚动、封面墙曲库、下载、扫码登录、解灰）。
+咏叹调（Aria Player）是一台「轻量级双音源音乐客户端」：把 api-enhanced 与 qq-music-api 两个服务全部内置进 Electron，绕开 web 端各种限制，桌面化体验（歌词滚动、封面墙曲库、下载、扫码登录、解灰）。
 
 ## 核心特性
 
-- **内置完整 api-enhanced 服务** — 用 Electron 自带 Node（`ELECTRON_RUN_AS_NODE` 模式）跑子进程，无须用户预装 Node
-- **私有通道通信** — 主进程与 api 服务走 Named Pipe / Unix Socket，**不占用任何 TCP 端口**，无端口冲突、无本机抓包
+- **内置完整 api-enhanced + qq-music-api 服务** — 用 Electron 自带 Node（`ELECTRON_RUN_AS_NODE` 模式）跑子进程，无须用户预装 Node
+- **私有通道通信** — 主进程与两个服务均走 Named Pipe / Unix Socket，**不占用任何 TCP 端口**，无端口冲突、无本机抓包
+- **多音源聚合** — 网易云 + QQ 音乐：搜索同名歌曲自动折叠（展开可切换音源）、平台 Logo 标识、歌手/专辑/MV 双源聚合展示；默认音源可在设置中选择
+- **QQ 音乐扫码登录** — 「我的」页扫码即登，解锁 VIP / 版权歌曲播放（cookie 注入 QQ 音乐子服务）
 - **全网最全的网易云接口** — 搜索、歌曲 URL 解析、歌词、排行榜、推荐、私人 FM、MV、评论、歌手/专辑/歌单
 - **推荐功能排** — 每日推荐（带日期）/ 心动模式（私人 FM）/ 私人雷达 / 相似推荐 / 云漫游，一键即播；推荐歌单支持「换一批」（歌单广场随机）
 - **搜索体验** — 多类型并行搜索（歌曲/歌单/歌手/专辑/MV）、真实总数统计、歌曲为空自动切到有结果的类型、**无限滚动分页 + 预加载**（滑到之前下一页已就绪）

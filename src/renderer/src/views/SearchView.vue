@@ -6,7 +6,8 @@ import { usePlayerStore } from '../stores/player'
 import { useSettingsStore } from '../stores/settings'
 import SongTable from '../components/SongTable.vue'
 import { fmtCount } from '../utils/format'
-import { mergeSearchResults } from '../utils/mergeSongs'
+import { mergeSearchResults, mergeCards, PLATFORM_LOGOS } from '../utils/mergeSongs'
+import { toast } from '../utils/toast'
 
 const route = useRoute()
 const router = useRouter()
@@ -54,14 +55,16 @@ async function fetchTab(key, kw) {
   fetchedTabs.value[key] = true
 }
 
-/** 搜索 QQ 音乐（仅歌曲），与网易云结果合并 */
+/** 搜索 QQ 音乐：歌曲列表（大量）+ smartbox 聚合（歌手/专辑/MV），与网易云结果合并 */
 async function fetchQqMusic(kw) {
   try {
-    const res = await qqmusic.search(kw, 1, 30)
-    return res?.songs || []
+    const [sr, sb] = await Promise.allSettled([qqmusic.search(kw, 1, 30), qqmusic.smartbox(kw)])
+    const songs = sr.status === 'fulfilled' ? sr.value?.songs || [] : []
+    const box = sb.status === 'fulfilled' ? sb.value || {} : {}
+    return { songs, artists: box.artists || [], albums: box.albums || [], mvs: box.mvs || [] }
   } catch (e) {
     console.error('[qqmusic-search] error:', e)
-    return []
+    return { songs: [], artists: [], albums: [], mvs: [] }
   }
 }
 
@@ -110,16 +113,20 @@ async function doSearch(kw = keyword.value) {
   neLoaded.value = {}
   hasMore.value = {}
   try {
-    // 并行拉取所有类型 + QQ音乐搜索
+    // 并行拉取所有类型 + QQ音乐搜索（歌曲 + smartbox 聚合）
     const tasks = Object.keys(types).map((k) => fetchTab(k, kw))
     const qqPromise = fetchQqMusic(kw)
     await Promise.allSettled(tasks)
-    const qqSongs = await qqPromise
+    const qq = await qqPromise
     // 合并双源结果（同名折叠，未匹配各自保留）
-    if (qqSongs.length) {
-      const { merged, unmatched } = mergeSearchResults(results.value.songs, qqSongs)
+    if (qq.songs.length) {
+      const { merged, unmatched } = mergeSearchResults(results.value.songs, qq.songs)
       results.value.songs = [...merged, ...unmatched]
     }
+    // 歌手/专辑/MV：QQ smartbox 结果并到各 tab（同名去重，QQ 排前）
+    results.value.artists = mergeCards(results.value.artists, qq.artists)
+    results.value.albums = mergeCards(results.value.albums, qq.albums)
+    results.value.mvs = mergeCards(results.value.mvs, qq.mvs)
     // 歌曲为空时自动切到第一个有结果的类型（如歌单）
     if (!results.value.songs.length) {
       const first = tabs.find((t) => t.key !== 'songs' && results.value[t.key]?.length)
@@ -182,6 +189,10 @@ function goAlbum(id) {
 function goMv(id) {
   router.push('/mv/' + id)
 }
+/** QQ 非歌曲卡片点击：详情页暂未接入 QQ 源，提示即可 */
+function onQqCardClick(item) {
+  if (item?.source === 'qq') toast('QQ 音乐详情页暂未接入，歌曲可在「歌曲」tab 中播放')
+}
 </script>
 
 <template>
@@ -212,10 +223,16 @@ function goMv(id) {
 
       <!-- 歌单 -->
       <div v-else-if="tab === 'playlists'" class="grid">
-        <div v-for="p in results.playlists" :key="p.id" class="playlist-card" @click="goPlaylist(p.id)">
+        <div
+          v-for="p in results.playlists"
+          :key="(p.source || 'ne') + p.id"
+          class="playlist-card"
+          @click="p.source === 'qq' ? onQqCardClick(p) : goPlaylist(p.id)"
+        >
           <div class="cover-wrap">
             <img :src="imgUrl(p.coverImgUrl + '?param=300y300')" alt="" loading="lazy" />
             <div class="play-count">▶ {{ fmtCount(p.playCount) }}</div>
+            <span v-if="p.source === 'qq'" class="plat-badge" v-html="PLATFORM_LOGOS.qq"></span>
           </div>
           <div class="name">{{ p.name }}</div>
         </div>
@@ -223,9 +240,15 @@ function goMv(id) {
 
       <!-- 歌手 -->
       <div v-else-if="tab === 'artists'" class="grid">
-        <div v-for="a in results.artists" :key="a.id" class="playlist-card" @click="goArtist(a.id)">
+        <div
+          v-for="a in results.artists"
+          :key="(a.source || 'ne') + a.id"
+          class="playlist-card"
+          @click="a.source === 'qq' ? onQqCardClick(a) : goArtist(a.id)"
+        >
           <div class="cover-wrap round">
-            <img :src="imgUrl(a.picUrl + '?param=300y300')" alt="" loading="lazy" />
+            <img :src="imgUrl(a.picUrl ? a.picUrl + '?param=300y300' : a.pic)" alt="" loading="lazy" />
+            <span v-if="a.source === 'qq'" class="plat-badge" v-html="PLATFORM_LOGOS.qq"></span>
           </div>
           <div class="name">{{ a.name }}</div>
         </div>
@@ -233,9 +256,15 @@ function goMv(id) {
 
       <!-- 专辑 -->
       <div v-else-if="tab === 'albums'" class="grid">
-        <div v-for="al in results.albums" :key="al.id" class="playlist-card" @click="goAlbum(al.id)">
+        <div
+          v-for="al in results.albums"
+          :key="(al.source || 'ne') + al.id"
+          class="playlist-card"
+          @click="al.source === 'qq' ? onQqCardClick(al) : goAlbum(al.id)"
+        >
           <div class="cover-wrap">
-            <img :src="imgUrl(al.picUrl + '?param=300y300')" alt="" loading="lazy" />
+            <img :src="imgUrl(al.picUrl ? al.picUrl + '?param=300y300' : al.pic)" alt="" loading="lazy" />
+            <span v-if="al.source === 'qq'" class="plat-badge" v-html="PLATFORM_LOGOS.qq"></span>
           </div>
           <div class="name">{{ al.name }}</div>
         </div>
@@ -243,10 +272,16 @@ function goMv(id) {
 
       <!-- MV -->
       <div v-else-if="tab === 'mvs'" class="grid">
-        <div v-for="m in results.mvs" :key="m.id" class="playlist-card" @click="goMv(m.id)">
+        <div
+          v-for="m in results.mvs"
+          :key="(m.source || 'ne') + m.id"
+          class="playlist-card"
+          @click="m.source === 'qq' ? onQqCardClick(m) : goMv(m.id)"
+        >
           <div class="cover-wrap">
-            <img :src="imgUrl(m.cover + '?param=300y300')" alt="" loading="lazy" />
+            <img :src="imgUrl(m.cover ? m.cover + '?param=300y300' : m.pic)" alt="" loading="lazy" />
             <div class="play-count">▶ {{ m.playCount }}</div>
+            <span v-if="m.source === 'qq'" class="plat-badge" v-html="PLATFORM_LOGOS.qq"></span>
           </div>
           <div class="name">{{ m.name }}</div>
         </div>
@@ -352,6 +387,24 @@ function goMv(id) {
   font-size: 11px;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+.plat-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.plat-badge :deep(svg) {
+  width: 14px;
+  height: 14px;
 }
 .name {
   margin-top: 8px;

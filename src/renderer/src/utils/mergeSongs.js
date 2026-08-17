@@ -111,3 +111,20 @@ export const PLATFORM_LOGOS = {
 export function shortName(name) {
   return (name || '').replace(/[（(][^)）]*[)）]/g, '').trim() || name
 }
+
+/**
+ * 合并非歌曲类卡片（歌手/专辑/MV）：同名去重，QQ 结果排在网易云之前。
+ * 每条带 source 字段（'netease' | 'qq'），前端据此展示平台 logo。
+ */
+export function mergeCards(netList = [], qqList = [], nameKey = 'name') {
+  const ne = (netList || []).map((x) => ({ ...x, source: x.source || 'netease' }))
+  const qq = (qqList || []).map((x) => ({ ...x, source: 'qq' }))
+  const seen = new Set(ne.map((x) => normalize(x[nameKey] || '')))
+  const extra = qq.filter((x) => {
+    const k = normalize(x[nameKey] || '')
+    if (!k || seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+  return [...extra, ...ne]
+}

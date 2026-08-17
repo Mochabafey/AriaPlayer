@@ -1,9 +1,10 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, imgUrl } from '../api'
+import { api, imgUrl, qqmusic } from '../api'
 import { usePlayerStore } from '../stores/player'
 import { toast } from '../utils/toast'
+import { PLATFORM_LOGOS } from '../utils/mergeSongs'
 import SongTable from '../components/SongTable.vue'
 
 const router = useRouter()
@@ -23,6 +24,15 @@ const likeSongs = ref([])
 const recentSongs = ref([])
 let qrTimer = null
 
+// ---- QQ 音乐扫码登录 ----
+const qqLogged = ref(false)
+const qqNick = ref('')
+const qqQrImg = ref('')
+const qqQrTip = ref('')
+const qqQrKey = ref(null) // { qrsig, token }
+const qqServerOk = ref(false)
+let qqQrTimer = null
+
 onMounted(async () => {
   try {
     const s = await api('login_status')
@@ -35,9 +45,19 @@ onMounted(async () => {
     }
   } catch { /* 未登录 */ }
   loading.value = false
+  // QQ 音乐登录态 + 服务状态
+  try {
+    qqServerOk.value = (await qqmusic.serverStatus()) === 'ready'
+    const [nick, ck] = await Promise.all([qqmusic.getNick(), qqmusic.getCookie()])
+    qqNick.value = nick || ''
+    qqLogged.value = !!(ck && nick)
+  } catch { /* QQ 服务未就绪 */ }
 })
 
-onUnmounted(() => qrTimer && clearInterval(qrTimer))
+onUnmounted(() => {
+  if (qrTimer) clearInterval(qrTimer)
+  if (qqQrTimer) clearInterval(qqQrTimer)
+})
 
 async function loadUserData() {
   const uid = user.value.userId || user.value.accountId
@@ -145,11 +165,92 @@ async function logout() {
   likeSongs.value = []
   recentSongs.value = []
 }
+
+// ---- QQ 音乐扫码登录 ----
+async function qqStartQr() {
+  qqQrImg.value = ''
+  qqQrTip.value = '正在生成二维码…'
+  qqQrKey.value = null
+  if (qqQrTimer) clearInterval(qqQrTimer)
+  qqQrTimer = null
+  try {
+    const qr = await qqmusic.loginQr()
+    qqQrKey.value = { qrsig: qr.qrsig, token: qr.token, cookie: qr.cookie || '' }
+    qqQrImg.value = qr.image
+    qqQrTip.value = '请使用 QQ 手机版扫码登录'
+    qqQrTimer = setInterval(qqCheckQr, 2000)
+  } catch (e) {
+    qqQrTip.value = '二维码生成失败：' + (e?.message || e) + '，请检查网络后重试'
+  }
+}
+
+async function qqCheckQr() {
+  if (!qqQrKey.value) return
+  try {
+    const r = await qqmusic.loginCheck(qqQrKey.value.qrsig, qqQrKey.value.token, qqQrKey.value.cookie)
+    const msg = r.msg || ''
+    if (r.code === 0) {
+      qqLogged.value = true
+      qqNick.value = r.nick || qqNick.value
+      qqQrImg.value = ''
+      qqQrTip.value = ''
+      if (qqQrTimer) clearInterval(qqQrTimer)
+      qqQrTimer = null
+      toast('QQ 音乐登录成功')
+    } else if (r.code === 67 || msg.includes('失效')) {
+      qqQrTip.value = '二维码已失效，请点击刷新'
+      if (qqQrTimer) clearInterval(qqQrTimer)
+      qqQrTimer = null
+    } else if (msg.includes('确认')) {
+      qqQrTip.value = '已扫码，请在手机上确认登录'
+    } else {
+      qqQrTip.value = '等待扫码…'
+    }
+  } catch { /* 轮询瞬时失败忽略，下个周期重试 */ }
+}
+
+async function qqLogout() {
+  await qqmusic.loginClear()
+  qqLogged.value = false
+  qqNick.value = ''
+  qqQrImg.value = ''
+  qqQrKey.value = null
+  if (qqQrTimer) clearInterval(qqQrTimer)
+  qqQrTimer = null
+  toast('已退出 QQ 音乐')
+}
 </script>
 
 <template>
   <div class="profile">
     <h1 class="page-title">我的</h1>
+
+    <!-- QQ 音乐扫码登录（多音源第二源） -->
+    <section class="qq-sec">
+      <div class="qq-head">
+        <span class="qq-logo" v-html="PLATFORM_LOGOS.qq"></span>
+        <div class="qq-info">
+          <div class="qq-title">QQ 音乐</div>
+          <div class="dim">解锁 VIP / 版权歌曲播放 · 多音源第二源</div>
+        </div>
+        <span class="qq-status" :class="{ ok: qqLogged, down: !qqServerOk }">
+          {{ qqLogged ? ('已登录' + (qqNick ? '：' + qqNick : '')) : (!qqServerOk ? '服务未就绪' : '未登录') }}
+        </span>
+      </div>
+
+      <div v-if="!qqLogged" class="qq-login">
+        <button v-if="!qqQrImg" class="btn" @click="qqStartQr">扫码登录 QQ 音乐</button>
+        <div v-else class="qq-qr">
+          <img :src="qqQrImg" alt="QQ 登录二维码" class="qr-img" />
+          <p class="qr-tip" :class="{ expired: qqQrTip.includes('失效') }">{{ qqQrTip }}</p>
+          <button class="btn ghost small" @click="qqStartQr">刷新二维码</button>
+        </div>
+      </div>
+      <div v-else class="qq-logged">
+        <span class="qq-nick">✓ 已登录</span>
+        <button class="btn ghost small" @click="qqLogout">退出登录</button>
+      </div>
+    </section>
 
     <!-- 未登录 -->
     <div v-if="!user && !loading" class="login-box">
@@ -352,5 +453,90 @@ async function logout() {
   color: var(--text-faint);
   text-align: center;
   padding: 60px 0;
+}
+.qq-sec {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.qq-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.qq-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(49, 194, 124, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.qq-logo :deep(svg) {
+  width: 22px;
+  height: 22px;
+}
+.qq-info {
+  min-width: 0;
+}
+.qq-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+.qq-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+.qq-status.ok {
+  color: #1f9d5c;
+  background: rgba(49, 194, 124, 0.12);
+}
+.qq-status.down {
+  color: #e0803a;
+}
+.qq-login,
+.qq-logged {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.qq-qr {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.qq-qr .qr-img {
+  width: 132px;
+  height: 132px;
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px;
+}
+.qq-qr .qr-tip {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.qq-qr .qr-tip.expired {
+  color: #e0803a;
+}
+.qq-nick {
+  font-size: 13px;
+  color: #1f9d5c;
+  font-weight: 600;
 }
 </style>

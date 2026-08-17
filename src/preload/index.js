@@ -60,7 +60,12 @@ const INVOKE_ALLOWLIST = new Set([
   'qqmusic:server-status',
   'qqmusic:server-restart',
   'qqmusic:get-cookie',
-  'qqmusic:set-cookie'
+  'qqmusic:set-cookie',
+  'qqmusic:login-qr',
+  'qqmusic:login-check',
+  'qqmusic:login-clear',
+  'qqmusic:get-nick',
+  'qqmusic:smartbox'
 ])
 
 const EVENT_ALLOWLIST = new Set([

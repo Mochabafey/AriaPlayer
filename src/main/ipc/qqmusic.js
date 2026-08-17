@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import http from 'http'
 import { settingsRepo } from '../db/settings.js'
+import { createQr, checkQr } from '../qqMusicLogin.js'
 
 /**
  * QQ音乐 API 私有通道转发（主进程侧）。
@@ -118,6 +119,52 @@ export function registerQqMusicIpc(getServer) {
     if (srv) await srv.restart()
     return true
   })
+
+  // ---- QQ 音乐扫码登录 ----
+  // 生成二维码：返回 { qrsig, token, image(base64 dataURL) }
+  ipcMain.handle('qqmusic:login-qr', async () => {
+    return await createQr()
+  })
+  // 轮询扫码状态：65 等待 / 66 已扫待确认 / 67 失效 / 0 成功
+  // 成功后自动保存 cookie + 昵称并重启 QQ 服务
+  ipcMain.handle('qqmusic:login-check', async (_e, { qrsig, token, cookie }) => {
+    const r = await checkQr(qrsig, token, cookie)
+    if (r.code === 0 && r.cookie) {
+      settingsRepo.set('qqCookie', r.cookie)
+      if (r.nick) settingsRepo.set('qqNick', r.nick)
+      const srv = getServer()
+      if (srv) await srv.restart()
+    }
+    return r
+  })
+  // 退出登录：清空 QQ cookie
+  ipcMain.handle('qqmusic:login-clear', async () => {
+    settingsRepo.set('qqCookie', '')
+    settingsRepo.set('qqNick', '')
+    const srv = getServer()
+    if (srv) await srv.restart()
+    return true
+  })
+  // 当前 QQ 昵称（登录态展示用）
+  ipcMain.handle('qqmusic:get-nick', () => {
+    const n = settingsRepo.get('qqNick')
+    return typeof n === 'string' ? n : ''
+  })
+
+  // ---- QQ 音乐智能聚合搜索（smartbox：歌手/专辑/MV 各几条，用于聚合界面）----
+  ipcMain.handle('qqmusic:smartbox', async (_e, { keyword }) => {
+    const srv = getServer()
+    if (!srv || srv.status !== 'ready') throw new Error('QQMUSIC_SERVER_NOT_READY')
+    if (!keyword) return { code: 200, artists: [], albums: [], mvs: [] }
+    const json = await socketRequest(srv, `/getSmartbox?key=${encodeURIComponent(keyword)}`)
+    const data = json?.response?.data || {}
+    return {
+      code: 200,
+      artists: (data.singer?.itemlist || []).map(normalizeQqArtist),
+      albums: (data.album?.itemlist || []).map(normalizeQqAlbum),
+      mvs: (data.mv?.itemlist || []).map(normalizeQqMv)
+    }
+  })
 }
 
 /**
@@ -145,5 +192,36 @@ function normalizeQqSong(raw) {
     dt: dur,
     source: 'qq',
     _raw: raw
+  }
+}
+
+/** smartbox 歌手项 → 统一格式（id 用 singer_mid，前端/artist/:id 与网易云数字 id 不同源） */
+function normalizeQqArtist(raw) {
+  return {
+    id: raw?.mid || raw?.id || '',
+    name: raw?.name || '',
+    pic: String(raw?.pic || '').replace(/^http:\/\//, 'https://'),
+    source: 'qq'
+  }
+}
+
+/** smartbox 专辑项 */
+function normalizeQqAlbum(raw) {
+  return {
+    id: raw?.mid || raw?.id || '',
+    name: raw?.name || '',
+    artist: raw?.singer || '',
+    pic: String(raw?.pic || '').replace(/^http:\/\//, 'https://'),
+    source: 'qq'
+  }
+}
+
+/** smartbox MV 项（id 用 vid，播放需 QQ 专属接口） */
+function normalizeQqMv(raw) {
+  return {
+    id: raw?.vid || raw?.id || '',
+    name: raw?.name || '',
+    artist: raw?.singer || '',
+    source: 'qq'
   }
 }
