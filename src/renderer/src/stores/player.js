@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { api, coverUrl, qqmusic } from '../api'
+import { api, coverUrl, qqmusic, waitServerReady } from '../api'
 import { useSettingsStore } from './settings'
 
 // 播放记录持久化：下次打开恢复上次的队列 / 当前歌曲 / 播放进度
@@ -229,7 +229,7 @@ export const usePlayerStore = defineStore('player', () => {
         setPlayError('播放异常，正在恢复…')
         try {
           // QQ 源：刷新 QQ 音源地址（320 → 128 降级）；网易云源：跳过缓存拿最新音源
-          const src = song.source || 'netease'
+          const src = inferSource(song)
           if (src === 'qq') {
             const res = await qqmusic.url(song.id)
             if (epoch !== playEpoch) return
@@ -306,6 +306,16 @@ export const usePlayerStore = defineStore('player', () => {
     return `ncm-audio://stream?url=${encodeURIComponent(raw)}`
   }
 
+  /** 判断歌曲平台来源：纯数字 id → 网易云；含字母（songmid）→ QQ。
+   *  注意：网易云 id 可能是 number 也可能是字符串数字（如 "186016"），
+   *  不能只看 typeof；QQ 的 songmid 必然含字母（如 '003J0g3G1IRz3G'）。 */
+  function inferSource(song) {
+    if (!song) return 'netease'
+    if (song.source) return song.source
+    if (song._source) return song._source
+    return /^\d+$/.test(String(song.id ?? '')) ? 'netease' : 'qq'
+  }
+
   function normalizeSong(song) {
     const ar = (song.ar || song.artists || []).map((a) => (typeof a === 'string' ? a : a.name)).join('/')
     const artist = ar || song.artist || song.singer || '未知歌手'
@@ -324,7 +334,7 @@ export const usePlayerStore = defineStore('player', () => {
       audioUrl: song.url || null,
       fromLocal: song.fromLocal || false,
       localPath: song.filePath || null,
-      source: song.source || song._source || (song.id && typeof song.id === 'string' ? 'qq' : 'netease')
+      source: inferSource(song)
     }
   }
 
@@ -385,7 +395,7 @@ export const usePlayerStore = defineStore('player', () => {
     } else {
       // 按歌曲自身来源选 API（混合队列里网易云/QQ 各自走各自），
       // currentSource 只是"新建单曲队列"的默认来源
-      const src = song.source || currentSource.value || 'netease'
+      const src = inferSource(song) || currentSource.value || 'netease'
       if (!song.audioUrl) {
         try {
           if (src === 'qq') {
@@ -457,19 +467,61 @@ export const usePlayerStore = defineStore('player', () => {
       .finally(() => { prefetching = false })
   }
 
-  async function loadLyrics(song) {
+  /**
+   * 等待对应音源的服务就绪后再请求歌词。
+   * 退出重进恢复上次歌曲时（App.vue onMounted → restoreQueue → loadLyrics），
+   * 内置服务可能还在启动：ncm:api / qqmusic:lyric 在未就绪时直接抛
+   * NCM_SERVER_NOT_READY / QQMUSIC_SERVER_NOT_READY，请求失败且无重试，
+   * 恢复的歌曲会永远停在"暂无歌词"（切歌后才恢复）。这里先等就绪再请求。
+   */
+  async function waitLyricServerReady(src) {
+    if (src === 'qq') {
+      // QQ 音乐服务独立启动（可能晚于网易云服务就绪），单独轮询
+      for (let i = 0; i < 60; i++) {
+        try {
+          if ((await qqmusic.serverStatus()) === 'ready') return
+        } catch { /* 查询失败继续轮询 */ }
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      return
+    }
+    await waitServerReady()
+  }
+
+  async function loadLyrics(song, attempt = 0) {
     const epoch = playEpoch
     lyrics.value = []
     if (!song || song.fromLocal) return
-    const src = song.source || 'netease'
+    // 平台兜底推断（纯数字 id → 网易云，songmid → QQ）
+    const src = inferSource(song)
     try {
+      // 服务可能还在启动（恢复上次歌曲的典型场景）：等就绪再请求
+      await waitLyricServerReady(src)
+      if (epoch !== playEpoch) return
       if (src === 'qq') {
         const res = await qqmusic.lyric(song.id)
         if (epoch !== playEpoch) return
         const lrc = res?.lyric || ''
+        let trans = res?.trans || ''
+        // QQ 官方歌词接口不返回翻译（实测 trans 恒空）：
+        // 用网易云同名歌曲的 tlyric 兜底（同一首歌两平台时间轴通常接近，parseLrc 0.6s 容差对齐）
+        if (!trans && song.name) {
+          try {
+            const kw = song.name + (song.artist ? ' ' + song.artist : '')
+            const sr = await api('cloudsearch', { keywords: kw, type: 1, limit: 5, offset: 0 })
+            if (epoch !== playEpoch) return
+            const neSong = sr.result?.songs?.[0]
+            if (neSong?.id) {
+              const ly2 = await api('lyric', { id: neSong.id })
+              if (epoch !== playEpoch) return
+              trans = ly2.tlyric?.lyric || ''
+            }
+          } catch { /* 兜底失败静默：保持纯原词 */ }
+        }
         const { parseLrc } = await import('../utils/lrc')
         if (epoch !== playEpoch) return
-        lyrics.value = parseLrc(lrc, '')
+        // QQ 歌词 + 网易云翻译合并展示
+        lyrics.value = parseLrc(lrc, trans)
       } else {
         const res = await api('lyric', { id: song.id })
         if (epoch !== playEpoch) return
@@ -478,8 +530,16 @@ export const usePlayerStore = defineStore('player', () => {
         if (epoch !== playEpoch) return
         lyrics.value = parseLrc(lrc, res.tlyric?.lyric || '')
       }
-    } catch {
-      if (epoch === playEpoch) lyrics.value = []
+    } catch (e) {
+      if (epoch !== playEpoch) return
+      // 服务就绪窗口内的瞬时失败（两个服务先后就绪的边角竞态等）：
+      // 稍后整体重试，最多 3 次
+      if (attempt < 3 && /NOT_READY/.test(String(e?.message || ''))) {
+        await new Promise((r) => setTimeout(r, 1200))
+        if (epoch !== playEpoch) return
+        return loadLyrics(song, attempt + 1)
+      }
+      lyrics.value = []
     }
   }
 
@@ -644,7 +704,10 @@ export const usePlayerStore = defineStore('player', () => {
         pic: s.pic,
         duration: s.duration,
         fromLocal: s.fromLocal || false,
-        localPath: s.localPath || null
+        localPath: s.localPath || null,
+        // 平台标记必须持久化：缺失会导致恢复后平台判断错误，
+        // 歌词/音源走错接口（纯数字 id → 网易云，songmid → QQ）
+        source: inferSource(s)
       }))
       localStorage.setItem(
         QUEUE_KEY,
@@ -673,7 +736,9 @@ export const usePlayerStore = defineStore('player', () => {
       const raw = localStorage.getItem(QUEUE_KEY)
       if (!raw) return false
       const data = JSON.parse(raw)
-      const songs = Array.isArray(data.songs) ? data.songs.filter((s) => s && s.id) : []
+      // 恢复时统一过 normalizeSong：旧版持久化数据可能没存 source，
+      // 不兜底的话 QQ 歌（字符串 id）会被误判成网易云，歌词/音源走错接口
+      const songs = (Array.isArray(data.songs) ? data.songs.filter((s) => s && s.id) : []).map(normalizeSong)
       if (!songs.length) return false
       queue.value = songs
       currentIndex.value = Math.min(Math.max(0, data.index || 0), songs.length - 1)
