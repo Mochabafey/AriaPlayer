@@ -12,7 +12,9 @@ async function start() {
   const generateConfig = require('./generateConfig')
   await generateConfig()
   require('./server').serveNcmApi({
-    checkVersion: true,
+    // 版本检查会 exec `npm info` 联网查 registry，慢/被墙会让 listen 延迟
+    // （表现为"服务拉起慢 / 服务未就绪"）。本应用不需要，关闭。
+    checkVersion: false,
   })
 }
 start()

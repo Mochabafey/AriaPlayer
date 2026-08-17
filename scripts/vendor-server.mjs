@@ -90,4 +90,18 @@ function applyPatches(dir) {
     fs.writeFileSync(serverJs, src)
     console.log('[vendor] 已应用 server.js 补丁（解灰触发条件 + matchID 超时）')
   }
+  // 补丁 3：关闭启动时版本检查（app.js 的 checkVersion 会 exec `npm info`
+  // 联网查 registry，慢/被墙会让 listen 延迟 → 服务拉起慢/未就绪）
+  const appJs = path.join(dir, 'app.js')
+  if (fs.existsSync(appJs)) {
+    let appSrc = fs.readFileSync(appJs, 'utf-8')
+    if (appSrc.includes('checkVersion: true')) {
+      appSrc = appSrc.replace(
+        'checkVersion: true',
+        '// version check disabled: exec `npm info` hangs startup on slow/blocked registry\n    checkVersion: false,'
+      )
+      fs.writeFileSync(appJs, appSrc)
+      console.log('[vendor] 已应用 app.js 补丁（关闭版本检查）')
+    }
+  }
 }

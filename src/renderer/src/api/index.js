@@ -9,9 +9,10 @@ export function routeOf(method) {
   return method.replace(/_/g, '/')
 }
 
-/** 等待内置服务就绪（最多 15s） */
+/** 等待内置服务就绪（最多 30s）。主进程子服务启动含注册匿名 token 的
+ *  网络往返 + 关闭版本检查后的剩余开销，15s 在弱网下可能误报未就绪 */
 export async function waitServerReady() {
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 60; i++) {
     const s = await bridge.invoke('ncm:server-status')
     if (s === 'ready') return true
     await new Promise((r) => setTimeout(r, 500))
