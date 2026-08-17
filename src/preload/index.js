@@ -52,7 +52,15 @@ const INVOKE_ALLOWLIST = new Set([
   'ncm:download-list',
   'ncm:download-cancel',
   'ncm:download-retry',
-  'ncm:download-remove'
+  'ncm:download-remove',
+  // QQ音乐多音源
+  'qqmusic:search',
+  'qqmusic:url',
+  'qqmusic:lyric',
+  'qqmusic:server-status',
+  'qqmusic:server-restart',
+  'qqmusic:get-cookie',
+  'qqmusic:set-cookie'
 ])
 
 const EVENT_ALLOWLIST = new Set([
@@ -61,7 +69,8 @@ const EVENT_ALLOWLIST = new Set([
   'ncm:library-updated',
   'ncm:convert-progress',
   'ncm:download-progress',
-  'ncm:download-done'
+  'ncm:download-done',
+  'qqmusic:server-status'
 ])
 
 const api = {

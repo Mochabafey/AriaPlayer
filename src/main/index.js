@@ -3,11 +3,13 @@ import path from 'path'
 import fs from 'fs'
 import { registerAudioProtocol } from './audioProtocol.js'
 import { NcmServer } from './ncmServer.js'
+import { QqMusicServer } from './qqMusicServer.js'
 import { registerApiIpc } from './ipc/api.js'
 import { registerDownloadIpc } from './ipc/download.js'
 import { registerLibraryIpc } from './ipc/library.js'
 import { registerPlaylistIpc } from './ipc/playlist.js'
 import { registerNcmConvertIpc } from './ipc/ncmConvert.js'
+import { registerQqMusicIpc } from './ipc/qqmusic.js'
 import { initDb, closeDb } from './db/index.js'
 import { initAudioCache } from './audioCache.js'
 
@@ -44,6 +46,7 @@ process.on('unhandledRejection', (e) => {
 
 let mainWindow = null
 const server = new NcmServer()
+const qqMusicServer = new QqMusicServer()
 let downloadManager = null
 
 function createWindow() {
@@ -183,9 +186,15 @@ async function bootstrap() {
       mainWindow.webContents.send('ncm:server-status', status)
     }
   }
+  qqMusicServer.onStatusChange = (status) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('qqmusic:server-status', status)
+    }
+  }
 
   downloadManager = registerDownloadIpc(() => mainWindow, () => server)
   registerApiIpc(() => server)
+  registerQqMusicIpc(() => qqMusicServer)
   registerLibraryIpc(() => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('ncm:library-updated', {})
@@ -200,6 +209,11 @@ async function bootstrap() {
   const ok = await server.start()
   if (!ok) {
     console.error('[bootstrap] ncm-server failed to start')
+  }
+  // 启动内置 QQ音乐 API 服务（忽略失败：QQ音乐是可选音源，不影响核心功能）
+  const qqOk = await qqMusicServer.start()
+  if (!qqOk) {
+    console.log('[bootstrap] qqmusic-server not available (optional)')
   }
 
   // 烟测模式：服务就绪 + 窗口就绪后打印成功日志并退出（用于 CI/本地验证）
@@ -325,6 +339,7 @@ if (!gotLock) {
 
   app.on('before-quit', async () => {
     await server.stop()
+    await qqMusicServer.stop()
     closeDb()
   })
 }

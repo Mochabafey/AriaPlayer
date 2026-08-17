@@ -31,6 +31,23 @@ export async function api(method, params = {}, opts = {}) {
   return data
 }
 
+// ---- QQ音乐（多音源） ----
+export const qqmusic = {
+  /** 搜索歌曲 */
+  search: (keyword, page = 1, limit = 30) => bridge.invoke('qqmusic:search', { keyword, page, limit }),
+  /** 获取音源 URL */
+  url: (songmid) => bridge.invoke('qqmusic:url', { songmid }),
+  /** 获取歌词 */
+  lyric: (songmid) => bridge.invoke('qqmusic:lyric', { songmid }),
+  /** 服务状态 */
+  serverStatus: () => bridge.invoke('qqmusic:server-status'),
+  serverRestart: () => bridge.invoke('qqmusic:server-restart'),
+  onServerStatus: (cb) => bridge.on('qqmusic:server-status', cb),
+  /** QQ 音乐 Cookie（解锁 VIP/版权歌曲） */
+  getCookie: () => bridge.invoke('qqmusic:get-cookie'),
+  setCookie: (cookie) => bridge.invoke('qqmusic:set-cookie', cookie)
+}
+
 export const ncm = {
   // 服务状态
   serverStatus: () => bridge.invoke('ncm:server-status'),

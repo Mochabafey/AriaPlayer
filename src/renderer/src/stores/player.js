@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { api, coverUrl } from '../api'
+import { api, coverUrl, qqmusic } from '../api'
 import { useSettingsStore } from './settings'
 
 // 播放记录持久化：下次打开恢复上次的队列 / 当前歌曲 / 播放进度
@@ -43,6 +43,7 @@ export const usePlayerStore = defineStore('player', () => {
   const showLyrics = ref(false)
   const buffering = ref(false)
   const playError = ref('')
+  const currentSource = ref('netease') // 当前播放音源: 'netease' | 'qq'
   let errorTimer = null
 
   const current = computed(() => queue.value[currentIndex.value] || null)
@@ -227,14 +228,22 @@ export const usePlayerStore = defineStore('player', () => {
         buffering.value = true
         setPlayError('播放异常，正在恢复…')
         try {
-          // 跳过缓存拿最新音源：第三方解灰地址几分钟就失效，旧地址复活不了。
-          // 第二次重试降级标准音质：换一条不同的 CDN 文件路径，绕开坏地址
-          const settings = useSettingsStore()
-          const level = networkRetries >= 2 ? 'standard' : levelOf(settings.settings.quality)
-          const res = await api('song_url_v1', { id: song.id, level }, { noCache: true })
-          if (epoch !== playEpoch) return
-          const fresh = res.data?.[0]?.url
-          if (fresh) song.audioUrl = fresh
+          // QQ 源：刷新 QQ 音源地址（320 → 128 降级）；网易云源：跳过缓存拿最新音源
+          const src = song.source || 'netease'
+          if (src === 'qq') {
+            const res = await qqmusic.url(song.id)
+            if (epoch !== playEpoch) return
+            if (res?.url) song.audioUrl = res.url
+          } else {
+            // 跳过缓存拿最新音源：第三方解灰地址几分钟就失效，旧地址复活不了。
+            // 第二次重试降级标准音质：换一条不同的 CDN 文件路径，绕开坏地址
+            const settings = useSettingsStore()
+            const level = networkRetries >= 2 ? 'standard' : levelOf(settings.settings.quality)
+            const res = await api('song_url_v1', { id: song.id, level }, { noCache: true })
+            if (epoch !== playEpoch) return
+            const fresh = res.data?.[0]?.url
+            if (fresh) song.audioUrl = fresh
+          }
         } catch { /* 拿不到新地址就用旧地址再连一次 */ }
         if (epoch !== playEpoch) return
         audioEl.src = audioUrl(song)
@@ -299,16 +308,23 @@ export const usePlayerStore = defineStore('player', () => {
 
   function normalizeSong(song) {
     const ar = (song.ar || song.artists || []).map((a) => (typeof a === 'string' ? a : a.name)).join('/')
+    const artist = ar || song.artist || song.singer || '未知歌手'
+    // 时长：dt/duration 按毫秒处理转秒（网易云/QQ 都是毫秒）；
+    // 本地文件（fromLocal）duration 是秒，不再除
+    let duration = 0
+    if (song.dt) duration = Math.round(song.dt / 1000)
+    else if (song.duration) duration = song.fromLocal ? Math.round(song.duration) : Math.round(song.duration / 1000)
     return {
       id: song.id,
       name: song.name || song.title || '未知歌曲',
-      artist: ar || song.artist || '未知歌手',
+      artist,
       album: (song.al && song.al.name) || song.album || '',
       pic: (song.al && song.al.picUrl) || song.pic || coverUrl(song.picId),
-      duration: song.dt ? Math.round(song.dt / 1000) : song.duration || 0,
+      duration,
       audioUrl: song.url || null,
       fromLocal: song.fromLocal || false,
-      localPath: song.filePath || null
+      localPath: song.filePath || null,
+      source: song.source || song._source || (song.id && typeof song.id === 'string' ? 'qq' : 'netease')
     }
   }
 
@@ -367,21 +383,34 @@ export const usePlayerStore = defineStore('player', () => {
       if (epoch !== playEpoch) return
       audioEl.src = audioUrl(song)
     } else {
+      // 按歌曲自身来源选 API（混合队列里网易云/QQ 各自走各自），
+      // currentSource 只是"新建单曲队列"的默认来源
+      const src = song.source || currentSource.value || 'netease'
       if (!song.audioUrl) {
         try {
-          const level = levelOf(q)
-          const res = await api('song_url_v1', { id: song.id, level })
-          // 等地址期间用户已切歌：丢弃本次结果，避免「界面是新歌、声音是旧歌」
-          if (epoch !== playEpoch) return
-          let url = res.data?.[0]?.url
-          // 无损/极高无权限时常返回空 url：降级标准音质再试一次
-          if (!url && level !== 'standard') {
-            const std = await api('song_url_v1', { id: song.id, level: 'standard' })
+          if (src === 'qq') {
+            // QQ音乐音源
+            const res = await qqmusic.url(song.id)
             if (epoch !== playEpoch) return
-            url = std.data?.[0]?.url
+            const url = res?.url
+            if (!url) throw new Error('QQ音乐暂无播放链接（可能需登录或版权限制），可尝试另一音源')
+            song.audioUrl = url
+          } else {
+            // 网易云音源
+            const level = levelOf(q)
+            const res = await api('song_url_v1', { id: song.id, level })
+            // 等地址期间用户已切歌：丢弃本次结果，避免「界面是新歌、声音是旧歌」
+            if (epoch !== playEpoch) return
+            let url = res.data?.[0]?.url
+            // 无损/极高无权限时常返回空 url：降级标准音质再试一次
+            if (!url && level !== 'standard') {
+              const std = await api('song_url_v1', { id: song.id, level: 'standard' })
+              if (epoch !== playEpoch) return
+              url = std.data?.[0]?.url
+            }
+            if (!url) throw new Error('无可用播放地址（可能无版权，已尝试解灰失败）')
+            song.audioUrl = url
           }
-          if (!url) throw new Error('无可用播放地址（可能无版权，已尝试解灰失败）')
-          song.audioUrl = url
         } catch (e) {
           if (epoch !== playEpoch) return
           playing.value = false
@@ -432,13 +461,23 @@ export const usePlayerStore = defineStore('player', () => {
     const epoch = playEpoch
     lyrics.value = []
     if (!song || song.fromLocal) return
+    const src = song.source || 'netease'
     try {
-      const res = await api('lyric', { id: song.id })
-      if (epoch !== playEpoch) return
-      const lrc = res.lrc?.lyric || ''
-      const { parseLrc } = await import('../utils/lrc')
-      if (epoch !== playEpoch) return
-      lyrics.value = parseLrc(lrc, res.tlyric?.lyric || '')
+      if (src === 'qq') {
+        const res = await qqmusic.lyric(song.id)
+        if (epoch !== playEpoch) return
+        const lrc = res?.lyric || ''
+        const { parseLrc } = await import('../utils/lrc')
+        if (epoch !== playEpoch) return
+        lyrics.value = parseLrc(lrc, '')
+      } else {
+        const res = await api('lyric', { id: song.id })
+        if (epoch !== playEpoch) return
+        const lrc = res.lrc?.lyric || ''
+        const { parseLrc } = await import('../utils/lrc')
+        if (epoch !== playEpoch) return
+        lyrics.value = parseLrc(lrc, res.tlyric?.lyric || '')
+      }
     } catch {
       if (epoch === playEpoch) lyrics.value = []
     }
@@ -579,6 +618,18 @@ export const usePlayerStore = defineStore('player', () => {
     if (audioEl) audioEl.pause()
   }
 
+  /** 从指定音源播放一首歌（多音源入口） */
+  function playSong(song, source = 'netease') {
+    if (!song) return
+    currentSource.value = source
+    // 把来源落到歌曲对象上：混合队列里每首歌按自己的 source 走对应 API
+    const n = normalizeSong({ ...song, source: song.source || source })
+    queue.value = [n]
+    currentIndex.value = 0
+    startCurrent(n)
+    return playCurrent()
+  }
+
   /* ================= 播放记录持久化：下次打开恢复上次队列/歌曲/进度 ================= */
   let persistTimer = null
   let lastPersistTime = 0
@@ -646,9 +697,11 @@ export const usePlayerStore = defineStore('player', () => {
     showLyrics,
     buffering,
     playError,
+    currentSource,
     attachAudio,
     playList,
     playNext,
+    playSong,
     playAt,
     enqueue,
     toggle,

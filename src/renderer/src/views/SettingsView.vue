@@ -1,8 +1,28 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useSettingsStore } from '../stores/settings'
-import { ncm } from '../api'
+import { ncm, qqmusic } from '../api'
 import { toast } from '../utils/toast'
+
+// QQ 音乐 Cookie（设置页配置，主进程存 SQLite + 注入 qqmusic 子进程）
+const qqCookie = ref('')
+const savingQqCookie = ref(false)
+onMounted(async () => {
+  try {
+    qqCookie.value = await qqmusic.getCookie()
+  } catch { /* qq 服务未就绪忽略 */ }
+})
+async function saveQqCookie() {
+  savingQqCookie.value = true
+  try {
+    await qqmusic.setCookie(qqCookie.value)
+    toast('已保存并重启 QQ 音乐服务')
+  } catch (e) {
+    toast('保存失败：' + (e.message || '未知错误'), 'error')
+  } finally {
+    savingQqCookie.value = false
+  }
+}
 
 const settings = useSettingsStore()
 const restarting = ref(false)
@@ -173,6 +193,35 @@ async function restartServer() {
       </div>
       <div class="row">
         <div class="label">
+          <div>默认音源</div>
+          <div class="hint">搜索时优先使用哪个平台的音源</div>
+        </div>
+        <div class="value">
+          <select v-model="settings.settings.musicSource" class="input select" @change="settings.set('musicSource', settings.settings.musicSource)">
+            <option value="netease">网易云音乐</option>
+            <option value="qq">QQ音乐</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <div>QQ 音乐 Cookie</div>
+          <div class="hint">解锁 VIP/版权歌曲播放。从 QQ 音乐网页版（y.qq.com）登录后，F12 → Network 复制 Cookie 头填入。保存后自动重启 QQ 服务</div>
+        </div>
+        <div class="value">
+          <textarea
+            v-model="qqCookie"
+            class="input qq-cookie"
+            rows="3"
+            placeholder="粘贴 QQ 音乐 Cookie（可选，留空则不使用）"
+          ></textarea>
+          <button class="btn small" @click="saveQqCookie" :disabled="savingQqCookie">
+            {{ savingQqCookie ? '保存中…' : '保存 Cookie' }}
+          </button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
           <div>重启服务</div>
           <div class="hint">解灰 / FLAC 开关需重启内置服务后生效</div>
         </div>
@@ -229,6 +278,12 @@ async function restartServer() {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+.qq-cookie {
+  width: 360px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  resize: vertical;
 }
 .select {
   width: 180px;

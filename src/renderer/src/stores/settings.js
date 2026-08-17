@@ -12,7 +12,8 @@ export const useSettingsStore = defineStore('settings', {
       playMode: 'list',
       showTranslation: true,
       audioCacheLimitMB: 2048,
-      lastConvertPath: ''
+      lastConvertPath: '',
+      musicSource: 'netease' // 默认音源: 'netease' | 'qq'
     },
     loaded: false
   }),

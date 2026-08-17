@@ -18,9 +18,19 @@ extraResources:
       - '**/*'
       - '!**/*.map'
       - '!**/*.md'
+  # QQ音乐 API 服务（Rain120/qq-music-api，TS 源码 + node_modules 由 afterPack 补全）
+  - from: qqmusic
+    to: qqmusic
+    filter:
+      - '**/*'
+      - '!.git/**'
+      - '!**/*.map'
   # 私有通道子进程入口（Named Pipe / Unix Socket，见 src/main/ncm/bridge.cjs）
   - from: src/main/ncm/bridge.cjs
     to: bridge.cjs
+  # QQ音乐 bridge（子进程入口，劫持 listen → 私有管道）
+  - from: src/main/qqmusic/bridge.cjs
+    to: bridge-qqmusic.cjs
   # ffmpeg 二进制（scripts/fetch-ffmpeg.mjs 下载；未下载时打包需先 npm run fetch:ffmpeg）
   - from: resources/ffmpeg
     to: ffmpeg

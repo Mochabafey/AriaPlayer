@@ -1,14 +1,17 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, imgUrl } from '../api'
+import { api, imgUrl, qqmusic } from '../api'
 import { usePlayerStore } from '../stores/player'
+import { useSettingsStore } from '../stores/settings'
 import SongTable from '../components/SongTable.vue'
 import { fmtCount } from '../utils/format'
+import { mergeSearchResults } from '../utils/mergeSongs'
 
 const route = useRoute()
 const router = useRouter()
 const player = usePlayerStore()
+const settings = useSettingsStore()
 
 const keyword = ref('')
 const tab = ref('songs')
@@ -22,6 +25,8 @@ const counts = ref({})
 const countKeys = { songs: 'songCount', playlists: 'playlistCount', artists: 'artistCount', albums: 'albumCount', mvs: 'mvCount' }
 // 无限滚动分页状态
 const offsets = ref({})
+// 各 tab 网易云原始已加载数（songs tab 合并 QQ 后 length 会变，分页用它）
+const neLoaded = ref({})
 const hasMore = ref({})
 const loadingMore = ref(false)
 // 滚动预加载阈值（px）：滑到距底部还有这么多就提前拉下一页
@@ -44,8 +49,20 @@ async function fetchTab(key, kw) {
   const ck = countKeys[key]
   if (ck && res.result?.[ck] != null) counts.value[key] = res.result[ck]
   offsets.value[key] = results.value[key].length
+  neLoaded.value[key] = results.value[key].length
   hasMore.value[key] = (counts.value[key] ?? results.value[key].length) > results.value[key].length
   fetchedTabs.value[key] = true
+}
+
+/** 搜索 QQ 音乐（仅歌曲），与网易云结果合并 */
+async function fetchQqMusic(kw) {
+  try {
+    const res = await qqmusic.search(kw, 1, 30)
+    return res?.songs || []
+  } catch (e) {
+    console.error('[qqmusic-search] error:', e)
+    return []
+  }
 }
 
 /** 无限滚动：滑近底部时追加下一页（cloudsearch offset 分页，每页 100） */
@@ -58,13 +75,15 @@ async function loadMore() {
       keywords: keyword.value,
       type: types[key],
       limit: 100,
-      offset: offsets.value[key]
+      // 分页 offset 用网易云原始已加载数（songs tab 已合并 QQ 结果，
+      // 不能拿合并后的 length 当 offset，否则重复/遗漏）
+      offset: neLoaded.value[key] || 0
     })
     const more = res.result?.[key] || []
     results.value[key] = [...results.value[key], ...more]
-    offsets.value[key] = results.value[key].length
+    neLoaded.value[key] = (neLoaded.value[key] || 0) + more.length
     const ck = countKeys[key]
-    hasMore.value[key] = (res.result?.[ck] ?? results.value[key].length) > results.value[key].length
+    hasMore.value[key] = (res.result?.[ck] ?? neLoaded.value[key]) > neLoaded.value[key]
   } catch { /* 翻页失败静默，下次滚动重试 */ } finally {
     loadingMore.value = false
   }
@@ -88,11 +107,19 @@ async function doSearch(kw = keyword.value) {
   fetchedTabs.value = {}
   counts.value = {}
   offsets.value = {}
+  neLoaded.value = {}
   hasMore.value = {}
   try {
-    // 并行拉取所有类型：搜「赛博朋克2077」这类关键词歌曲可能很少，
-    // 但歌单/专辑有货——全部拉出来，切 tab 立即可见
-    await Promise.allSettled(Object.keys(types).map((k) => fetchTab(k, kw)))
+    // 并行拉取所有类型 + QQ音乐搜索
+    const tasks = Object.keys(types).map((k) => fetchTab(k, kw))
+    const qqPromise = fetchQqMusic(kw)
+    await Promise.allSettled(tasks)
+    const qqSongs = await qqPromise
+    // 合并双源结果（同名折叠，未匹配各自保留）
+    if (qqSongs.length) {
+      const { merged, unmatched } = mergeSearchResults(results.value.songs, qqSongs)
+      results.value.songs = [...merged, ...unmatched]
+    }
     // 歌曲为空时自动切到第一个有结果的类型（如歌单）
     if (!results.value.songs.length) {
       const first = tabs.find((t) => t.key !== 'songs' && results.value[t.key]?.length)

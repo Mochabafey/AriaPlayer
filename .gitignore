@@ -42,3 +42,7 @@ server/data/deviceid.txt
 
 # 本地运行时数据（含加密登录态 session.enc，绝不入库）
 ncm-store/
+
+# QQ音乐 API 依赖（运行时 git clone + npm install，仅根目录 qqmusic/ 被忽略；
+# src/main/qqmusic/ 下的 bridge 等源码需入库）
+/qqmusic/
