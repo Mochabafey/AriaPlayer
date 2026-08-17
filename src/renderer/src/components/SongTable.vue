@@ -219,7 +219,7 @@ function isPlaying(song) {
         <span class="c-album" v-if="showAlbum">{{ effectiveSong(s).al?.name || effectiveSong(s).album }}</span>
         <span class="c-like">
           <button
-            v-if="effectiveSong(s).id"
+            v-if="effectiveSong(s).id && effectiveSong(s).source !== 'qq'"
             class="like-btn"
             :class="{ liked: liked.has(effectiveSong(s).id), pending: likePending.has(effectiveSong(s).id) }"
             :title="liked.has(effectiveSong(s).id) ? '取消喜欢' : '喜欢'"
@@ -243,6 +243,7 @@ function isPlaying(song) {
         <span class="c-cover">
           <img
             v-if="effectiveSong(s, altSource(s)).pic"
+            class="cover-thumb"
             :src="imgUrl(effectiveSong(s, altSource(s)).pic + '?param=60y60')"
             alt=""
             loading="lazy"
@@ -395,6 +396,10 @@ function isPlaying(song) {
   display: flex;
   align-items: center;
   opacity: 0.85;
+}
+.source-badge :deep(svg) {
+  width: 14px;
+  height: 14px;
 }
 .source-label {
   font-size: 10px;
