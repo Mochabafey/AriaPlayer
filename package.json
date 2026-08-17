@@ -1,8 +1,8 @@
 {
-  "name": "netease-track-resolver",
-  "productName": "Netease Track Resolver",
+  "name": "aria-player",
+  "productName": "Aria Player",
   "version": "0.1.0",
-  "description": "网易牛具 — 网易云音乐解析/播放/下载桌面工具（基于 api-enhanced）",
+  "description": "咏叹调 — 网易云音乐解析/播放/下载桌面工具（基于 api-enhanced）",
   "main": "./dist/out/main/index.js",
   "author": "NTR",
   "license": "MIT",

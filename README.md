@@ -1,8 +1,8 @@
-# 网易牛具 · Netease Track Resolver
+# 咏叹调 · Aria Player
 
 > 基于 [NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) 的网易云音乐解析/播放/下载桌面工具。
 
-网易牛具是一台「轻量级网易云音乐客户端」：把整个 api-enhanced 服务内置进 Electron，绕开 web 端各种限制，桌面化体验（歌词滚动、封面墙曲库、下载、扫码登录、解灰）。
+咏叹调（Aria Player）是一台「轻量级网易云音乐客户端」：把整个 api-enhanced 服务内置进 Electron，绕开 web 端各种限制，桌面化体验（歌词滚动、封面墙曲库、下载、扫码登录、解灰）。
 
 ## 核心特性
 

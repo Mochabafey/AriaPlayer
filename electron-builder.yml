@@ -1,6 +1,6 @@
 appId: com.ntr.resolver
-productName: Netease Track Resolver
-copyright: Copyright © 2026 NTR
+productName: Aria Player
+copyright: Copyright © 2026 Aria
 directories:
   buildResources: resources
   output: dist/release
@@ -39,8 +39,8 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   artifactName: ${productName}-${version}-setup.${ext}
-  shortcutName: 网易牛具
-  uninstallDisplayName: 网易牛具 (Netease Track Resolver)
+  shortcutName: 咏叹调
+  uninstallDisplayName: 咏叹调 (Aria Player)
 
 portable:
   artifactName: ${productName}-${version}-portable.${ext}

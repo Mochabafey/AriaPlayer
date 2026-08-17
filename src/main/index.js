@@ -52,7 +52,7 @@ function createWindow() {
     height: 820,
     minWidth: 1000,
     minHeight: 640,
-    title: '网易牛具 - Netease Track Resolver',
+    title: '咏叹调 - Aria Player',
     backgroundColor: '#121212',
     autoHideMenuBar: true,
     frame: false, // 无边框：去掉系统标题栏白条，窗口控制嵌在页面 header 内

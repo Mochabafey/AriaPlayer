@@ -90,7 +90,7 @@ export function registerLibraryIpc(notifyUpdate) {
     const songs = libraryRepo.listSongs()
     const r = await dialog.showSaveDialog({
       title: '导出曲库',
-      defaultPath: `网易牛具-曲库.${type}`,
+      defaultPath: `咏叹调-曲库.${type}`,
       filters: [{ name: type === 'm3u' ? 'M3U 播放列表' : 'JSON 清单', extensions: [type] }]
     })
     if (r.canceled || !r.filePath) return null

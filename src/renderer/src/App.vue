@@ -133,7 +133,7 @@ let offMaxListener = null
         <div class="brand-icon">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V6l11-2v12.5"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16.5" r="2.5"/></svg>
         </div>
-        <span class="brand-name">网易牛具</span>
+        <span class="brand-name">咏叹调</span>
       </div>
 
       <!-- 分组导航 -->
