@@ -123,15 +123,25 @@ export function registerQqMusicIpc(getServer) {
   // ---- QQ 音乐扫码登录 ----
   // 生成二维码：返回 { qrsig, token, image(base64 dataURL) }
   ipcMain.handle('qqmusic:login-qr', async () => {
-    return await createQr()
+    try {
+      const r = await createQr()
+      console.log(`[qq-login] createQr OK img=${r.image.length}B qrsig=${r.qrsig.slice(0, 8)} token=${r.token}`)
+      return r
+    } catch (e) {
+      console.log(`[qq-login] createQr FAIL: ${e?.message || e}`)
+      throw e
+    }
   })
   // 轮询扫码状态：65 等待 / 66 已扫待确认 / 67 失效 / 0 成功
   // 成功后自动保存 cookie + 昵称并重启 QQ 服务
   ipcMain.handle('qqmusic:login-check', async (_e, { qrsig, token, cookie }) => {
     const r = await checkQr(qrsig, token, cookie)
+    const keys = r.cookie ? r.cookie.split('; ').map((c) => c.split('=')[0]) : []
+    console.log(`[qq-login] checkQr code=${r.code} msg=[${r.msg}] nick=[${r.nick}] cookieKeys=[${keys.join(',')}] len=${r.cookie?.length || 0}`)
     if (r.code === 0 && r.cookie) {
       settingsRepo.set('qqCookie', r.cookie)
       if (r.nick) settingsRepo.set('qqNick', r.nick)
+      console.log(`[qq-login] login success, cookie saved (${r.cookie.length} chars), restarting qqmusic service`)
       const srv = getServer()
       if (srv) await srv.restart()
     }

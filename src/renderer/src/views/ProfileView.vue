@@ -175,12 +175,14 @@ async function qqStartQr() {
   qqQrTimer = null
   try {
     const qr = await qqmusic.loginQr()
+    console.log('[qq-login] qr received, image len =', qr.image.length, 'qrsig =', (qr.qrsig || '').slice(0, 8))
     qqQrKey.value = { qrsig: qr.qrsig, token: qr.token, cookie: qr.cookie || '' }
     qqQrImg.value = qr.image
     qqQrTip.value = '请使用 QQ 手机版扫码登录'
     qqQrTimer = setInterval(qqCheckQr, 2000)
   } catch (e) {
     const msg = '二维码生成失败：' + (e?.message || e)
+    console.log('[qq-login] qr failed:', e?.message || e)
     qqQrTip.value = msg + '，请检查网络后重试'
     toast(msg, 'error')
   }
@@ -190,6 +192,7 @@ async function qqCheckQr() {
   if (!qqQrKey.value) return
   try {
     const r = await qqmusic.loginCheck(qqQrKey.value.qrsig, qqQrKey.value.token, qqQrKey.value.cookie)
+    console.log('[qq-login] poll code =', r.code, 'msg =', r.msg, 'nick =', r.nick, 'cookieLen =', (r.cookie || '').length)
     const msg = r.msg || ''
     if (r.code === 0) {
       qqLogged.value = true
@@ -199,17 +202,28 @@ async function qqCheckQr() {
       if (qqQrTimer) clearInterval(qqQrTimer)
       qqQrTimer = null
       toast('QQ 音乐登录成功')
-    } else if (r.code === 67 || msg.includes('失效')) {
+      return
+    }
+    // 66/65 = 等待扫码；67 = 已扫码待手机确认（服务端消息「二维码认证中」，不是失效！）
+    if (r.code === 67) {
+      qqQrTip.value = '已扫码，请在手机上确认登录'
+      return // 继续轮询，等手机确认后变 0
+    }
+    // 真正的失效：服务端明确提示已失效/已过期（注意「未失效」不能误判）
+    if (/已失效|已过期|失效，请|过期，请|已扫码登录/.test(msg)) {
       qqQrTip.value = '二维码已失效，请点击刷新'
       if (qqQrTimer) clearInterval(qqQrTimer)
       qqQrTimer = null
-    } else if (msg.includes('确认')) {
-      qqQrTip.value = '已扫码，请在手机上确认登录'
-    } else {
-      qqQrTip.value = '等待扫码…'
+      return
     }
+    if (/确认/.test(msg)) {
+      qqQrTip.value = '已扫码，请在手机上确认登录'
+      return
+    }
+    qqQrTip.value = '等待扫码…'
   } catch (e) {
     // 轮询出错：停止轮询并提示（避免无限静默重试）
+    console.log('[qq-login] poll error:', e?.message || e)
     if (qqQrTimer) clearInterval(qqQrTimer)
     qqQrTimer = null
     qqQrTip.value = '轮询出错：' + (e?.message || e) + '，请点击刷新重试'

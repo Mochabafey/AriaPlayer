@@ -18,9 +18,9 @@
 
 const QR_APPID = '549000912' // QQ 空间 appid（避开 QQ 音乐 daid=383 的出口风控）
 const QR_DAID = '5' // QQ 空间 daid
-const QR_AID = '0' // pt_3rd_aid（QQ 空间为 0）
-const U1 = 'https%3A%2F%2Fqzone.qq.com' // 登录后回调地址（仅用于协议，不实际跳转）
-const PT_REDIR_PTTYPE = '5'
+const QR_AID = '100497308' // pt_3rd_aid = QQ 音乐网页版三方应用号（触发 p_skey 等完整登录态签发）
+const U1 = 'https%3A%2F%2Fqzone.qq.com' // 登录后回调地址（仅用于协议，不实际跳转；换 y.qq.com 会被风控 403）
+const PT_REDIR_PTTYPE = '8' // QQ 音乐回调类型
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
@@ -96,8 +96,11 @@ export async function checkQr(qrsig, token, sessionCookie = '') {
   let loginCookie = ''
   if (code === 0) {
     const all = parseSetCookies(res.headers)
-    const keys = ['uin', 'skey', 'p_skey', 'pt4_token', 'p_uin', 'qm_keyst', 'qqmusic_key', 'uin_skey']
-    loginCookie = keys.filter((k) => all[k] != null && all[k] !== '').map((k) => `${k}=${all[k]}`).join('; ')
+    // 全量收集（不只白名单），避免遗漏 p_skey/p_uin/pt4_token 等关键登录态 cookie
+    loginCookie = Object.entries(all)
+      .filter(([, v]) => v !== '')
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ')
     // 兜底：ptuiCB 的 URL 里也带 skey（某些情况 Set-Cookie 不全）
     if (!all.skey && m[2]) {
       const sm = m[2].match(/[?&]skey=([^&]+)/)
