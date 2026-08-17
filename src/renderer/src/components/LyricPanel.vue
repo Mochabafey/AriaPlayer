@@ -506,6 +506,7 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: 0;
   z-index: 200;
+  background: #000; /* 兜底纯黑：任何缝隙都不透出底层内容，保证沉浸 */
 }
 .lyric-bg {
   position: absolute;
@@ -513,11 +514,21 @@ onBeforeUnmount(() => {
   background: #000;
   background-size: cover;
   background-position: center;
-  filter: blur(60px) brightness(0.4) saturate(1.4);
+  filter: blur(60px) brightness(0.3) saturate(1.4);
   transform: scale(1.4);
+}
+/* 暗角遮罩：中央聚焦 + 四周渐暗，增强沉浸感 */
+.lyric-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 35%, rgba(0, 0, 0, 0.4) 100%);
 }
 .lyric-inner {
   position: relative;
+  z-index: 2;
   height: 100%;
   max-width: 1400px;
   margin: 0 auto;
@@ -636,6 +647,7 @@ onBeforeUnmount(() => {
 /* ---- 常驻控制坞（Apple Music 风格）：进度条 + 控制键 ---- */
 .dock-wrap {
   position: absolute;
+  z-index: 3; /* 高于暗角遮罩(1)，不被压暗 */
   bottom: clamp(16px, 3.5vh, 30px);
   left: 50%;
   transform: translate(-50%, 0);
@@ -833,6 +845,7 @@ onBeforeUnmount(() => {
 /* ---- 沉浸态小白条 ---- */
 .mini-bar {
   position: absolute;
+  z-index: 3; /* 高于暗角遮罩(1) */
   bottom: clamp(14px, 3vh, 26px);
   left: 50%;
   transform: translate(-50%, 8px);
