@@ -81,15 +81,17 @@ export function registerQqMusicIpc(getServer) {
   })
 
   // ---- 歌词 ----
-  // /getLyric 从 ctx.query 读 songmid/isFormat，isFormat=1 返回格式化 LRC：
-  // { response: { code, lyric: '<lrc 文本>' } }
+  // /getLyric 用 isFormat=0：返回 base64 解码后的原始 LRC **字符串**。
+  // （isFormat=1 会被 Rain120 包装成 Lyric 对象 {lyric,tags,lines}，前端 parseLrc 无法处理）
   ipcMain.handle('qqmusic:lyric', async (_e, { songmid }) => {
     const srv = getServer()
     if (!srv || srv.status !== 'ready') throw new Error('QQMUSIC_SERVER_NOT_READY')
     if (!songmid) return { code: 404, lyric: '' }
-    const qs = new URLSearchParams({ songmid, isFormat: '1' }).toString()
+    const qs = new URLSearchParams({ songmid, isFormat: '0' }).toString()
     const json = await socketRequest(srv, `/getLyric?${qs}`)
-    const lyric = json?.response?.lyric ?? json?.lyric ?? ''
+    const raw = json?.response?.lyric
+    // 兼容：isFormat=0 返回字符串；若偶发对象则取 .lyric 字段
+    const lyric = typeof raw === 'string' ? raw : (raw?.lyric ?? '')
     return { code: lyric ? 200 : 404, lyric }
   })
 

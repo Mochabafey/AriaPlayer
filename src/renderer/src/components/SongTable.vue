@@ -240,7 +240,14 @@ function isPlaying(song) {
         @dblclick="playAltSource(s)"
       >
         <span class="c-idx" v-if="showIndex"></span>
-        <span class="c-cover"></span>
+        <span class="c-cover">
+          <img
+            v-if="effectiveSong(s, altSource(s)).pic"
+            :src="imgUrl(effectiveSong(s, altSource(s)).pic + '?param=60y60')"
+            alt=""
+            loading="lazy"
+          />
+        </span>
         <div class="c-title">
           <div class="t-name-row">
             <span class="source-badge" v-html="PLATFORM_LOGOS[altSource(s)]"></span>
