@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron'
 import http from 'http'
+import https from 'https'
 import { settingsRepo } from '../db/settings.js'
 import { createQr, checkQr } from '../qqMusicLogin.js'
 
@@ -83,16 +84,19 @@ export function registerQqMusicIpc(getServer) {
   // ---- 歌词 ----
   // /getLyric 用 isFormat=0：返回 base64 解码后的原始 LRC **字符串**。
   // （isFormat=1 会被 Rain120 包装成 Lyric 对象 {lyric,tags,lines}，前端 parseLrc 无法处理）
+  // 翻译：老接口的 trans 字段恒为空（平台不再下发），改走新版统一接口 musicu.fcg 的
+  // GetPlayLyricInfo（需登录 cookie + trans:1 参数），其 trans 是 base64 编码的翻译 LRC。
   ipcMain.handle('qqmusic:lyric', async (_e, { songmid }) => {
     const srv = getServer()
     if (!srv || srv.status !== 'ready') throw new Error('QQMUSIC_SERVER_NOT_READY')
-    if (!songmid) return { code: 404, lyric: '' }
+    if (!songmid) return { code: 404, lyric: '', trans: '' }
     const qs = new URLSearchParams({ songmid, isFormat: '0' }).toString()
     const json = await socketRequest(srv, `/getLyric?${qs}`)
     const raw = json?.response?.lyric
     // 兼容：isFormat=0 返回字符串；若偶发对象则取 .lyric 字段
     const lyric = typeof raw === 'string' ? raw : (raw?.lyric ?? '')
-    return { code: lyric ? 200 : 404, lyric }
+    const trans = await fetchQqTrans(songmid)
+    return { code: lyric ? 200 : 404, lyric, trans }
   })
 
   // ---- 服务状态 ----
@@ -175,6 +179,65 @@ export function registerQqMusicIpc(getServer) {
       artists: (data.singer?.itemlist || []).map(normalizeQqArtist),
       albums: (data.album?.itemlist || []).map(normalizeQqAlbum),
       mvs: (data.mv?.itemlist || []).map(normalizeQqMv)
+    }
+  })
+}
+
+/** QQ musicu.fcg 签名（g_tk 由 skey 经 hash33 计算） */
+function getGtk(skey) {
+  if (!skey) return 5381
+  let hash = 5381
+  for (const c of skey) hash += (hash << 5) + c.charCodeAt(0)
+  return hash & 0x7fffffff
+}
+
+/**
+ * 从新版统一接口 musicu.fcg 的 GetPlayLyricInfo 拿歌词翻译。
+ * 老接口 /getLyric 的 trans 恒空；此接口带 trans:1 参数才返回，
+ * trans 为 base64 编码的翻译 LRC。需登录 cookie（skey 算 g_tk）。
+ * 未登录/失败返回空串（前端保持纯原词）。
+ */
+function fetchQqTrans(songmid) {
+  return new Promise((resolve) => {
+    try {
+      const c = settingsRepo.get('qqCookie')
+      const cookie = typeof c === 'string' ? c : ''
+      const skey = cookie.match(/skey=([^;]*)/)?.[1] || ''
+      const uin = cookie.match(/uin=([^;]*)/)?.[1] || ''
+      const body = JSON.stringify({
+        req_0: {
+          module: 'music.musichallSong.PlayLyricInfo',
+          method: 'GetPlayLyricInfo',
+          param: { songMID: songmid, qrc: 1, nobase64: 0, musicVer: 0, lyricVer: 0, trans: 1 }
+        },
+        comm: { ct: 19, cv: 1880, uin }
+      })
+      const path = `/cgi-bin/musicu.fcg?data=${encodeURIComponent(body)}&format=json&g_tk=${getGtk(skey)}`
+      const req = https.get(
+        {
+          hostname: 'u.y.qq.com',
+          path,
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', Referer: 'https://y.qq.com/', Cookie: cookie }
+        },
+        (res) => {
+          const chunks = []
+          res.on('data', (c) => chunks.push(c))
+          res.on('end', () => {
+            try {
+              const raw = Buffer.concat(chunks).toString('utf-8')
+              const trans = JSON.parse(raw).req_0?.data?.trans || ''
+              resolve(trans ? Buffer.from(trans, 'base64').toString('utf-8') : '')
+            } catch {
+              resolve('')
+            }
+          })
+        }
+      )
+      req.on('error', () => resolve(''))
+      req.setTimeout(10000, () => req.destroy())
+      req.end()
+    } catch {
+      resolve('')
     }
   })
 }

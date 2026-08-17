@@ -33,7 +33,8 @@ function parseSingle(raw) {
     const tags = [...line.matchAll(timeRe)]
     if (!tags.length) continue
     const text = line.replace(timeRe, '').trim()
-    if (!text) continue
+    // 空行与 QQ 歌词的占位行（内容只有 //，表示前奏/间奏）都丢弃，避免界面出现孤零零的 //
+    if (!text || /^\/{2,}$/.test(text)) continue
     for (const t of tags) {
       const min = parseInt(t[1], 10)
       const sec = parseInt(t[2], 10)
