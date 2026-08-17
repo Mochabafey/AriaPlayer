@@ -14,6 +14,7 @@ let prefetching = false   // 下一曲音源预解析进行中标记
 let lastSeekAt = 0        // 最近一次 seek 时刻：快速拖动期间推迟 error 恢复
 let bufferDebounce = null // waiting→buffering 防抖计时器
 let seekGuard = null      // seek 卡死看门狗：5s 未完成强制换源恢复，绝不无限卡死
+let bufferGuard = null    // 缓冲看门狗：waiting 卡死（无数据）15s 强制换源恢复，杜绝一直转圈
 let recovering = false    // recoverPlayback 互斥锁：error 调度与 seek() 直接调用并发触发时，
                           // 两个 recover 都会重置 src → 新请求互相取消 → 恢复死循环
 let pendingRecoverAt = null // error 态 seek 的目标位置：调度器恢复时用它，而不是回退旧 currentTime
@@ -90,6 +91,20 @@ export const usePlayerStore = defineStore('player', () => {
     })
     el.addEventListener('waiting', (e) => {
       if (e.target !== audioEl) return
+      // 缓冲看门狗：首次 waiting 启动，数据就绪（playing/canplay/seeked）才清除。
+      // 连续 15s 拿不到数据（waiting 卡死）→ 强制换源恢复，避免一直转圈。
+      // 不在每次 waiting 重置：断断续续的 waiting 会永远凑不满 15s
+      if (!bufferGuard) {
+        bufferGuard = setTimeout(() => {
+          bufferGuard = null
+          if (!audioEl || audioEl.error || audioEl.paused) return
+          if (current.value && !current.value.fromLocal) {
+            if (DIAG) console.log('[audio-ev] buffer guard fired: 15s no data, force recover')
+            buffering.value = true
+            recoverPlayback(2)
+          }
+        }, 15000)
+      }
       // 250ms 防抖：seek 引起的瞬时 waiting 不闪转圈（快速拖动时播放键
       // 在 播放/转圈 间高频闪烁的抽搐来源）；真卡顿 250ms 后才显示缓冲
       if (bufferDebounce) return
@@ -100,6 +115,8 @@ export const usePlayerStore = defineStore('player', () => {
     })
     el.addEventListener('playing', (e) => {
       if (e.target !== audioEl) return
+      clearTimeout(bufferGuard)
+      bufferGuard = null
       clearTimeout(bufferDebounce)
       bufferDebounce = null
       buffering.value = false
@@ -109,6 +126,8 @@ export const usePlayerStore = defineStore('player', () => {
       if (e.target !== audioEl) return
       clearTimeout(seekGuard) // seek 已完成：撤看门狗
       seekGuard = null
+      clearTimeout(bufferGuard) // 数据已推进：撤缓冲看门狗
+      bufferGuard = null
       // seek 已完成但数据就位（未触发 playing，如暂停状态下拖动）：同样不显示缓冲
       if (!el.ended && el.readyState >= 2) {
         clearTimeout(bufferDebounce)
@@ -118,6 +137,8 @@ export const usePlayerStore = defineStore('player', () => {
     })
     el.addEventListener('canplay', (e) => {
       if (e.target !== audioEl) return
+      clearTimeout(bufferGuard) // 数据已就位：撤缓冲看门狗
+      bufferGuard = null
       // 暂停状态下拖动：数据就位即可收起缓冲（不会有 playing 事件来清）
       clearTimeout(bufferDebounce)
       bufferDebounce = null
@@ -427,6 +448,13 @@ export const usePlayerStore = defineStore('player', () => {
     if (!audioEl || !current.value) return
     if (audioEl.paused) {
       networkRetries = 0 // 手动点击视为重试：重给恢复预算
+      const cur = current.value
+      // 恢复的播放记录 / 未拉音源（audioUrl 空、src 未设）：走 playCurrent
+      // 拉取音源再播——否则 play() 播空 src 会卡住/无声
+      if (!audioEl.src || !cur.audioUrl) {
+        playCurrent()
+        return
+      }
       audioEl.play().catch(() => {})
     } else audioEl.pause()
   }
