@@ -12,6 +12,7 @@
  * 本组件只负责播放与交互。
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { usePlayerStore } from '../stores/player'
 
 const props = defineProps({
   /** 可播地址（ncm-audio:// 或本地 file） */
@@ -38,6 +39,7 @@ const props = defineProps({
 
 const emit = defineEmits(['quality-change', 'ended', 'error'])
 
+const player = usePlayerStore()
 const videoRef = ref(null)
 const wrapRef = ref(null)
 
@@ -114,6 +116,13 @@ function onVideoEvent() {
       }
     }
   }
+  // 同步给底部播放条（接管模式下它显示视频的进度与状态）
+  player.updateVideoSession({
+    currentTime: currentTime.value,
+    duration: duration.value,
+    paused: v.paused,
+    buffered: buffered.value
+  })
 }
 
 function setVolume(val) {
@@ -270,6 +279,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointermove', onProgressMove)
   window.removeEventListener('pointerup', onProgressUp)
   clearTimeout(hideTimer)
+  // 释放底部条接管，否则离开视频页后底部条仍显示视频信息却无法控制
+  player.releaseVideo()
 })
 
 /** url 变化：重置状态并（可选）自动播放 */
@@ -280,15 +291,70 @@ watch(
     currentTime.value = 0
     buffered.value = 0
     duration.value = 0
-    if (!u) return
+    if (!u) {
+      // 无源（关闭播放器/切换中）：释放底部条接管
+      player.releaseVideo()
+      return
+    }
     await nextTick()
     const v = videoRef.value
     if (!v) return
+    // 接管底部播放条：让它与视频显示同一份标题/进度/音量，
+    // 避免出现「视频在放 A、底部条显示 B」的割裂
+    player.claimByVideo(
+      {
+        kind: 'video',
+        title: props.title,
+        artist: props.author,
+        cover: props.poster,
+        currentTime: 0,
+        duration: 0,
+        paused: !props.autoplay,
+        handlers: {
+          toggle: togglePlay,
+          seek: seekTo,
+          setMuted: setMutedExternal
+        }
+      },
+      (vol) => {
+        // 底部条调音量时作用到 video 元素
+        const el = videoRef.value
+        if (el) el.volume = vol
+      }
+    )
     v.load()
     if (props.autoplay) v.play().catch(() => {})
     poke()
   },
   { immediate: true }
+)
+
+/** 供底部条接管后调用：跳转到指定秒 */
+function seekTo(sec) {
+  const v = videoRef.value
+  if (!v) return
+  const d = v.duration || 0
+  v.currentTime = Math.min(Math.max(0, sec), d > 0 ? d : sec)
+}
+
+/** 供底部条接管后调用：设置静音 */
+function setMutedExternal(m) {
+  const v = videoRef.value
+  if (v) v.muted = !!m
+  muted.value = !!m
+}
+
+/** 标题/封面变化（切换分P等）时更新接管信息 */
+watch(
+  () => [props.title, props.author, props.poster],
+  () => {
+    if (!props.url) return
+    player.updateVideoSession({
+      title: props.title,
+      artist: props.author,
+      cover: props.poster
+    })
+  }
 )
 
 function onError() {

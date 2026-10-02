@@ -15,10 +15,33 @@ const settings = useSettingsStore()
 const downloads = useDownloadsStore()
 const audioRef = ref(null)
 
+/* ---------------- 视频接管模式 ----------------
+ * 视频（B 站/网易云 MV）播放时接管底部条，让这里显示视频的封面/标题/进度，
+ * 控制指令转发给 video 元素。避免「视频在放 A、底部条显示 B」的割裂。
+ * 见 player store 的 videoSession 注释。 */
+const vs = computed(() => player.videoSession)
+const isVideo = computed(() => !!vs.value)
+
+/** 统一的数据源：接管时用视频信息，否则用当前音乐 */
+const displayCover = computed(() => (isVideo.value ? vs.value.cover || '' : player.current?.pic || ''))
+const displayTitle = computed(() => (isVideo.value ? vs.value.title || '' : player.current?.name || ''))
+const displayArtist = computed(() =>
+  isVideo.value ? vs.value.artist || '' : player.current?.artist || ''
+)
+const displayDuration = computed(() =>
+  isVideo.value ? vs.value.duration || 0 : player.duration || 0
+)
+const displayTime = computed(() =>
+  isVideo.value ? vs.value.currentTime || 0 : player.currentTime || 0
+)
+const displayPlaying = computed(() =>
+  isVideo.value ? !vs.value.paused : player.playing
+)
+
 const progress = computed(() => {
   if (dragging.value) return dragRatio.value * 100
-  if (!player.duration) return 0
-  return (player.currentTime / player.duration) * 100
+  if (!displayDuration.value) return 0
+  return (displayTime.value / displayDuration.value) * 100
 })
 
 /* ---- 进度条：点击 + 拖拽 ---- */
@@ -45,11 +68,29 @@ function onSeekMove(e) {
 function onSeekUp() {
   window.removeEventListener('pointermove', onSeekMove)
   window.removeEventListener('pointerup', onSeekUp)
-  if (dragging.value && player.duration > 0) player.seek(dragRatio.value * player.duration)
+  const dur = displayDuration.value
+  if (dragging.value && dur > 0) {
+    const target = dragRatio.value * dur
+    // 接管模式下转发给 video 元素，否则拖底部条对视频无效
+    if (isVideo.value) vs.value.handlers?.seek?.(target)
+    else player.seek(target)
+  }
   dragging.value = false
 }
 function onSeekHover(e) {
   if (seekTrackRef.value) hoverRatio.value = ratioFromEvent(seekTrackRef.value, e)
+}
+
+/** 播放/暂停：接管时转发给视频 */
+function togglePlay() {
+  if (isVideo.value) vs.value.handlers?.toggle?.()
+  else player.toggle()
+}
+
+/** 点封面：接管时跳回视频页，否则展开歌词页 */
+function onCoverClick() {
+  if (isVideo.value) router.push('/bili')
+  else player.showLyrics = !player.showLyrics
 }
 
 /* ---- 音量条：点击 + 拖拽 + 滚轮 + 静音（逻辑与 LyricPanel 共用 composable） ---- */
@@ -125,47 +166,50 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 左：圆形封面 + 信息 -->
+    <!-- 左：圆形封面 + 信息（视频接管时显示视频封面与标题） -->
     <div class="p-left">
       <div
         class="cover clickable"
-        v-if="player.current"
-        title="展开播放页"
-        @click="player.showLyrics = !player.showLyrics"
+        v-if="isVideo || player.current"
+        :title="isVideo ? '正在播放视频' : '展开播放页'"
+        @click="onCoverClick"
       >
-        <img :src="imgUrl(player.current.pic)" alt="" loading="lazy" />
+        <img v-if="displayCover" :src="isVideo ? displayCover : imgUrl(displayCover)" alt="" loading="lazy" />
+        <svg v-else viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V6l11-2v12.5"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16.5" r="2.5"/></svg>
+        <!-- 视频接管标记：让用户知道底部条现在控制的是视频 -->
+        <span v-if="isVideo" class="video-badge">视频</span>
       </div>
       <div class="cover placeholder" v-else>
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V6l11-2v12.5"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16.5" r="2.5"/></svg>
       </div>
-      <div class="meta" v-if="player.current">
-        <div class="title" :title="player.current.name">{{ player.current.name }}</div>
-        <div class="artist">{{ player.current.artist }}</div>
+      <div class="meta" v-if="isVideo || player.current">
+        <div class="title" :title="displayTitle">{{ displayTitle }}</div>
+        <div class="artist">{{ displayArtist }}</div>
       </div>
       <div class="meta empty" v-else>未在播放</div>
     </div>
 
-    <!-- 中：控制按钮 -->
+    <!-- 中：控制按钮（视频接管时隐藏切歌/循环 —— 视频没有"上一首下一首"） -->
     <div class="p-center">
-      <button class="ctrl sm" :title="modeTitle" @click="cycleMode">
+      <button class="ctrl sm" :title="modeTitle" @click="cycleMode" v-if="!isVideo">
         <svg v-if="settings.settings.playMode === 'loop'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><text x="12" y="15" font-size="7" fill="currentColor" stroke="none" text-anchor="middle">1</text></svg>
         <svg v-else-if="settings.settings.playMode === 'shuffle'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
         <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
       </button>
-      <button class="ctrl" title="上一首" @click="player.prev()">
+      <button class="ctrl" title="上一首" @click="player.prev()" v-if="!isVideo">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>
       </button>
-      <button class="ctrl play" title="播放/暂停" @click="player.toggle()">
-        <svg v-if="player.buffering" viewBox="0 0 24 24" fill="currentColor" class="spin"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7z"/></svg>
-        <svg v-else-if="player.playing" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+      <button class="ctrl play" :title="displayPlaying ? '暂停' : '播放'" @click="togglePlay">
+        <svg v-if="!isVideo && player.buffering" viewBox="0 0 24 24" fill="currentColor" class="spin"><path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7z"/></svg>
+        <svg v-else-if="displayPlaying" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
         <svg v-else viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
       </button>
-      <button class="ctrl" title="下一首" @click="player.next()">
+      <button class="ctrl" title="下一首" @click="player.next()" v-if="!isVideo">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg>
       </button>
-      <span class="time cur">{{ fmtTime(player.currentTime) }}</span>
+      <span class="time cur">{{ fmtTime(displayTime) }}</span>
       <span class="time-divider">/</span>
-      <span class="time total">{{ fmtTime(player.duration) }}</span>
+      <span class="time total">{{ fmtTime(displayDuration) }}</span>
     </div>
 
     <!-- 右：歌词/下载/音量 -->
@@ -307,8 +351,22 @@ onUnmounted(() => {
   flex-shrink: 0;
   background: var(--bg-hover);
   box-shadow: var(--shadow-cover);
+  position: relative;
 }
 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 视频接管标记：贴在封面右下角，提示底部条当前控制的是视频而非音乐 */
+.video-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 4px;
+  color: #fff;
+  background: var(--accent);
+  border-top-left-radius: 4px;
+}
 .cover.clickable {
   cursor: pointer;
   transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);

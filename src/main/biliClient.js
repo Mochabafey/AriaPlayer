@@ -326,25 +326,57 @@ export async function videoInfo(bvid) {
 /**
  * 取播放地址。
  *
+ * ⚠️ 档位表必须始终取自 DASH 请求（fnval=4048）：
+ *    durl 请求（fnval=0）返回的 accept_quality 是**残缺的**，实测只有
+ *    [64,16]（720P/360P），而 DASH 返回 [120,112,80,64,32,16]（含 4K/1080P）。
+ *    早期实现首次播放走 durl 并把它的残缺档位表交给前端，导致画质菜单
+ *    只剩「高清 720P / 流畅 360P」两项 —— 用户看不到更高画质。
+ *
+ * 策略：
+ *   1. 先请求 DASH 拿到**完整档位表**（这是 UI 画质菜单的数据源）
+ *   2. 若用户选的档位 ≤ durl 能提供的上限（通常 720P），且是首次播放，
+ *      再用 durl 拿单文件（免合流、秒开）
+ *   3. 更高画质只能走 DASH + ffmpeg 合流
+ *
  * @param {string} bvid
  * @param {number|string} cid
  * @param {object} opts
  *   - qn: 期望画质 id（如 80=1080P）；不传则由 B 站给默认（未登录通常 480P）
- *   - preferSingle: 优先要 durl 单文件（免 ffmpeg 合流，秒开）
+ *   - preferSingle: 允许用 durl 单文件加速（默认 true；仅对低画质生效）
  * @returns {{ mode:'durl'|'dash', url?, quality, qualityName, acceptQuality, acceptDesc,
  *             video?, audio?, duration? }}
  */
 export async function playUrl(bvid, cid, opts = {}) {
   const { qn, preferSingle = true } = opts
 
-  // ---- 路径 A：durl 单文件（快，免合流）----
+  // ---- 1. 先取 DASH（拿完整档位表 + 分离流地址）----
+  const dash = await fetchDash(bvid, cid, qn)
+
+  /**
+   * 2. 判断是否值得改用 durl 单文件加速。
+   *    只在「目标画质在 durl 支持范围内」时尝试 —— durl 上限通常是 720P。
+   *    已知 durl 的 accept_quality 是 [64,16]，故用 64 作为门槛判断；
+   *    不写死 64 而是取一次 durl 档位表来比对，避免上游策略变化后失效。
+   */
   if (preferSingle) {
     const single = await tryDurl(bvid, cid, qn)
-    if (single) return single
+    if (single) {
+      // durl 实际给出的档位若与 DASH 目标档位一致（说明该画质 durl 也支持），
+      // 就用 durl（快）；否则保留 DASH 结果（画质优先）
+      const sameQuality = Number(single.quality) === Number(dash.quality)
+      if (sameQuality) {
+        // 档位表用 DASH 的（完整），不用 durl 的残缺表
+        return {
+          ...single,
+          acceptQuality: dash.acceptQuality,
+          acceptDesc: dash.acceptDesc
+        }
+      }
+    }
   }
 
-  // ---- 路径 B：DASH 分离流（画质全，需合流）----
-  return await fetchDash(bvid, cid, qn)
+  // ---- 3. 走高画质：DASH + 合流 ----
+  return dash
 }
 
 /** 尝试拿 durl 单文件 */

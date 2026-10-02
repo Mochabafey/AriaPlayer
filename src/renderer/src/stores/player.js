@@ -45,6 +45,24 @@ export const usePlayerStore = defineStore('player', () => {
   const buffering = ref(false)
   const playError = ref('')
   const currentSource = ref('netease') // 当前播放音源: 'netease' | 'qq'
+
+  /**
+   * 视频接管（B 站 MV / 网易云 MV 播放时）。
+   *
+   * 背景：MV 用的是页面内的 <video> 元素，与底部播放条的 <audio> 是两套独立
+   * 媒体，导致「视频在放 A、底部条显示 B」，音量和进度也对不上。
+   *
+   * 接管机制：视频播放时把自身状态登记到这里，PlayerBar 据此切换数据源
+   * （显示视频标题/封面/进度，控制指令转发给 video 元素而非 audio）。
+   * null 表示未接管（普通音乐播放）。
+   *
+   * 结构：{ kind:'video', title, artist, cover, duration, currentTime, paused,
+   *         handlers: { toggle, seek, setVolume, setMuted } }
+   * 用 handlers 回调而非直接持有 video 元素，避免 store 与组件生命周期耦合。
+   */
+  const videoSession = ref(null)
+  /** 音量：视频接管时也要作用到 video 元素上，故记下它的 setter */
+  let videoVolumeSink = null
   let errorTimer = null
 
   const current = computed(() => queue.value[currentIndex.value] || null)
@@ -655,11 +673,45 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function setVolume(v) {
-    volume.value = v
-    if (audioEl) audioEl.volume = v
+    const nv = Math.min(1, Math.max(0, v))
+    volume.value = nv
+    if (audioEl) audioEl.volume = nv
+    // 视频接管时同步作用到 video 元素（否则底部条调音量对视频无效）
+    if (videoVolumeSink) {
+      try { videoVolumeSink(nv) } catch { /* ignore */ }
+    }
     const settings = useSettingsStore()
-    settings.set('volume', v)
+    settings.set('volume', nv)
   }
+
+  /**
+   * 视频接管底部播放条。
+   * @param {object} session 见 videoSession 注释
+   * @param {(v:number)=>void} volumeSink 视频元素的音量 setter
+   */
+  function claimByVideo(session, volumeSink) {
+    videoSession.value = session
+    videoVolumeSink = volumeSink || null
+    // 接管期间暂停音乐，避免两路声音同时响
+    if (audioEl && !audioEl.paused) {
+      try { audioEl.pause() } catch { /* ignore */ }
+    }
+  }
+
+  /** 更新接管中的视频状态（进度/暂停态变化时由 video 组件调用） */
+  function updateVideoSession(patch) {
+    if (!videoSession.value) return
+    videoSession.value = { ...videoSession.value, ...patch }
+  }
+
+  /** 释放接管（离开视频页/关闭播放器时） */
+  function releaseVideo() {
+    videoSession.value = null
+    videoVolumeSink = null
+  }
+
+  /** 当前底部条是否由视频接管 */
+  const isVideoActive = computed(() => !!videoSession.value)
 
   /**
    * 切歌。auto=true 表示由「播放结束」触发：
@@ -811,6 +863,11 @@ export const usePlayerStore = defineStore('player', () => {
     buffering,
     playError,
     currentSource,
+    videoSession,
+    isVideoActive,
+    claimByVideo,
+    updateVideoSession,
+    releaseVideo,
     attachAudio,
     playList,
     playNext,
