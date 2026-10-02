@@ -175,6 +175,22 @@ export class QqMusicServer {
     })
   }
 
+  /**
+   * 等待服务就绪（供 IPC 在「启动窗口期」兜底）。
+   * 窗口 ready-to-show 不等服务就绪就显示，用户立刻点 QQ 音乐的歌会撞上
+   * QQMUSIC_SERVER_NOT_READY，被前端当成「这首歌放不了」弹给用户。
+   * 这里让调用方在 starting 时短暂等待；missing 是永久态，不空等。
+   */
+  async waitUntilReady(maxMs = 12000) {
+    const deadline = Date.now() + maxMs
+    while (Date.now() < deadline) {
+      if (this.status === 'ready') return true
+      if (this.status === 'missing') return false
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    return this.status === 'ready'
+  }
+
   async restart() {
     this.stopping = true
     if (this.child) {

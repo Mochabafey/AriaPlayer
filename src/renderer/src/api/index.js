@@ -9,15 +9,31 @@ export function routeOf(method) {
   return method.replace(/_/g, '/')
 }
 
-/** 等待内置服务就绪（最多 30s）。主进程子服务启动含注册匿名 token 的
- *  网络往返 + 关闭版本检查后的剩余开销，15s 在弱网下可能误报未就绪 */
-export async function waitServerReady() {
+/** 等待内置服务就绪（默认最多 30s）。主进程子服务启动含注册匿名 token 的
+ *  网络往返 + 关闭版本检查后的剩余开销，15s 在弱网下可能误报未就绪。
+ *
+ *  maxMs：可选等待上限。播放路径传入较短的预算——用户已经按了播放键，
+ *  让他干等 30s 再报错体验很差；宁可早失败早提示（服务真起不来时，
+ *  弹「服务未就绪」比转圈 30s 更有信息量）。
+ */
+export async function waitServerReady(maxMs = 30000) {
+  const deadline = Date.now() + maxMs
   for (let i = 0; i < 60; i++) {
     const s = await bridge.invoke('ncm:server-status')
     if (s === 'ready') return true
+    if (Date.now() >= deadline) return false
     await new Promise((r) => setTimeout(r, 500))
   }
   return false
+}
+
+/** 单次查询内置服务是否已就绪（不轮询，用于快速路径判断） */
+export async function serverReadyNow() {
+  try {
+    return (await bridge.invoke('ncm:server-status')) === 'ready'
+  } catch {
+    return false
+  }
 }
 
 /** 调用本地 api-enhanced 接口；opts.noCache=true 跳过本地缓存（断流恢复强制刷新用） */

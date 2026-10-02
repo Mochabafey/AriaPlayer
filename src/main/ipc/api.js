@@ -173,7 +173,15 @@ export function registerApiIpc(getServer) {
   // ---- 通用 API 转发（私有 socket 通道）+ SQLite 缓存 ----
   ipcMain.handle('ncm:api', async (_e, { method, params, noCache }) => {
     const srv = getServer()
-    if (!srv || srv.status !== 'ready') throw new Error('NCM_SERVER_NOT_READY')
+    if (!srv) throw new Error('NCM_SERVER_NOT_READY')
+    // 启动窗口期兜底：窗口 ready-to-show 不等子服务就绪就显示出来，
+    // 用户立刻点播放时 status 还是 starting。此处短暂等待而非立刻抛错，
+    // 否则前端会把 NOT_READY 当成「这首歌放不了」弹给用户
+    //（表现为"启动时按播放报错一下，再按一次就好了"）。
+    if (srv.status !== 'ready') {
+      const ready = await srv.waitUntilReady(12000)
+      if (!ready) throw new Error('NCM_SERVER_NOT_READY')
+    }
     // api-enhanced 路由规则：下划线转斜杠（song_url_v1 → /song/url/v1）
     const route = method.replace(/_/g, '/').replace(/^\//, '')
     const realTime = FORCE_FETCH_RE.test(route)

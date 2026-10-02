@@ -230,6 +230,27 @@ export class NcmServer {
     })
   }
 
+  /**
+   * 等待服务就绪（供 IPC 在「启动窗口期」兜底）。
+   *
+   * 窗口 ready-to-show 不等服务就绪就显示出来，用户可能立刻点播放——
+   * 此时 IPC 直接抛 NCM_SERVER_NOT_READY 会被当成「这首歌放不了」弹给用户。
+   * 本方法让调用方在 status 仍为 starting 时短暂等待，而不是立刻失败。
+   *
+   * 与 waitReady() 的区别：只轮询 status 字段，不新建 socket 连接
+   * （避免每次请求都开销一次连接探测）；maxMs 远小于启动超时。
+   */
+  async waitUntilReady(maxMs = 12000) {
+    const deadline = Date.now() + maxMs
+    while (Date.now() < deadline) {
+      if (this.status === 'ready') return true
+      // missing 是永久态（服务文件不存在），等下去没有意义
+      if (this.status === 'missing') return false
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    return this.status === 'ready'
+  }
+
   async restart() {
     this.stopping = true // 标记主动重启，避免 child exit 同时触发自动重启导致双 start
     if (this.child) {

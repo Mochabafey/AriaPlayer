@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { api, coverUrl, qqmusic, waitServerReady } from '../api'
+import { api, coverUrl, qqmusic, waitServerReady, serverReadyNow } from '../api'
 import { useSettingsStore } from './settings'
 
 // 播放记录持久化：下次打开恢复上次的队列 / 当前歌曲 / 播放进度
@@ -383,7 +383,7 @@ export const usePlayerStore = defineStore('player', () => {
     loadLyrics(song)
   }
 
-  async function playCurrent() {
+  async function playCurrent(attempt = 0) {
     const epoch = playEpoch
     const song = current.value
     if (!song || !audioEl) return
@@ -397,6 +397,23 @@ export const usePlayerStore = defineStore('player', () => {
       // currentSource 只是"新建单曲队列"的默认来源
       const src = inferSource(song) || currentSource.value || 'netease'
       if (!song.audioUrl) {
+        // 启动竞态防护：窗口先于子服务显示（ready-to-show 不等服务就绪），
+        // 用户立刻按播放时服务可能还在 starting。不等待就直接请求会抛
+        // NCM_SERVER_NOT_READY 并被下面的 catch 弹成「无法播放」——
+        // 表现为"启动时按播放报错一下，再按一次就好了"。
+        //
+        // 快速路径：绝大多数情况服务已就绪，一次查询即可放行（避免无谓轮询
+        // 带来的 500ms 起播延迟）；未就绪才进入轮询等待。
+        // 预算 12s：用户已按下播放键，干等 30s 体验差；服务真起不来时
+        // 早失败早提示更有信息量。
+        if (!(await serverReadyNow())) {
+          buffering.value = true
+          setPlayError('正在启动内置服务…')
+          try {
+            await waitLyricServerReady(src, 12000)
+          } catch { /* 查询失败也继续尝试请求，让真实错误走下面的 catch */ }
+        }
+        if (epoch !== playEpoch) return
         try {
           if (src === 'qq') {
             // QQ音乐音源
@@ -423,6 +440,16 @@ export const usePlayerStore = defineStore('player', () => {
           }
         } catch (e) {
           if (epoch !== playEpoch) return
+          // 兜底重试：等待窗口（waitServerReady 最长 30s）用尽或服务重启中
+          // 仍撞上 NOT_READY 时，它是「服务还没起来」而非「这首歌放不了」，
+          // 不该弹成播放失败。稍后重试一次，仍失败才报错。
+          if (isNotReadyError(e) && attempt < 1) {
+            buffering.value = true
+            setPlayError('正在等待内置服务就绪…')
+            await new Promise((r) => setTimeout(r, 800))
+            if (epoch !== playEpoch) return
+            return playCurrent(attempt + 1)
+          }
           playing.value = false
           buffering.value = false
           setPlayError(`无法播放「${song.name || ''}」：${e.message}`)
@@ -468,24 +495,38 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   /**
-   * 等待对应音源的服务就绪后再请求歌词。
+   * 等待对应音源的服务就绪后再请求歌词/音源。
    * 退出重进恢复上次歌曲时（App.vue onMounted → restoreQueue → loadLyrics），
    * 内置服务可能还在启动：ncm:api / qqmusic:lyric 在未就绪时直接抛
    * NCM_SERVER_NOT_READY / QQMUSIC_SERVER_NOT_READY，请求失败且无重试，
    * 恢复的歌曲会永远停在"暂无歌词"（切歌后才恢复）。这里先等就绪再请求。
+   *
+   * 播放路径同样需要它：窗口 ready-to-show 就显示出来了，而两个子服务
+   * 还在拉起（实测约 1.5s 窗口期）。用户此时按播放会立刻撞上
+   * NCM_SERVER_NOT_READY，被 playCurrent 的 catch 弹成「无法播放」，
+   * 再按一次才成功——正是「启动时按播放先报错」的来源。
+   *
+   * maxMs：等待上限。播放路径传较短预算，避免用户按了播放却干等 30s。
    */
-  async function waitLyricServerReady(src) {
+  async function waitLyricServerReady(src, maxMs = 30000) {
+    const deadline = Date.now() + maxMs
     if (src === 'qq') {
       // QQ 音乐服务独立启动（可能晚于网易云服务就绪），单独轮询
       for (let i = 0; i < 60; i++) {
         try {
           if ((await qqmusic.serverStatus()) === 'ready') return
         } catch { /* 查询失败继续轮询 */ }
+        if (Date.now() >= deadline) return
         await new Promise((r) => setTimeout(r, 500))
       }
       return
     }
-    await waitServerReady()
+    await waitServerReady(maxMs)
+  }
+
+  /** 服务未就绪错误识别：主进程未就绪时抛的固定标记，属「暂时性」而非真失败 */
+  function isNotReadyError(e) {
+    return /NOT_READY/.test(String(e?.message || ''))
   }
 
   async function loadLyrics(song, attempt = 0) {
@@ -551,7 +592,9 @@ export const usePlayerStore = defineStore('player', () => {
       // 恢复的播放记录 / 未拉音源（audioUrl 空、src 未设）：走 playCurrent
       // 拉取音源再播——否则 play() 播空 src 会卡住/无声
       if (!audioEl.src || !cur.audioUrl) {
-        playCurrent()
+        // 显式吞掉 rejection：playCurrent 内部已统一 setPlayError，
+        // 这里不接会变成 unhandledRejection（启动竞态下更容易触发）
+        playCurrent().catch(() => {})
         return
       }
       audioEl.play().catch(() => {})

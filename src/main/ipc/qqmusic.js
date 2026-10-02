@@ -41,12 +41,28 @@ function socketRequest(srv, urlPath) {
 }
 
 export function registerQqMusicIpc(getServer) {
+  /**
+   * 取就绪的 QQ 音乐服务实例。
+   * 启动窗口期兜底：窗口 ready-to-show 不等子服务就绪就显示出来，用户立刻
+   * 点 QQ 音乐的歌时 status 还是 starting。此处短暂等待而非立刻抛错，否则
+   * 前端会把 NOT_READY 当成「这首歌放不了」弹给用户
+   *（表现为"启动时按播放报错一下，再按一次就好了"）。
+   */
+  async function requireReadyServer() {
+    const srv = getServer()
+    if (!srv) throw new Error('QQMUSIC_SERVER_NOT_READY')
+    if (srv.status !== 'ready') {
+      const ready = await srv.waitUntilReady(12000)
+      if (!ready) throw new Error('QQMUSIC_SERVER_NOT_READY')
+    }
+    return srv
+  }
+
   // ---- 搜索 ----
   // Rain120 路由 /getSearchByKey/:key?/:limit?/:page?，参数从 ctx.query 读取
   //（key/limit/page/catZhida）。catZhida=0 才是歌曲（默认 1 会混入非歌曲）
   ipcMain.handle('qqmusic:search', async (_e, { keyword, page = 1, limit = 30 }) => {
-    const srv = getServer()
-    if (!srv || srv.status !== 'ready') throw new Error('QQMUSIC_SERVER_NOT_READY')
+    const srv = await requireReadyServer()
     const qs = new URLSearchParams({
       key: keyword,
       limit: String(limit),
@@ -73,8 +89,7 @@ export function registerQqMusicIpc(getServer) {
     return item?.url || ''
   }
   ipcMain.handle('qqmusic:url', async (_e, { songmid }) => {
-    const srv = getServer()
-    if (!srv || srv.status !== 'ready') throw new Error('QQMUSIC_SERVER_NOT_READY')
+    const srv = await requireReadyServer()
     if (!songmid) return { code: 404, url: '' }
     let url = await fetchQqUrl(srv, songmid, '320')
     if (!url) url = await fetchQqUrl(srv, songmid, '128')
@@ -87,8 +102,7 @@ export function registerQqMusicIpc(getServer) {
   // 翻译：老接口的 trans 字段恒为空（平台不再下发），改走新版统一接口 musicu.fcg 的
   // GetPlayLyricInfo（需登录 cookie + trans:1 参数），其 trans 是 base64 编码的翻译 LRC。
   ipcMain.handle('qqmusic:lyric', async (_e, { songmid }) => {
-    const srv = getServer()
-    if (!srv || srv.status !== 'ready') throw new Error('QQMUSIC_SERVER_NOT_READY')
+    const srv = await requireReadyServer()
     if (!songmid) return { code: 404, lyric: '', trans: '' }
     const qs = new URLSearchParams({ songmid, isFormat: '0' }).toString()
     const json = await socketRequest(srv, `/getLyric?${qs}`)
@@ -169,8 +183,7 @@ export function registerQqMusicIpc(getServer) {
 
   // ---- QQ 音乐智能聚合搜索（smartbox：歌手/专辑/MV 各几条，用于聚合界面）----
   ipcMain.handle('qqmusic:smartbox', async (_e, { keyword }) => {
-    const srv = getServer()
-    if (!srv || srv.status !== 'ready') throw new Error('QQMUSIC_SERVER_NOT_READY')
+    const srv = await requireReadyServer()
     if (!keyword) return { code: 200, artists: [], albums: [], mvs: [] }
     const json = await socketRequest(srv, `/getSmartbox?key=${encodeURIComponent(keyword)}`)
     const data = json?.response?.data || {}
