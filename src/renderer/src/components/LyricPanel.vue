@@ -6,13 +6,14 @@ import { useDownloadsStore } from '../stores/downloads'
 import { activeIndex } from '../utils/lrc'
 import { api, imgUrl } from '../api'
 import { toast } from '../utils/toast'
+import { useVolumeSlider } from '../composables/useVolumeSlider'
 
 const player = usePlayerStore()
 const settings = useSettingsStore()
 const downloads = useDownloadsStore()
 const listRef = ref(null)
 const trackRef = ref(null)
-const volTrackRef = ref(null)
+// volTrackRef 由 useVolumeSlider() 提供（见下方音量区）
 
 /* 窗口控制 + F11 沉浸全屏（LyricPanel 全屏覆盖时标题栏被盖住，这里补上） */
 const winFullscreen = ref(false)
@@ -220,63 +221,39 @@ async function toggleLike() {
 }
 
 // 下载当前歌曲
-function downloadCurrent() {
+async function downloadCurrent() {
   const song = player.current
   if (!song || song.fromLocal) return
-  downloads.add({
-    songId: song.id,
-    title: song.name,
-    artist: song.artist,
-    url: song.audioUrl,
-    quality: settings.settings.quality,
-    cover: song.pic
-  })
-  toast('已加入下载队列')
-}
-
-// 音量：点击 + 拖拽 + 静音（与 PlayerBar 同一套交互）
-const muted = ref(false)
-const mutedVolume = ref(0.8)
-const volumeDisplay = computed(() => (muted.value ? 0 : Math.round(player.volume * 100)))
-
-function ratioFromEvent(el, e) {
-  const rect = el.getBoundingClientRect()
-  return Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
-}
-function setVolFromEvent(e) {
-  player.setVolume(ratioFromEvent(volTrackRef.value, e))
-}
-let volDragging = false
-function onVolDown(e) {
-  volDragging = true
-  setVolFromEvent(e)
-  window.addEventListener('pointermove', onVolMove)
-  window.addEventListener('pointerup', onVolUp)
-}
-function onVolMove(e) {
-  if (volDragging) setVolFromEvent(e)
-}
-function onVolUp() {
-  volDragging = false
-  window.removeEventListener('pointermove', onVolMove)
-  window.removeEventListener('pointerup', onVolUp)
-}
-function toggleMute() {
-  if (muted.value) {
-    player.setVolume(mutedVolume.value)
-    muted.value = false
-  } else {
-    mutedVolume.value = player.volume
-    player.setVolume(0)
-    muted.value = true
+  // 原实现无条件 toast「已加入下载队列」——失败时也这么提示，是误导。
+  // 改为由 store 统一按结果提示（成功/重复/失败），这里只兜 IPC 异常。
+  try {
+    await downloads.add({
+      songId: song.id,
+      title: song.name,
+      artist: song.artist,
+      url: song.audioUrl,
+      quality: settings.settings.quality,
+      cover: song.pic
+    })
+  } catch (e) {
+    toast('下载失败：' + (e?.message || '未知错误'), 'error')
   }
 }
-watch(
-  () => player.volume,
-  (v) => {
-    if (v > 0 && muted.value) muted.value = false
-  }
-)
+
+// 音量：点击 + 拖拽 + 滚轮 + 静音（与 PlayerBar 共用同一套 composable，
+// 保证两侧交互一致、静音状态同步）
+const {
+  trackRef: volTrackRef,
+  dragging: volDragging,
+  hoverRatio: volHover,
+  muted,
+  volumeDisplay,
+  onDown: onVolDown,
+  onHover: onVolHover,
+  onLeave: onVolLeave,
+  onWheel: onVolWheel,
+  toggleMute
+} = useVolumeSlider()
 
 /* ================= 沉浸模式：10s 无操作自动隐藏控件 ================= */
 const idle = ref(false)
@@ -328,8 +305,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('wheel', poke)
   window.removeEventListener('keydown', poke)
   window.removeEventListener('resize', onResize)
-  window.removeEventListener('pointermove', onVolMove)
-  window.removeEventListener('pointerup', onVolUp)
+  // 音量条的 pointermove/up 由 useVolumeSlider 的 onBeforeUnmount 自行清理
 })
 </script>
 
@@ -452,11 +428,17 @@ onBeforeUnmount(() => {
           <div
             ref="volTrackRef"
             class="vol-track"
-            :class="{ muted }"
-            title="音量（点击或拖动调节）"
+            :class="{ muted, dragging: volDragging }"
+            title="音量（点击/拖动调节，滚轮 ±5%）"
             @pointerdown.left="onVolDown"
+            @mousemove="onVolHover"
+            @mouseleave="onVolLeave"
+            @wheel="onVolWheel"
           >
             <div class="vol-fill" :style="{ width: volumeDisplay + '%' }"></div>
+            <span v-if="volHover >= 0" class="vol-tip" :style="{ left: volHover * 100 + '%' }">
+              {{ Math.round(volHover * 100) }}%
+            </span>
           </div>
         </div>
       </div>
@@ -851,20 +833,50 @@ onBeforeUnmount(() => {
 
 /* ---- 音量 ---- */
 .vol-btn.muted { color: rgba(255, 255, 255, 0.4); }
+/* 视觉 4px 细条；热区用伪元素扩到上下各 6px。
+   注意：全局 box-sizing: border-box 下不能用 border 扩热区——
+   4px 高度减去上下 6px border 会把内容区压成 0，整条不可见。
+   伪元素不参与布局，是安全的做法。 */
 .vol-track {
-  width: clamp(64px, 7vw, 96px);
+  width: clamp(96px, 9vw, 128px);
   height: 4px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.24);
   cursor: pointer;
   transition: height 0.18s var(--ease);
   touch-action: none;
+  position: relative;
+}
+.vol-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  bottom: -6px;
 }
 .ctrl-side.right:hover .vol-track { height: 6px; }
+.vol-track.dragging .vol-fill { background: var(--accent, #fe2c55); }
 .vol-fill {
   height: 100%;
   border-radius: 999px;
   background: #fff;
+  transition: width 0.1s, background 0.15s var(--ease);
+}
+/* hover 百分比气泡（与 PlayerBar 一致） */
+.vol-tip {
+  position: absolute;
+  bottom: 14px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: left 0.06s linear;
 }
 
 /* ---- 沉浸态小白条 ---- */

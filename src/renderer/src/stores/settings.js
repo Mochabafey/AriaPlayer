@@ -9,6 +9,12 @@ export const useSettingsStore = defineStore('settings', {
       enableUnblock: true,
       enableFlac: true,
       volume: 0.8,
+      // 静音是独立开关：volume 保留实际音量值（静音时不清零持久化值），
+      // 这样重启后取消静音能恢复到静音前的音量
+      muted: false,
+      volumeBeforeMute: 0.8,
+      // MV 画质偏好（0 = 自动选最高可用；否则为具体档位如 480/720/1080）
+      mvQuality: 0,
       playMode: 'list',
       showTranslation: true,
       audioCacheLimitMB: 2048,
