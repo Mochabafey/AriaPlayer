@@ -15,6 +15,9 @@ export const useSettingsStore = defineStore('settings', {
       volumeBeforeMute: 0.8,
       // MV 画质偏好（0 = 自动选最高可用；否则为具体档位如 480/720/1080）
       mvQuality: 0,
+      // B 站视频画质偏好（0 = 自动选最高可用；否则为 B 站画质 id 如 80=1080P）
+      // 与 mvQuality 分开：两边的档位体系不同（网易云 r 值 vs B 站 qn id）
+      biliQuality: 0,
       playMode: 'list',
       showTranslation: true,
       audioCacheLimitMB: 2048,

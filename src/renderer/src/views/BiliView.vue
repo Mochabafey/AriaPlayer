@@ -17,11 +17,13 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { bili } from '../api'
 import { toast } from '../utils/toast'
+import { useSettingsStore } from '../stores/settings'
 import BiliPlayer from '../components/BiliPlayer.vue'
 import { imgUrl } from '../api'
 
 const route = useRoute()
 const router = useRouter()
+const settings = useSettingsStore()
 
 const keyword = ref('')
 const searching = ref(false)
@@ -100,6 +102,9 @@ function buildQualities(ids, descs) {
 /**
  * 播放指定视频。
  * 流程：video-info 拿 cid → resolve 取流 → 按 mode 处理
+ *
+ * 画质：带上用户上次选择的偏好（settings.biliQuality），
+ * 而不是每次都用默认档位 —— 否则用户每次进来都要重新选一遍。
  */
 async function play(v) {
   current.value = v
@@ -113,7 +118,8 @@ async function play(v) {
   try {
     const info = await bili.videoInfo(v.bvid)
     current.value = { ...v, cid: info.cid, pages: info.pages, stat: info.stat, desc: info.desc }
-    await resolveAndPlay(info.cid)
+    const preferred = Number(settings.settings.biliQuality) || 0
+    await resolveAndPlay(info.cid, preferred || undefined)
   } catch (e) {
     toast('加载视频失败：' + (e?.message || '未知错误'), 'error')
     playerOpen.value = false
@@ -125,6 +131,8 @@ async function resolveAndPlay(cid, quality) {
   const bvid = current.value?.bvid
   if (!bvid || !cid) return
   try {
+    // preferSingle 只在「没有指定画质」时开启：用户明确要高画质时
+    // 必须走 DASH（durl 上限通常 720P，强行走它会被降级）
     const r = await bili.resolve(bvid, cid, quality, !quality)
 
     qualities.value = buildQualities(r.acceptQuality, r.acceptDesc)
@@ -196,13 +204,20 @@ function pollMerge(key) {
   })
 }
 
-/** 切画质 */
+/**
+ * 切画质。
+ * 保存用户选择到 settings.biliQuality，下次播放任意视频自动应用
+ *（原实现只改当前播放，退出页面就丢，用户每次都要重选）。
+ */
 async function onQualityChange(qid) {
   if (!current.value?.cid) return
-  const v = playUrl.value
-  const wasPlaying = !!v
+  const wasPlaying = !!playUrl.value
   playUrl.value = ''
   await resolveAndPlay(current.value.cid, qid)
+  // 记录实际生效的档位（上游可能降级），而非请求值
+  if (currentQuality.value) {
+    settings.set('biliQuality', currentQuality.value)
+  }
   if (wasPlaying && playUrl.value) {
     // 位置保持由 BiliPlayer 内部处理（url 变化时重新加载），
     // 这里只提示用户
