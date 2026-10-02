@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { api, coverUrl, qqmusic, waitServerReady, serverReadyNow } from '../api'
 import { useSettingsStore } from './settings'
+import { tick as scrobbleTick, maybeScrobble, resetScrobble } from '../utils/scrobble'
 
 // 播放记录持久化：下次打开恢复上次的队列 / 当前歌曲 / 播放进度
 const QUEUE_KEY = 'aria:player-queue'
@@ -72,6 +73,9 @@ export const usePlayerStore = defineStore('player', () => {
       if (el.seeking) return
       currentTime.value = el.currentTime
       prefetchNext()
+      // 听歌打卡：累计真实播放时长，达标后上报（内部自行判断与去重）
+      scrobbleTick(!el.paused, el.currentTime)
+      maybeScrobble(current.value, el.currentTime, el.duration)
     })
     el.addEventListener('loadedmetadata', (e) => {
       if (e.target !== audioEl) return
@@ -369,6 +373,7 @@ export const usePlayerStore = defineStore('player', () => {
     pendingRecoverAt = null
     clearTimeout(seekGuard) // 切歌重置：旧 seek 的看门狗不再有效
     seekGuard = null
+    resetScrobble() // 切歌：清空听歌打卡的累计时长与去重标记
     // 先拆 src 再 pause：pause 监听器据「无 src」识别这是切歌程序性停流，
     // 不会把乐观播放态闪回暂停（异步 pause 事件晚于同步赋值到达）
     if (audioEl) {

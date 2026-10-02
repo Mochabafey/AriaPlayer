@@ -18,7 +18,7 @@ const API_CACHE_RULES = [
   { re: /^song\/detail\b/, ttl: 24 * 60 * 60 * 1000 } // 歌曲详情
 ]
 /** 登录态/实时数据：既不用本地缓存，也强制绕过服务端缓存 */
-const FORCE_FETCH_RE = /^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin)/
+const FORCE_FETCH_RE = /^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin|scrobble|like)/
 
 export function registerApiIpc(getServer) {
   // ---- Cookie Jar：模拟浏览器会话，保持登录态 ----
