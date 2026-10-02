@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { Readable } from 'stream'
 import { openAudioSource, createRangeStream, sessionInfo, toWeb } from './audioCache'
-import { UA, HDRS, fetchUpstream, parseSafeHttpUrl } from './upstream.js'
+import { UA, HDRS, fetchUpstream, parseSafeHttpUrl, headersFor } from './upstream.js'
 
 const FORWARD_HEADERS = [
   'content-type',
@@ -123,6 +123,21 @@ export function registerAudioProtocol() {
         return new Response('url rejected', { status: 403 })
       }
 
+      /**
+       * 上游请求头：Referer 按目标域名推断，而非全局写死网易云。
+       *
+       * 各家 CDN 都校验防盗链，用错域名直接 403：
+       *   - B 站视频流用网易云 Referer → 实测 "proxy ERROR: upstream 403"
+       *   - B 站边缘节点域名五花八门（xxx.edge.mountaintoys.cn、
+       *     upos-sz-estgcos.bilivideo.com），无法靠白名单穷举，
+       *     故由 refererFor 按域名后缀推断。
+       * 也支持调用方用 ?ref= 显式覆盖（渲染层已知来源时更可靠）。
+       */
+      const refOverride = u.searchParams.get('ref')
+      const upstreamHeaders = refOverride
+        ? { ...HDRS, Referer: refOverride }
+        : headersFor(safe.hostname)
+
       /* —— 磁盘预缓冲播放 ——
        * 起播即后台整曲下载到临时文件，播放读本地文件：
        * 网络抖动/上游限速不影响播放，seek 本地化，上游字节只拉一次。
@@ -146,7 +161,7 @@ export function registerAudioProtocol() {
         }
       }
 
-      const source = await openAudioSource(target, start, end, rawRange, request.signal)
+      const source = await openAudioSource(target, start, end, rawRange, request.signal, upstreamHeaders)
       diag(`open kind=${source.kind} start=${start} end=${end} range="${range}"`)
 
       // 等待音源期间请求已被取消（快速拖动 seek 时极常见）：AbortSignal 一旦

@@ -138,8 +138,12 @@ async function resolveAndPlay(cid, quality) {
     }
 
     if (r.mode === 'proxy') {
-      // durl 单文件：直接播（走 ncm-audio 代理，主进程注入防盗链头）
-      playUrl.value = `ncm-audio://stream?url=${encodeURIComponent(r.url)}`
+      // durl 单文件：直接播。
+      // 必须显式带 ref=https://www.bilibili.com/ —— B 站 CDN 校验防盗链，
+      // 用 ncm-audio 协议默认的网易云 Referer 会被拒（实测 upstream 403）。
+      // 虽然主进程也会按域名推断，但 B 站边缘节点域名五花八门
+      //（xxx.edge.mountaintoys.cn 之类），显式指定更可靠。
+      playUrl.value = `ncm-audio://stream?url=${encodeURIComponent(r.url)}&ref=${encodeURIComponent('https://www.bilibili.com/')}`
       return
     }
     if (r.mode === 'ready') {

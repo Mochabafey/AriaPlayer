@@ -195,10 +195,12 @@ export function cacheClear() {
 const sessions = new Map() // key -> Session
 
 class Session {
-  constructor(url, offset) {
+  constructor(url, offset, extraHeaders = null) {
     this.url = url
     this.reqOffset = offset
     this.dataStart = offset // 上游忽略 Range 返回 200 时修正为 0
+    // 上游请求头：B 站 CDN 校验 bilibili.com Referer，用默认网易云 Referer 会 403
+    this.extraHeaders = extraHeaders
     this.key = urlKey(url) + '-' + offset
     this.file = path.join(tmpDir(), this.key)
     this.fd = -1
@@ -251,7 +253,7 @@ class Session {
   }
 
   _connect(offset) {
-    const headers = { ...HDRS }
+    const headers = this.extraHeaders ? { ...this.extraHeaders } : { ...HDRS }
     if (offset > 0) headers.Range = `bytes=${offset}-`
     return fetchUpstream(this.url, headers)
   }
@@ -416,9 +418,11 @@ function findSession(url, start) {
 
 /** 超前请求的直连通道：不进缓存、不开会话，单连接按 Range 拉流即抛即用。
  *  用于 seek 超出已下载进度 / 恢复播放 / Chromium 探测容器尾部元数据
- *  （M4A 的 moov atom 在文件尾，不立刻给尾部会卡在解码）。 */
-export async function openDirect(url, start, end, rawRange, signal) {
-  const headers = { ...HDRS }
+ *  （M4A 的 moov atom 在文件尾，不立刻给尾部会卡在解码）。
+ *  extraHeaders：调用方指定的请求头（如按域名推断的 Referer）。
+ *  B 站 CDN 校验 bilibili.com Referer，用默认的网易云 Referer 会 403。 */
+export async function openDirect(url, start, end, rawRange, signal, extraHeaders = null) {
+  const headers = extraHeaders ? { ...extraHeaders } : { ...HDRS }
   if (rawRange) {
     headers.Range = rawRange // 后缀 Range（bytes=-N）原样透传给上游解析
   } else if (start > 0 || end !== -1) {
@@ -450,9 +454,9 @@ export async function openDirect(url, start, end, rawRange, signal) {
  * 永远无法转正，纯浪费。原会话继续在后台补完整文件供持久化。
  * 失败抛错（协议层转 502 触发播放器重试）。
  */
-export async function openAudioSource(url, start, end, rawRange, signal) {
+export async function openAudioSource(url, start, end, rawRange, signal, extraHeaders = null) {
   // 后缀 Range（取文件末尾）本地无法定位总长时透传上游
-  if (rawRange) return { kind: 'direct', ...(await openDirect(url, 0, -1, rawRange, signal)) }
+  if (rawRange) return { kind: 'direct', ...(await openDirect(url, 0, -1, rawRange, signal, extraHeaders)) }
   const hit = lookupPersisted(url)
   if (hit) return { kind: 'session', sess: persistedSession(hit) }
 
@@ -484,15 +488,15 @@ export async function openAudioSource(url, start, end, rawRange, signal) {
 
   // 中途位置（超前 seek / 恢复播放）一律直连即抛即用：半路会话 dataStart≠0
   // 永远无法转正持久缓存，快速拖动时徒增上游连接与临时文件
-  if (start > 0) return { kind: 'direct', ...(await openDirect(url, start, end, signal)) }
+  if (start > 0) return { kind: 'direct', ...(await openDirect(url, start, end, signal, extraHeaders)) }
 
   // 该 URL 已有会话在下载但未覆盖 start（同上）：直连，后台会话继续补完整文件
   if ([...sessions.values()].some((s) => s.url === url && !s.failed)) {
-    return { kind: 'direct', ...(await openDirect(url, 0, end, signal)) }
+    return { kind: 'direct', ...(await openDirect(url, 0, end, signal, extraHeaders)) }
   }
 
   // 全新 URL 从头播：建会话走预缓冲（起播等待首块数据 = 正常的初始缓冲）
-  const fresh = new Session(url, 0)
+  const fresh = new Session(url, 0, extraHeaders)
   const unhold = holdWatcher(fresh)
   try {
     await fresh.headerReady

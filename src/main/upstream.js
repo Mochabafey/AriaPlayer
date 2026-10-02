@@ -13,6 +13,39 @@ export const UA =
 export const HDRS = { 'User-Agent': UA, Referer: 'https://music.163.com/' }
 
 /**
+ * 按目标域名推断防盗链 Referer。
+ *
+ * 各家 CDN 都会校验 Referer，用错域名直接 403：
+ *   - 网易云 CDN：要 music.163.com
+ *   - B 站 CDN（bilivideo.com / 各种 PCDN 边缘域名）：要 bilibili.com
+ *   - QQ 音乐：要 y.qq.com
+ * 旧实现全局写死网易云 Referer，导致 B 站视频流被 CDN 拒绝
+ *（实测报 "proxy ERROR: upstream 403"）。
+ *
+ * 注意 B 站的边缘节点域名五花八门（如 xxx.edge.mountaintoys.cn、
+ * upos-sz-estgcos.bilivideo.com），无法靠白名单穷举，
+ * 故这里用「已知域名优先，其余保持网易云默认」的策略，
+ * 而 B 站路径由调用方显式指定（见 audioProtocol 的 ref 参数）。
+ */
+export function refererFor(hostname, fallback = 'https://music.163.com/') {
+  const h = String(hostname || '').toLowerCase()
+  if (/bilibili\.com$|bilivideo\.(com|cn)$|hdslb\.com$|akamaized\.net$/.test(h)) {
+    return 'https://www.bilibili.com/'
+  }
+  if (/qq\.com$|qqmusic\.qq\.com$/.test(h)) return 'https://y.qq.com/'
+  return fallback
+}
+
+/**
+ * 构造上游请求头。
+ * @param {string} hostname 目标域名（用于推断 Referer）
+ * @param {object} extra    额外/覆盖的头
+ */
+export function headersFor(hostname, extra = {}) {
+  return { 'User-Agent': UA, Referer: refererFor(hostname), ...extra }
+}
+
+/**
  * 请求上游并手动跟随 3xx（Node http.get 不跟随；kuwo 等第三方源常跳转）。
  * 超时只熔断「等响应头」阶段：正文阶段下游背压暂停（如播放暂停后缓冲读满）
  * 是健康空闲，按空闲杀连接会让恢复播放瞬间断流。

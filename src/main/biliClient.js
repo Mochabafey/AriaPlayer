@@ -367,9 +367,10 @@ async function tryDurl(bvid, cid, qn) {
     acceptDesc: d.accept_description || [],
     duration: Math.round((seg.length || 0) / 1000),
     size: seg.size || 0,
-    // durl 只给 mp4/flv 容器，编码通常是 avc（durl 路径本身不返回 dash 那种
-    // 多编码列表）；这里标注为未知，交给播放器实际解码时判断
-    codecs: 'avc1 (durl 单文件，通常为 H.264)'
+    // durl 响应体不含编码字段（不像 dash 那样给 codecs 列表），
+    // 无法在不下载的情况下得知真实编码。故留空 —— 前端不显示，
+    // 也不要写「通常为 H.264」这类未经证实的猜测（曾因此误导排障）。
+    codecs: ''
   }
 }
 
