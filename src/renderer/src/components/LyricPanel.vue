@@ -164,33 +164,48 @@ const modeTitle = computed(() => ({ list: '列表循环', loop: '单曲循环', 
 // 播放队列
 const showQueue = ref(false)
 
-// 收藏（喜欢）：乐观更新，失败回滚。uid 挂载时从 login_status 取一次并缓存
+// 收藏（喜欢）：乐观更新，失败回滚。
+//
+// 登录态说明：likelist / like 接口都由服务端从 cookie 取当前用户，
+// **不需要客户端传 uid**（实测不传 uid 也正常返回 {ids, code:200}）。
+// 原实现依赖 uidCache 并在其为空时直接 return，导致两个问题：
+//   1. onMounted 时若服务尚未就绪或尚未登录，uidCache 永久为 null
+//      → liked 恒为 false，红心永远是空心，看起来像"没收藏"
+//   2. 切歌时 refreshLiked 因 !uidCache 提前返回，不查真实状态
+// 现改为：不依赖 uid，直接查 likelist；未登录时接口返回空 ids，行为正确。
 const liked = ref(false)
 const likePending = ref(false)
-let uidCache = null
+
 async function refreshLiked() {
   const id = player.current?.id
-  liked.value = false
-  if (!id || !uidCache) return
+  if (!id) {
+    liked.value = false
+    return
+  }
   try {
-    const lk = await api('likelist', { uid: uidCache })
-    if (lk.ids?.includes(id)) liked.value = true
-  } catch { /* 未登录忽略 */ }
+    const lk = await api('likelist', { timestamp: Date.now() })
+    // 未登录 / 匿名态返回空数组，此处自然为 false。
+    // 类型归一化：网易云 likelist 返回数字 id，而 song.id 可能是字符串
+    // （QQ 源 songmid、或持久化恢复后），includes 是严格比较会失配
+    //（[186016].includes('186016') === false）→ 已收藏的歌显示成未收藏。
+    liked.value = Array.isArray(lk?.ids) && lk.ids.some((x) => String(x) === String(id))
+  } catch {
+    // 未登录或服务未就绪：保持当前显示，不误判为「未收藏」而闪一下
+  }
 }
-onMounted(async () => {
-  try {
-    const s = await api('login_status')
-    const acc = s.data?.account
-    if (acc && !acc.anonimousUser) {
-      uidCache = acc.id
-      refreshLiked() // uid 拿到后补查当前歌曲
-    }
-  } catch { /* 未登录 */ }
-})
+
+// 组件挂载即查一次；此后随当前歌曲变化刷新
+onMounted(refreshLiked)
 watch(() => player.current?.id, refreshLiked)
 async function toggleLike() {
   const song = player.current
   if (!song || likePending.value) return
+  // 收藏走网易云 like 接口（服务端从 cookie 取当前用户）。
+  // 纯数字 id 才是网易云歌曲；QQ 源是 songmid（含字母），传过去必然失败。
+  if (!/^\d+$/.test(String(song.id ?? ''))) {
+    toast('QQ 音乐音源暂不支持收藏（收藏走网易云账号）', 'error')
+    return
+  }
   likePending.value = true
   const was = liked.value
   liked.value = !was
@@ -403,7 +418,7 @@ onBeforeUnmount(() => {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h8"/><path d="M7 3v2c0 4-2 7-4 8"/><path d="M5 8c1.5 3 3.5 5 6 6"/><path d="M13 21l4-9 4 9"/><path d="M14.5 17.5h5"/></svg>
             <span class="tip-bubble">{{ showTrans ? '关闭翻译' : '显示翻译' }}</span>
           </button>
-          <button class="c-btn ghost" :class="{ 'like-on': liked }" :title="liked ? '取消喜欢' : '喜欢'" @click="toggleLike">
+          <button class="c-btn ghost like-btn" :class="{ 'like-on': liked }" :title="liked ? '取消喜欢' : '喜欢'" @click="toggleLike">
             <svg viewBox="0 0 24 24" :fill="liked ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
           </button>
           <button class="c-btn ghost" title="下载当前歌曲" @click="downloadCurrent">
@@ -750,9 +765,19 @@ onBeforeUnmount(() => {
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 收藏激活：红心 */
-.c-btn.like-on { color: var(--accent, #fa5151); }
-.c-btn.like-on:hover { color: var(--accent, #fa5151); }
+/* 收藏激活：实心红心 + 微光，未收藏态保持描边心。
+   注意 .like-on 必须排在 .c-btn:hover 之后——否则 hover 时
+   .c-btn:hover { color: #fff } 会覆盖红色，已收藏的红心一 hover 就变白，
+   看起来像"没收藏"（这正是"要 hover 才看得出状态"的来源之一）。
+   同理 .like-btn 的默认色必须写在 .like-on 之前，否则同优先级后者被覆盖。 */
+.c-btn.like-btn { color: rgba(255, 255, 255, 0.9); }
+.c-btn.like-on,
+.c-btn.like-on:hover {
+  color: var(--accent, #fa5151);
+}
+.c-btn.like-on svg {
+  filter: drop-shadow(0 0 6px rgba(250, 81, 81, 0.45));
+}
 
 /* ---- 大窗口自适应：按视口尺寸分档放大（F11 全屏 / 最大化 / 手动拉伸都生效） ---- */
 @media (min-height: 900px) {
