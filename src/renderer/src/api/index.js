@@ -71,8 +71,38 @@ export const qqmusic = {
   smartbox: (keyword) => bridge.invoke('qqmusic:smartbox', { keyword })
 }
 
-export const ncm = {
-  // 服务状态
+// ---- B站（MV 源）----
+export const bili = {
+  /** 登录态 */
+  loginStatus: () => bridge.invoke('bili:login-status'),
+  /** 申请登录二维码 → { url, qrcodeKey } */
+  loginQr: () => bridge.invoke('bili:login-qr'),
+  /** 轮询扫码状态 → { code, status: waiting|scanned|success|expired } */
+  loginPoll: (qrcodeKey) => bridge.invoke('bili:login-poll', qrcodeKey),
+  logout: () => bridge.invoke('bili:logout'),
+  getCookie: () => bridge.invoke('bili:get-cookie'),
+  setCookie: (str) => bridge.invoke('bili:set-cookie', str),
+  clearCookie: () => bridge.invoke('bili:clear-cookie'),
+  /** 搜索视频 */
+  search: (keyword, page = 1, pageSize = 20) => bridge.invoke('bili:search', { keyword, page, pageSize }),
+  /** 视频详情（含 cid / 分P） */
+  videoInfo: (bvid) => bridge.invoke('bili:video-info', bvid),
+  /**
+   * 解析播放源 → 三种结果：
+   *   { mode:'proxy', url }            直接播（durl 单文件）
+   *   { mode:'ready', file }           已缓存的合流文件
+   *   { mode:'merge', key, needMerge } 需合流，轮询 mergeStatus
+   */
+  resolve: (bvid, cid, quality, preferSingle = true) =>
+    bridge.invoke('bili:resolve', { bvid, cid, quality, preferSingle }),
+  /** 合流进度 */
+  mergeStatus: (key) => bridge.invoke('bili:merge-status', key),
+  /** 合流缓存管理 */
+  cacheStats: () => bridge.invoke('bili:cache-stats'),
+  cacheClear: () => bridge.invoke('bili:cache-clear')
+}
+
+export const ncm = {  // 服务状态
   serverStatus: () => bridge.invoke('ncm:server-status'),
   serverRestart: () => bridge.invoke('ncm:server-restart'),
   onServerStatus: (cb) => bridge.on('ncm:server-status', cb),

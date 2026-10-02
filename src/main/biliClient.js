@@ -1,0 +1,519 @@
+/**
+ * biliClient.js — B 站 Web API 客户端（主进程侧）
+ *
+ * 实现要点（均为实测确认，非文档推断）：
+ *   - WBI 签名：2023 年后 B 站给 web 接口加了 w_rid/wts 签名。密钥来自 nav 接口
+ *     的 wbi_img.img_url / sub_url，按固定混淆表重排得 mixinKey，再对参数排序拼接 MD5。
+ *     实测未签名也能取流，但签名更稳（B 站对未签名请求有频控倾向）。
+ *   - 取流双路径：
+ *       durl（fnval=0）   → 单文件 mp4，<video> 可直接播，零 ffmpeg 开销、秒开
+ *       dash（fnval=4048）→ 音视频分离，画质档位全（最高 4K），需 ffmpeg 合流
+ *     策略：优先 durl（快），拿不到或需要高清时才用 dash。
+ *   - 防盗链：B 站 CDN 校验 Referer + User-Agent，缺了会 403。
+ *   - 扫码登录：qrcode/generate 拿 qrcode_key → 轮询 poll。
+ *     状态码 86101=未扫码 / 86090=已扫码待确认 / 0=成功 / 86038=已失效。
+ *     未登录只能拿 480P，登录后可解锁 1080P/4K（视账号会员状态）。
+ */
+import https from 'https'
+import crypto from 'crypto'
+import { settingsRepo } from './db/settings.js'
+
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+const REFERER = 'https://www.bilibili.com/'
+
+/** WBI 混淆表（固定值，来自 B 站前端 JS） */
+const MIXIN_KEY_ENC_TAB = [
+  46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+  33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+  61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+  36, 20, 34, 44, 52
+]
+
+/** 画质 id → 展示名（B 站官方命名） */
+export const QUALITY_NAMES = {
+  127: '超高清 8K',
+  126: '杜比视界',
+  125: 'HDR 真彩',
+  120: '超清 4K',
+  116: '高清 1080P60',
+  112: '高清 1080P+',
+  100: '智能修复',
+  80: '高清 1080P',
+  74: '高清 720P60',
+  64: '高清 720P',
+  32: '清晰 480P',
+  16: '流畅 360P',
+  6: '极速 240P'
+}
+
+/** 请求 B 站接口（Node https，手动带防盗链头） */
+export function biliRequest(url, { headers = {}, method = 'GET', body = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const reqHeaders = {
+      'User-Agent': UA,
+      Referer: REFERER,
+      Origin: 'https://www.bilibili.com',
+      ...headers
+    }
+    // 带上登录 cookie（有则带，无则匿名请求）
+    const cookie = cookieHeader()
+    if (cookie) reqHeaders.Cookie = cookie
+    if (body) reqHeaders['Content-Type'] = 'application/x-www-form-urlencoded'
+
+    const r = https.request(
+      { hostname: u.hostname, path: u.pathname + u.search, method, headers: reqHeaders },
+      (res) => {
+        const chunks = []
+        res.on('data', (c) => chunks.push(c))
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf-8')
+          let json = null
+          try { json = JSON.parse(text) } catch { /* 非 JSON（如二维码图片流） */ }
+          resolve({ status: res.statusCode, headers: res.headers, text, json })
+        })
+      }
+    )
+    r.on('error', reject)
+    r.setTimeout(20000, () => r.destroy(new Error('bili request timeout')))
+    if (body) r.write(body)
+    r.end()
+  })
+}
+
+/* ---------------- Cookie 管理 ---------------- */
+
+/** 内存 cookie jar（B 站登录态：SESSDATA / bili_jct / DedeUserID 等） */
+let biliCookies = {}
+let loaded = false
+
+/** 从 settings 加载持久化的 cookie */
+function ensureLoaded() {
+  if (loaded) return
+  loaded = true
+  try {
+    const raw = settingsRepo.get('biliCookie')
+    if (raw && typeof raw === 'string') biliCookies = JSON.parse(raw)
+  } catch {
+    biliCookies = {}
+  }
+}
+
+function cookieHeader() {
+  ensureLoaded()
+  const parts = Object.entries(biliCookies)
+    .filter(([, v]) => v !== '' && v != null)
+    .map(([k, v]) => `${k}=${v}`)
+  return parts.join('; ')
+}
+
+/** 吸收响应里的 Set-Cookie */
+function absorbCookies(res) {
+  const sc = res.headers['set-cookie']
+  const arr = Array.isArray(sc) ? sc : sc ? [sc] : []
+  let changed = false
+  for (const c of arr) {
+    const kv = String(c).split(';')[0].trim()
+    const i = kv.indexOf('=')
+    if (i <= 0) continue
+    const k = kv.slice(0, i)
+    const v = kv.slice(i + 1)
+    if (v === '') continue // 跳过清除型 cookie（同名空值不覆盖真实值）
+    if (biliCookies[k] !== v) {
+      biliCookies[k] = v
+      changed = true
+    }
+  }
+  if (changed) persist()
+  return changed
+}
+
+function persist() {
+  try {
+    settingsRepo.set('biliCookie', JSON.stringify(biliCookies))
+  } catch { /* ignore */ }
+}
+
+/** 保存用户手动粘贴的 cookie 字符串 */
+export function setCookieString(str) {
+  const obj = {}
+  for (const pair of String(str || '').split(';')) {
+    const kv = pair.trim()
+    const i = kv.indexOf('=')
+    if (i > 0) obj[kv.slice(0, i)] = kv.slice(i + 1)
+  }
+  biliCookies = obj
+  loaded = true
+  persist()
+  return Object.keys(obj)
+}
+
+export function clearCookie() {
+  biliCookies = {}
+  loaded = true
+  persist()
+}
+
+export function getCookieString() {
+  return cookieHeader()
+}
+
+/* ---------------- WBI 签名 ---------------- */
+
+let wbiCache = { mixinKey: '', at: 0 }
+const WBI_TTL = 30 * 60 * 1000 // 密钥有效期较长，缓存 30 分钟
+
+const md5 = (s) => crypto.createHash('md5').update(s).digest('hex')
+
+/** 按混淆表重排出 mixinKey（前 32 位） */
+function mixinKeyOf(orig) {
+  return MIXIN_KEY_ENC_TAB.map((n) => orig[n]).join('').slice(0, 32)
+}
+
+/** 取 mixinKey（带缓存；失败时返回空串，调用方走未签名路径） */
+async function getMixinKey() {
+  if (wbiCache.mixinKey && Date.now() - wbiCache.at < WBI_TTL) return wbiCache.mixinKey
+  try {
+    const res = await biliRequest('https://api.bilibili.com/x/web-interface/nav')
+    const wbi = res.json?.data?.wbi_img
+    if (!wbi) return ''
+    const imgKey = wbi.img_url.split('/').pop().split('.')[0]
+    const subKey = wbi.sub_url.split('/').pop().split('.')[0]
+    wbiCache = { mixinKey: mixinKeyOf(imgKey + subKey), at: Date.now() }
+    return wbiCache.mixinKey
+  } catch {
+    return ''
+  }
+}
+
+/** 给参数加 WBI 签名（wts + w_rid） */
+async function signParams(params) {
+  const mixinKey = await getMixinKey()
+  if (!mixinKey) {
+    // 签名不可用：退回未签名（实测取流仍可用，只是少了频控保护）
+    return new URLSearchParams(params).toString()
+  }
+  const wts = Math.round(Date.now() / 1000)
+  const p = { ...params, wts }
+  const query = Object.keys(p)
+    .sort()
+    .map((k) => {
+      // B 站前端会过滤这些字符，不过滤会导致签名不匹配
+      const v = String(p[k]).replace(/[!'()*]/g, '')
+      return `${encodeURIComponent(k)}=${encodeURIComponent(v)}`
+    })
+    .join('&')
+  return `${query}&w_rid=${md5(query + mixinKey)}`
+}
+
+/* ---------------- 业务接口 ---------------- */
+
+/** 检查登录态 */
+export async function checkLogin() {
+  try {
+    const res = await biliRequest('https://api.bilibili.com/x/web-interface/nav')
+    absorbCookies(res)
+    const d = res.json?.data
+    if (res.json?.code === -101 || !d?.isLogin) {
+      return { loggedIn: false }
+    }
+    return {
+      loggedIn: true,
+      uname: d.uname,
+      mid: d.mid,
+      face: d.face,
+      vip: d.vipStatus === 1,
+      vipLabel: d.vip_label?.text || '',
+      level: d.level_info?.current_level
+    }
+  } catch {
+    return { loggedIn: false }
+  }
+}
+
+/**
+ * 搜索视频。
+ * 用 wbi/search/type（带签名），返回归一化后的列表。
+ */
+export async function searchVideos(keyword, page = 1, pageSize = 20) {
+  const qs = await signParams({
+    search_type: 'video',
+    keyword,
+    page,
+    page_size: pageSize
+  })
+  const res = await biliRequest(`https://api.bilibili.com/x/web-interface/wbi/search/type?${qs}`)
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`B站搜索失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const list = j.data?.result || []
+  return list.map((v) => ({
+    bvid: v.bvid,
+    aid: v.aid,
+    title: String(v.title || '').replace(/<[^>]+>/g, ''), // 搜索结果标题带高亮标签
+    author: v.author,
+    mid: v.mid,
+    // duration 形如 "5:56" 或 "22:0"，统一转秒
+    duration: parseDuration(v.duration),
+    pic: normPic(v.pic), // 协议相对 //i0.hdslb.com/... → https
+    play: v.play,
+    danmaku: v.video_review,
+    pubdate: v.pubdate,
+    description: v.description
+  }))
+}
+
+function parseDuration(s) {
+  if (typeof s === 'number') return s
+  const parts = String(s || '').split(':').map((x) => parseInt(x, 10) || 0)
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  return parts[0] || 0
+}
+
+function normPic(p) {
+  const s = String(p || '')
+  if (!s) return ''
+  if (s.startsWith('//')) return 'https:' + s
+  return s.replace(/^http:/, 'https:')
+}
+
+/**
+ * 取视频详情（含 cid）。
+ * cid 是取流的必需参数，只能从这里拿。
+ */
+export async function videoInfo(bvid) {
+  const res = await biliRequest(
+    `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`
+  )
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取视频信息失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data
+  return {
+    bvid: d.bvid,
+    aid: d.aid,
+    cid: d.cid,
+    title: d.title,
+    desc: d.desc,
+    pic: normPic(d.pic),
+    duration: d.duration,
+    owner: { mid: d.owner?.mid, name: d.owner?.name, face: normPic(d.owner?.face) },
+    stat: {
+      view: d.stat?.view,
+      danmaku: d.stat?.danmaku,
+      like: d.stat?.like,
+      coin: d.stat?.coin,
+      favorite: d.stat?.favorite,
+      share: d.stat?.share
+    },
+    pubdate: d.pubdate,
+    // 分P：多 P 视频需要按 cid 分别取流
+    pages: (d.pages || []).map((p) => ({
+      cid: p.cid,
+      page: p.page,
+      part: p.part,
+      duration: p.duration
+    }))
+  }
+}
+
+/**
+ * 取播放地址。
+ *
+ * @param {string} bvid
+ * @param {number|string} cid
+ * @param {object} opts
+ *   - qn: 期望画质 id（如 80=1080P）；不传则由 B 站给默认（未登录通常 480P）
+ *   - preferSingle: 优先要 durl 单文件（免 ffmpeg 合流，秒开）
+ * @returns {{ mode:'durl'|'dash', url?, quality, qualityName, acceptQuality, acceptDesc,
+ *             video?, audio?, duration? }}
+ */
+export async function playUrl(bvid, cid, opts = {}) {
+  const { qn, preferSingle = true } = opts
+
+  // ---- 路径 A：durl 单文件（快，免合流）----
+  if (preferSingle) {
+    const single = await tryDurl(bvid, cid, qn)
+    if (single) return single
+  }
+
+  // ---- 路径 B：DASH 分离流（画质全，需合流）----
+  return await fetchDash(bvid, cid, qn)
+}
+
+/** 尝试拿 durl 单文件 */
+async function tryDurl(bvid, cid, qn) {
+  const params = { bvid, cid, fnval: 0, fourk: 1 }
+  if (qn) params.qn = qn
+  const qs = await signParams(params)
+  const res = await biliRequest(`https://api.bilibili.com/x/player/wbi/playurl?${qs}`)
+  absorbCookies(res)
+  const d = res.json?.data
+  const seg = d?.durl?.[0]
+  if (!seg?.url) return null
+  return {
+    mode: 'durl',
+    url: seg.url,
+    backupUrls: (seg.backup_url || []).filter(Boolean),
+    quality: d.quality,
+    qualityName: QUALITY_NAMES[d.quality] || `画质 ${d.quality}`,
+    acceptQuality: d.accept_quality || [],
+    acceptDesc: d.accept_description || [],
+    duration: Math.round((seg.length || 0) / 1000),
+    size: seg.size || 0,
+    // durl 只给 mp4/flv 容器，编码通常是 avc（durl 路径本身不返回 dash 那种
+    // 多编码列表）；这里标注为未知，交给播放器实际解码时判断
+    codecs: 'avc1 (durl 单文件，通常为 H.264)'
+  }
+}
+
+/** 取 DASH 分离流 */
+async function fetchDash(bvid, cid, qn) {
+  const params = { bvid, cid, fnval: 4048, fourk: 1 }
+  if (qn) params.qn = qn
+  const qs = await signParams(params)
+  const res = await biliRequest(`https://api.bilibili.com/x/player/wbi/playurl?${qs}`)
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取播放地址失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data
+  const dash = d.dash
+  if (!dash || !dash.video?.length) {
+    // 没给 dash：退回 durl（强制）
+    const fallback = await tryDurl(bvid, cid, qn)
+    if (fallback) return fallback
+    throw new Error('该视频没有可用的播放流')
+  }
+
+  // 按画质 id 选视频流；未指定则取当前 quality 对应的
+  const targetQn = qn || d.quality
+  const videoList = dash.video
+  const byQn =
+    videoList.filter((v) => v.id === targetQn).length
+      ? videoList.filter((v) => v.id === targetQn)
+      : videoList.slice().sort((a, b) => b.id - a.id)
+
+  /**
+   * 编码优先级：avc > av1 > hev。
+   *
+   * 关键：Chromium（Electron 内核）**默认不支持 HEVC/H.265 解码**（专利授权），
+   * 拿到 hev 流会「时长正常、音频能播，但画面全黑（videoWidth=0）」。
+   * B 站同一画质通常同时提供 avc/hev/av1 三种编码，故必须显式挑 avc。
+   * av1 次选：新版 Chromium 支持，但硬解依赖设备；avc 兼容性最好。
+   */
+  const codecRank = (c) => {
+    const s = String(c || '').toLowerCase()
+    if (s.startsWith('avc') || s.includes('avc1')) return 0
+    if (s.startsWith('av01') || s.includes('av1')) return 1
+    if (s.startsWith('hev') || s.includes('hvc1') || s.includes('hev1')) return 2
+    return 3
+  }
+  const video = byQn.slice().sort((a, b) => codecRank(a.codecs) - codecRank(b.codecs))[0]
+
+  // 音频优先选最高码率
+  const audio = (dash.audio || []).slice().sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0))[0]
+
+  // 记录该画质下所有可用编码，便于排障时判断是否只有 HEVC
+  const availableCodecs = byQn.map((v) => v.codecs)
+
+  return {
+    mode: 'dash',
+    video: {
+      url: video.baseUrl || video.base_url,
+      backupUrls: (video.backupUrl || video.backup_url || []).filter(Boolean),
+      id: video.id,
+      width: video.width,
+      height: video.height,
+      codecs: video.codecs,
+      bandwidth: video.bandwidth
+    },
+    audio: audio
+      ? {
+          url: audio.baseUrl || audio.base_url,
+          backupUrls: (audio.backupUrl || audio.backup_url || []).filter(Boolean),
+          id: audio.id,
+          codecs: audio.codecs,
+          bandwidth: audio.bandwidth
+        }
+      : null,
+    quality: video.id,
+    qualityName: QUALITY_NAMES[video.id] || `${video.height}P`,
+    acceptQuality: d.accept_quality || [],
+    acceptDesc: d.accept_description || [],
+    duration: d.dash.duration || 0,
+    availableCodecs,
+    /** 该画质只有 HEVC 时提示：Chromium 解不了，会黑屏 */
+    hevcOnly: codecRank(video.codecs) === 2
+  }
+}
+
+/* ---------------- 扫码登录 ---------------- */
+
+/** 申请登录二维码 */
+export async function qrGenerate() {
+  const res = await biliRequest(
+    'https://passport.bilibili.com/x/passport-login/web/qrcode/generate?source=main-fe-header'
+  )
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0 || !j.data) {
+    throw new Error(`申请二维码失败：${j?.message || '未知错误'}`)
+  }
+  return { url: j.data.url, qrcodeKey: j.data.qrcode_key }
+}
+
+/**
+ * 轮询扫码状态。
+ * code: 86101=未扫码 / 86090=已扫码待确认 / 0=成功 / 86038=已失效
+ */
+export async function qrPoll(qrcodeKey) {
+  const res = await biliRequest(
+    `https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=${encodeURIComponent(qrcodeKey)}&source=main-fe-header`
+  )
+  const changed = absorbCookies(res)
+  const j = res.json
+  const d = j?.data || {}
+  const code = d.code
+  // 成功：cookie 已随 Set-Cookie 写入 jar
+  if (code === 0) {
+    // 部分环境下 SESSDATA 在 body 的 url 里，兜底解析一次
+    if (!biliCookies.SESSDATA && d.url) {
+      try {
+        const u = new URL(d.url)
+        for (const [k, v] of u.searchParams.entries()) {
+          if (['SESSDATA', 'bili_jct', 'DedeUserID', 'DedeUserID__ckMd5', 'sid'].includes(k)) {
+            biliCookies[k] = decodeURIComponent(v)
+          }
+        }
+        persist()
+      } catch { /* ignore */ }
+    }
+    const info = await checkLogin()
+    return { code, status: 'success', message: d.message || '登录成功', ...info }
+  }
+  const map = {
+    86101: 'waiting',   // 未扫码
+    86090: 'scanned',   // 已扫码，待确认
+    86038: 'expired'    // 二维码失效
+  }
+  return {
+    code,
+    status: map[code] || 'unknown',
+    message: d.message || '',
+    cookieChanged: changed
+  }
+}
+
+/** 退出登录（清 cookie） */
+export async function logout() {
+  clearCookie()
+  return { ok: true }
+}

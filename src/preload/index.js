@@ -65,7 +65,21 @@ const INVOKE_ALLOWLIST = new Set([
   'qqmusic:login-check',
   'qqmusic:login-clear',
   'qqmusic:get-nick',
-  'qqmusic:smartbox'
+  'qqmusic:smartbox',
+  // B站（MV 源）
+  'bili:login-status',
+  'bili:login-qr',
+  'bili:login-poll',
+  'bili:logout',
+  'bili:get-cookie',
+  'bili:set-cookie',
+  'bili:clear-cookie',
+  'bili:search',
+  'bili:video-info',
+  'bili:resolve',
+  'bili:merge-status',
+  'bili:cache-stats',
+  'bili:cache-clear'
 ])
 
 const EVENT_ALLOWLIST = new Set([
