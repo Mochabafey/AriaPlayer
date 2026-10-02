@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { api, coverUrl, qqmusic, waitServerReady, serverReadyNow } from '../api'
 import { useSettingsStore } from './settings'
 import { tick as scrobbleTick, maybeScrobble, resetScrobble } from '../utils/scrobble'
+import { ampOf } from '../utils/volume'
 
 // 播放记录持久化：下次打开恢复上次的队列 / 当前歌曲 / 播放进度
 const QUEUE_KEY = 'aria:player-queue'
@@ -190,7 +191,9 @@ export const usePlayerStore = defineStore('player', () => {
   function attachAudio(el) {
     audioEl = el
     bindAudioEvents(el)
-    el.volume = volume.value
+    // 音量经曲线换算后设置（见 utils/volume.js：线性振幅前段太陡）
+    el.volume = ampOf(volume.value)
+    el.muted = muted.value
   }
 
   /** error 恢复调度：合并风暴 + 等用户停止快速拖动。
@@ -486,7 +489,7 @@ export const usePlayerStore = defineStore('player', () => {
       if (epoch !== playEpoch) return
       audioEl.src = audioUrl(song)
     }
-    audioEl.volume = volume.value
+    audioEl.volume = ampOf(volume.value)
     await audioEl.play().catch((e) => {
       console.error('play error', e)
       // AbortError：src 被新的切歌请求替换所致，属正常现象，交给新请求接管
@@ -676,15 +679,24 @@ export const usePlayerStore = defineStore('player', () => {
     armSeekGuard(t)
   }
 
+  /**
+   * 设置音量。
+   * @param v 滑块位置 0..1（**不是**振幅）—— 状态与持久化都存滑块位置，
+   *          只在设置媒体元素时经 ampOf() 换算成振幅（见 utils/volume.js）
+   */
   function setVolume(v) {
     const nv = Math.min(1, Math.max(0, v))
     volume.value = nv
     // 音量调到非 0 自动解除静音（拖拽/滚轮/快捷键都可能触发）
     if (nv > 0 && muted.value) muted.value = false
-    if (audioEl) audioEl.volume = nv
+    const amp = ampOf(nv)
+    if (audioEl) {
+      audioEl.volume = amp
+      audioEl.muted = muted.value
+    }
     // 视频接管时同步作用到 video 元素（否则底部条调音量对视频无效）
     if (videoVolumeSink) {
-      try { videoVolumeSink(nv) } catch { /* ignore */ }
+      try { videoVolumeSink(amp) } catch { /* ignore */ }
     }
     const settings = useSettingsStore()
     settings.set('volume', nv)
@@ -715,14 +727,19 @@ export const usePlayerStore = defineStore('player', () => {
     settings.set('muted', muted.value)
   }
 
-  /** 把静音态作用到实际媒体元素（audio + video） */
+  /**
+   * 把静音态作用到实际媒体元素（audio + video）。
+   * @param m 是否静音
+   * @param keepVolume 滑块位置（0..1），取消静音时恢复用；内部会经曲线换算
+   */
   function applyMute(m, keepVolume) {
+    const amp = ampOf(keepVolume)
     if (audioEl) {
       audioEl.muted = m
-      if (!m) audioEl.volume = keepVolume
+      if (!m) audioEl.volume = amp
     }
     if (videoMuteSink) {
-      try { videoMuteSink(m, keepVolume) } catch { /* ignore */ }
+      try { videoMuteSink(m, amp) } catch { /* ignore */ }
     }
   }
 
@@ -752,11 +769,13 @@ export const usePlayerStore = defineStore('player', () => {
       try { audioEl.pause() } catch { /* ignore */ }
     }
     // 把当前音量/静音态同步到新接入的视频元素（统一以 store 为准）
+    // 注意：传给 sink 的是**振幅**（已换算），不是滑块位置
+    const amp = ampOf(volume.value)
     if (videoVolumeSink) {
-      try { videoVolumeSink(volume.value) } catch { /* ignore */ }
+      try { videoVolumeSink(amp) } catch { /* ignore */ }
     }
     if (videoMuteSink) {
-      try { videoMuteSink(muted.value, volume.value) } catch { /* ignore */ }
+      try { videoMuteSink(muted.value, amp) } catch { /* ignore */ }
     }
   }
 

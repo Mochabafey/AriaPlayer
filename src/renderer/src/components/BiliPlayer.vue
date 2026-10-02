@@ -129,10 +129,13 @@ function onVideoEvent() {
  *
  * 原实现 BiliPlayer 自己维护一份 volume/muted ref，只作用于 video 元素，
  * 与底部条的音量完全脱节 —— 两处各调各的，用户看到两个不一致的值。
- * 现在统一读写 player.volume / player.isMuted：
+ * 现在统一读写 player.volume / player.muted：
  *   - 视频页调音量 → 写 store → store 的 videoVolumeSink 把它作用到 video
  *   - 底部条调音量 → 同样写 store → 视频同步跟随
  * 这样任意一处调整，另一处立即反映。
+ *
+ * 注意：player.volume 是**滑块位置**（0..1），不是振幅。
+ * store 内部经 utils/volume.js 的 ampOf() 换算后才设置到媒体元素。
  */
 const volume = computed(() => player.volume)
 const muted = computed(() => player.muted)
@@ -310,16 +313,18 @@ watch(
         }
       },
       {
-        // store 是音量/静音的唯一来源，这两个 sink 负责把它作用到 video 元素
-        setVolume: (vol) => {
+        // store 是音量/静音的唯一来源，这两个 sink 负责把它作用到 video 元素。
+        // 注意参数已是**振幅**（store 内部经 ampOf 换算过），此处直接赋值即可，
+        // 不要再套一次曲线。
+        setVolume: (amp) => {
           const el = videoRef.value
-          if (el) el.volume = vol
+          if (el) el.volume = amp
         },
-        setMuted: (m, keepVolume) => {
+        setMuted: (m, amp) => {
           const el = videoRef.value
           if (!el) return
           el.muted = !!m
-          if (!m && typeof keepVolume === 'number') el.volume = keepVolume
+          if (!m && typeof amp === 'number') el.volume = amp
         }
       }
     )
