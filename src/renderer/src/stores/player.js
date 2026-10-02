@@ -40,6 +40,8 @@ export const usePlayerStore = defineStore('player', () => {
   const currentTime = ref(0)
   const duration = ref(0)
   const volume = ref(0.8)
+  /** 静音态：全应用唯一来源（PlayerBar / LyricPanel / BiliPlayer 共用） */
+  const muted = ref(false)
   const lyrics = ref([])
   const showLyrics = ref(false)
   const buffering = ref(false)
@@ -63,6 +65,8 @@ export const usePlayerStore = defineStore('player', () => {
   const videoSession = ref(null)
   /** 音量：视频接管时也要作用到 video 元素上，故记下它的 setter */
   let videoVolumeSink = null
+  /** 静音：同理，视频元素的静音 setter */
+  let videoMuteSink = null
   let errorTimer = null
 
   const current = computed(() => queue.value[currentIndex.value] || null)
@@ -675,6 +679,8 @@ export const usePlayerStore = defineStore('player', () => {
   function setVolume(v) {
     const nv = Math.min(1, Math.max(0, v))
     volume.value = nv
+    // 音量调到非 0 自动解除静音（拖拽/滚轮/快捷键都可能触发）
+    if (nv > 0 && muted.value) muted.value = false
     if (audioEl) audioEl.volume = nv
     // 视频接管时同步作用到 video 元素（否则底部条调音量对视频无效）
     if (videoVolumeSink) {
@@ -685,16 +691,72 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   /**
+   * 静音开关（全应用唯一来源）。
+   *
+   * 原先静音状态散在 useVolumeSlider（PlayerBar/LyricPanel 各持一份 ref）
+   * 与 BiliPlayer（自己一份）里，三处互不同步。现收敛到 store：
+   * 任意一处切换静音，音频与视频元素、以及所有 UI 都立即一致。
+   *
+   * 静音不清空 volume 值（只把 muted 置真），这样取消静音能恢复原音量，
+   * 且音量值本身继续持久化。
+   */
+  function toggleMute() {
+    const settings = useSettingsStore()
+    if (muted.value) {
+      muted.value = false
+      const restore = Number(settings.settings.volumeBeforeMute) || volume.value || 0.8
+      applyMute(false, restore)
+    } else {
+      // 记住当前音量，供取消静音时恢复
+      settings.set('volumeBeforeMute', volume.value || 0.8)
+      muted.value = true
+      applyMute(true, volume.value)
+    }
+    settings.set('muted', muted.value)
+  }
+
+  /** 把静音态作用到实际媒体元素（audio + video） */
+  function applyMute(m, keepVolume) {
+    if (audioEl) {
+      audioEl.muted = m
+      if (!m) audioEl.volume = keepVolume
+    }
+    if (videoMuteSink) {
+      try { videoMuteSink(m, keepVolume) } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * 从持久化设置恢复静音态（启动时调用一次）。
+   * 直接改 muted ref 不会作用到媒体元素，必须走这里。
+   */
+  function restoreMute() {
+    const settings = useSettingsStore()
+    if (!settings.settings.muted) return
+    muted.value = true
+    const keep = Number(settings.settings.volumeBeforeMute) || volume.value || 0.8
+    applyMute(true, keep)
+  }
+
+  /**
    * 视频接管底部播放条。
    * @param {object} session 见 videoSession 注释
-   * @param {(v:number)=>void} volumeSink 视频元素的音量 setter
+   * @param {object} sinks 视频元素的同步回调 { setVolume, setMuted }
    */
-  function claimByVideo(session, volumeSink) {
+  function claimByVideo(session, sinks) {
     videoSession.value = session
-    videoVolumeSink = volumeSink || null
+    videoVolumeSink = sinks?.setVolume || null
+    videoMuteSink = sinks?.setMuted || null
     // 接管期间暂停音乐，避免两路声音同时响
     if (audioEl && !audioEl.paused) {
       try { audioEl.pause() } catch { /* ignore */ }
+    }
+    // 把当前音量/静音态同步到新接入的视频元素（统一以 store 为准）
+    if (videoVolumeSink) {
+      try { videoVolumeSink(volume.value) } catch { /* ignore */ }
+    }
+    if (videoMuteSink) {
+      try { videoMuteSink(muted.value, volume.value) } catch { /* ignore */ }
     }
   }
 
@@ -708,6 +770,7 @@ export const usePlayerStore = defineStore('player', () => {
   function releaseVideo() {
     videoSession.value = null
     videoVolumeSink = null
+    videoMuteSink = null
   }
 
   /** 当前底部条是否由视频接管 */
@@ -858,6 +921,9 @@ export const usePlayerStore = defineStore('player', () => {
     currentTime,
     duration,
     volume,
+    muted,
+    toggleMute,
+    restoreMute,
     lyrics,
     showLyrics,
     buffering,

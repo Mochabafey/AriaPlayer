@@ -47,8 +47,7 @@ const playing = ref(false)
 const currentTime = ref(0)
 const duration = ref(0)
 const buffered = ref(0)
-const volume = ref(0.8)
-const muted = ref(false)
+// 音量不再本地维护：统一读写 player store（见下方 volume/muted 计算属性）
 const rate = ref(1)
 /** 控制条可见性（鼠标静止后隐藏） */
 const controlsVisible = ref(true)
@@ -125,28 +124,26 @@ function onVideoEvent() {
   })
 }
 
+/**
+ * 音量统一由 player store 掌管（底部播放条是唯一来源）。
+ *
+ * 原实现 BiliPlayer 自己维护一份 volume/muted ref，只作用于 video 元素，
+ * 与底部条的音量完全脱节 —— 两处各调各的，用户看到两个不一致的值。
+ * 现在统一读写 player.volume / player.isMuted：
+ *   - 视频页调音量 → 写 store → store 的 videoVolumeSink 把它作用到 video
+ *   - 底部条调音量 → 同样写 store → 视频同步跟随
+ * 这样任意一处调整，另一处立即反映。
+ */
+const volume = computed(() => player.volume)
+const muted = computed(() => player.muted)
+
 function setVolume(val) {
-  const v = videoRef.value
-  const nv = Math.min(1, Math.max(0, val))
-  volume.value = nv
-  muted.value = nv === 0
-  if (v) {
-    v.volume = nv
-    v.muted = nv === 0
-  }
+  // 直接写 store；store 会同步到 audio 与 video 元素并持久化
+  player.setVolume(Math.min(1, Math.max(0, val)))
 }
 
 function toggleMute() {
-  const v = videoRef.value
-  if (!v) return
-  if (muted.value) {
-    muted.value = false
-    v.muted = false
-    if (volume.value === 0) setVolume(0.8)
-  } else {
-    muted.value = true
-    v.muted = true
-  }
+  player.toggleMute()
 }
 
 function setRate(r) {
@@ -309,14 +306,21 @@ watch(
         paused: !props.autoplay,
         handlers: {
           toggle: togglePlay,
-          seek: seekTo,
-          setMuted: setMutedExternal
+          seek: seekTo
         }
       },
-      (vol) => {
-        // 底部条调音量时作用到 video 元素
-        const el = videoRef.value
-        if (el) el.volume = vol
+      {
+        // store 是音量/静音的唯一来源，这两个 sink 负责把它作用到 video 元素
+        setVolume: (vol) => {
+          const el = videoRef.value
+          if (el) el.volume = vol
+        },
+        setMuted: (m, keepVolume) => {
+          const el = videoRef.value
+          if (!el) return
+          el.muted = !!m
+          if (!m && typeof keepVolume === 'number') el.volume = keepVolume
+        }
       }
     )
     v.load()
@@ -332,13 +336,6 @@ function seekTo(sec) {
   if (!v) return
   const d = v.duration || 0
   v.currentTime = Math.min(Math.max(0, sec), d > 0 ? d : sec)
-}
-
-/** 供底部条接管后调用：设置静音 */
-function setMutedExternal(m) {
-  const v = videoRef.value
-  if (v) v.muted = !!m
-  muted.value = !!m
 }
 
 /** 标题/封面变化（切换分P等）时更新接管信息 */

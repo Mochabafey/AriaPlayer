@@ -1,6 +1,5 @@
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../stores/player'
-import { useSettingsStore } from '../stores/settings'
 
 /**
  * 音量条交互（PlayerBar 与 LyricPanel 共用一套）。
@@ -24,14 +23,19 @@ const SNAP = 100
 
 export function useVolumeSlider() {
   const player = usePlayerStore()
-  const settings = useSettingsStore()
 
   const trackRef = ref(null)
   const dragging = ref(false)
   const hoverRatio = ref(-1)
-  const muted = ref(false)
-  /** 静音前的音量，取消静音时恢复 */
-  let mutedVolume = 0.8
+
+  /**
+   * 静音态与音量都取自 store —— 全应用唯一来源。
+   *
+   * 原实现这里自己维护 muted ref，与 BiliPlayer 的静音态互不同步
+   * （在视频页静音后，底部条仍显示有声）。现统一到 player store，
+   * 任意一处切换静音，所有 UI 与媒体元素立即一致。
+   */
+  const muted = computed(() => player.muted)
 
   /** 显示百分比：静音恒为 0 */
   const volumeDisplay = computed(() => (muted.value ? 0 : Math.round(player.volume * 100)))
@@ -90,36 +94,18 @@ export function useVolumeSlider() {
     hoverRatio.value = next
   }
 
-  /* ---- 静音切换 ---- */
+  /* ---- 静音切换（委托给 store，保证全应用一致） ---- */
   function toggleMute() {
-    if (muted.value) {
-      player.setVolume(mutedVolume || 0.8)
-      muted.value = false
-    } else {
-      mutedVolume = player.volume
-      player.setVolume(0)
-      muted.value = true
-    }
+    player.toggleMute()
   }
 
-  /** 音量被调到非 0（拖拽/滚轮/快捷键）时自动解除静音 */
-  watch(
-    () => player.volume,
-    (v) => {
-      if (v > 0 && muted.value) muted.value = false
-    }
-  )
-
-  /** 恢复上次的静音状态（音量值由 settings 持久化，静音是独立开关） */
-  const savedMuted = settings.settings.muted
-  if (savedMuted) {
-    muted.value = true
-    mutedVolume = Number(settings.settings.volumeBeforeMute) || 0.8
-  }
-  watch(muted, (m) => {
-    settings.set('muted', m)
-    if (m) settings.set('volumeBeforeMute', mutedVolume)
-  })
+  /**
+   * 恢复上次的静音状态。
+   * 音量值由 setVolume 持久化；静音是独立开关，需在此显式恢复，
+   * 否则重启后音量条显示有声、实际元素却是静音态。
+   * 走 restoreMute action（而非直接改 ref），才能同步到媒体元素。
+   */
+  player.restoreMute()
 
   onBeforeUnmount(() => {
     // 组件卸载时摘掉 window 监听，避免残留（拖动中切页会泄漏）
