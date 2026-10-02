@@ -1,11 +1,15 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { usePlayerStore } from '../stores/player'
 import { useSettingsStore } from '../stores/settings'
 import { useDownloadsStore } from '../stores/downloads'
 import { imgUrl } from '../api'
 import { fmtTime } from '../utils/format'
+import { toast } from '../utils/toast'
+import { useVolumeSlider } from '../composables/useVolumeSlider'
 
+const router = useRouter()
 const player = usePlayerStore()
 const settings = useSettingsStore()
 const downloads = useDownloadsStore()
@@ -48,54 +52,19 @@ function onSeekHover(e) {
   if (seekTrackRef.value) hoverRatio.value = ratioFromEvent(seekTrackRef.value, e)
 }
 
-/* ---- 音量条：点击 + 拖拽 + 静音 ---- */
-const volTrackRef = ref(null)
-let volDragging = false
-const muted = ref(false)
-const mutedVolume = ref(0.8)
-const volHover = ref(-1)
-
-/** 音量条显示的百分比：静音时恒为 0 */
-const volumeDisplay = computed(() => (muted.value ? 0 : Math.round(player.volume * 100)))
-
-function setVolFromEvent(e) {
-  if (volTrackRef.value) player.setVolume(ratioFromEvent(volTrackRef.value, e))
-}
-function onVolDown(e) {
-  volDragging = true
-  setVolFromEvent(e)
-  window.addEventListener('pointermove', onVolMove)
-  window.addEventListener('pointerup', onVolUp)
-}
-function onVolMove(e) {
-  if (volDragging) setVolFromEvent(e)
-}
-function onVolUp() {
-  volDragging = false
-  window.removeEventListener('pointermove', onVolMove)
-  window.removeEventListener('pointerup', onVolUp)
-}
-function onVolHover(e) {
-  if (volTrackRef.value) volHover.value = ratioFromEvent(volTrackRef.value, e)
-}
-/** 静音/取消静音：静音时记住当前音量，取消时恢复 */
-function toggleMute() {
-  if (muted.value) {
-    player.setVolume(mutedVolume.value)
-    muted.value = false
-  } else {
-    mutedVolume.value = player.volume
-    player.setVolume(0)
-    muted.value = true
-  }
-}
-// 拖拽音量到非 0 时自动解除静音
-watch(
-  () => player.volume,
-  (v) => {
-    if (v > 0 && muted.value) muted.value = false
-  }
-)
+/* ---- 音量条：点击 + 拖拽 + 滚轮 + 静音（逻辑与 LyricPanel 共用 composable） ---- */
+const {
+  trackRef: volTrackRef,
+  dragging: volDragging,
+  hoverRatio: volHover,
+  muted,
+  volumeDisplay,
+  onDown: onVolDown,
+  onHover: onVolHover,
+  onLeave: onVolLeave,
+  onWheel: onVolWheel,
+  toggleMute
+} = useVolumeSlider()
 
 function cycleMode() {
   const map = { list: 'loop', loop: 'shuffle', shuffle: 'list' }
@@ -104,17 +73,23 @@ function cycleMode() {
 
 const modeTitle = computed(() => ({ list: '列表循环', loop: '单曲循环', shuffle: '随机播放' })[settings.settings.playMode])
 
-function downloadCurrent() {
+async function downloadCurrent() {
   const song = player.current
   if (!song || song.fromLocal) return
-  downloads.add({
-    songId: song.id,
-    title: song.name,
-    artist: song.artist,
-    url: song.audioUrl,
-    quality: settings.settings.quality,
-    cover: song.pic
-  })
+  // 必须 await + catch：store 内部已统一 toast（成功/重复/失败），
+  // 但 add 抛错时（IPC 异常等）不接会变成 unhandledRejection 且用户毫无反馈
+  try {
+    await downloads.add({
+      songId: song.id,
+      title: song.name,
+      artist: song.artist,
+      url: song.audioUrl,
+      quality: settings.settings.quality,
+      cover: song.pic
+    })
+  } catch (e) {
+    toast('下载失败：' + (e?.message || '未知错误'), 'error')
+  }
 }
 
 onMounted(() => {
@@ -123,10 +98,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   // 清理拖拽残留的全局事件监听器，防止组件卸载后内存泄漏
+  // （音量条的 pointermove/up 由 useVolumeSlider 的 onBeforeUnmount 自行清理）
   window.removeEventListener('pointermove', onSeekMove)
   window.removeEventListener('pointerup', onSeekUp)
-  window.removeEventListener('pointermove', onVolMove)
-  window.removeEventListener('pointerup', onVolUp)
 })
 </script>
 
@@ -196,6 +170,28 @@ onUnmounted(() => {
 
     <!-- 右：歌词/下载/音量 -->
     <div class="p-right">
+      <!-- 全局下载进度指示器：有任务在跑时常驻显示环形进度 + 数量，
+           点击直达下载页。不在下载页也能确认「到底下没下」。 -->
+      <button
+        v-if="downloads.activeCount"
+        class="dl-indicator"
+        :title="`${downloads.activeCount} 个任务下载中（${Math.round(downloads.overallProgress * 100)}%）— 点击查看`"
+        @click="router.push('/downloads')"
+      >
+        <svg class="dl-ring" viewBox="0 0 36 36">
+          <!-- 底环 -->
+          <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="3" opacity="0.18" />
+          <!-- 进度环：dasharray = 周长(2πr≈94.25)，offset 按进度收缩 -->
+          <circle
+            cx="18" cy="18" r="15" fill="none"
+            stroke="currentColor" stroke-width="3" stroke-linecap="round"
+            :stroke-dasharray="94.25"
+            :stroke-dashoffset="94.25 * (1 - downloads.overallProgress)"
+            transform="rotate(-90 18 18)"
+          />
+        </svg>
+        <span class="dl-count">{{ downloads.activeCount }}</span>
+      </button>
       <button class="ctrl sm" title="歌词" :class="{ active: player.showLyrics }" @click="player.showLyrics = !player.showLyrics">≣</button>
       <button class="ctrl sm" title="下载当前歌曲" @click="downloadCurrent">⇩</button>
       <div class="vol-wrap">
@@ -214,14 +210,17 @@ onUnmounted(() => {
         <div
           ref="volTrackRef"
           class="volume"
-          :class="{ muted }"
-          title="音量（点击或拖动调节）"
+          :class="{ muted, dragging: volDragging }"
+          title="音量（点击/拖动调节，滚轮 ±5%）"
           @pointerdown.left="onVolDown"
           @mousemove="onVolHover"
-          @mouseleave="volHover = -1"
+          @mouseleave="onVolLeave"
+          @wheel="onVolWheel"
         >
           <div class="volume-fill" :style="{ width: volumeDisplay + '%' }"></div>
-          <span v-if="volHover >= 0" class="vol-tip">{{ Math.round(volHover * 100) }}%</span>
+          <span v-if="volHover >= 0" class="vol-tip" :style="{ left: volHover * 100 + '%' }">
+            {{ Math.round(volHover * 100) }}%
+          </span>
         </div>
       </div>
     </div>
@@ -410,6 +409,36 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
 }
+/* 全局下载进度指示器：环形进度 + 数量角标 */
+.dl-indicator {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  border-radius: 50%;
+  transition: background 0.15s var(--ease), transform 0.15s var(--ease);
+}
+.dl-indicator:hover {
+  background: var(--accent-dim);
+  transform: scale(1.08);
+}
+.dl-ring {
+  width: 26px;
+  height: 26px;
+  /* 进度环平滑推进；不加过渡会在每次 progress 事件时跳变 */
+  transition: stroke-dashoffset 0.3s var(--ease-out);
+}
+.dl-count {
+  position: absolute;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
 .vol-icon {
   width: 26px;
   height: 26px;
@@ -423,17 +452,32 @@ onUnmounted(() => {
 .vol-icon:hover { color: var(--text); background: var(--bg-hover); }
 .vol-icon.muted { color: var(--accent); }
 .vol-icon svg { width: 16px; height: 16px; }
+/* 音量条：视觉 4px 细条，热区用绝对定位伪元素上下各扩 6px。
+   注意：项目全局 box-sizing: border-box，用 border 扩热区会把
+   内容区高度压成 0（4px - 6px - 6px < 0）→ 整条不可见。
+   伪元素不参与布局计算，是这里唯一安全的扩热区方式。 */
 .volume {
-  width: 80px;
+  width: 96px;
   height: 4px;
   background: var(--border);
   border-radius: 2px;
   cursor: pointer;
   position: relative;
   transition: height 0.15s var(--ease);
+  touch-action: none;
+}
+/* 透明热区：上下各 6px，命中范围 16px（不影响视觉与布局） */
+.volume::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  bottom: -6px;
 }
 .volume:hover,
 .volume.dragging { height: 6px; }
+.volume.dragging .volume-fill { background: var(--accent-hover); }
 .volume.muted .volume-fill { background: var(--text-faint); }
 .volume-fill {
   height: 100%;
@@ -443,8 +487,7 @@ onUnmounted(() => {
 }
 .vol-tip {
   position: absolute;
-  bottom: 10px;
-  left: 50%;
+  bottom: 12px;
   transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.8);
   color: #fff;
@@ -454,6 +497,7 @@ onUnmounted(() => {
   pointer-events: none;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  transition: left 0.06s linear;
 }
 
 .hidden-audio { display: none; }
