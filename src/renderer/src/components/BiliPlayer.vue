@@ -231,29 +231,26 @@ function poke() {
   }, 3000)
 }
 
-/* ---------------- 键盘快捷键 ---------------- */
-
+/* ---------------- 键盘快捷键 ----------------
+ * 只处理「视频独有」的键：F 全屏、M 静音。
+ *
+ * 空格/←→/↑↓ 交给 App.vue 的全局处理器统一负责 —— 它会在视频接管时
+ * 转发给 video 元素（见 videoSession）。若这里也监听，两个 handler 会
+ * 对同一次按键各响应一次（空格 toggle 两次 = 视频暂停又立刻播放，
+ * 表现为「按了没反应」；同时后台音乐被 App 的旧逻辑唤起 = 两路声音打架）。
+ */
 function onKeydown(e) {
   const t = e.target
   if (t?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t?.tagName)) return
   const v = videoRef.value
   if (!v) return
   switch (e.code) {
-    case 'Space':
-      e.preventDefault(); togglePlay(); poke(); break
-    case 'ArrowLeft':
-      e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 5); poke(); break
-    case 'ArrowRight':
-      e.preventDefault(); v.currentTime = Math.min(v.duration || 0, v.currentTime + 5); poke(); break
-    case 'ArrowUp':
-      e.preventDefault(); setVolume(volume.value + 0.05); poke(); break
-    case 'ArrowDown':
-      e.preventDefault(); setVolume(volume.value - 0.05); poke(); break
     case 'KeyF':
       e.preventDefault(); toggleFullscreen(); break
     case 'KeyM':
       e.preventDefault(); toggleMute(); break
   }
+  poke()
 }
 
 /* ---------------- 外部点击关闭菜单 ---------------- */

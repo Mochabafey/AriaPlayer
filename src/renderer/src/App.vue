@@ -55,24 +55,47 @@ const navGroups = [
   }
 ]
 
-/** 全局快捷键：空格 播放/暂停；←/→ 快退/快进 5s；↑/↓ 音量 ±5% */
+/**
+ * 全局快捷键：空格 播放/暂停；←/→ 快退/快进 5s；↑/↓ 音量 ±5%
+ *
+ * 视频接管时（B 站/网易云 MV 播放中）必须转发给 video 元素，而不是操作
+ * 后台的 audio 元素 —— 否则会出现「按空格视频暂停、后台音乐却开始播」的
+ * 双响应（BiliPlayer 自己也监听了 keydown，两个 handler 各管一路媒体）。
+ * 见 player store 的 videoSession 注释。
+ */
 function onGlobalKeydown(e) {
   const t = e.target
   if (t?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'VIDEO', 'AUDIO'].includes(t?.tagName)) return
   if (e.ctrlKey || e.metaKey || e.altKey) return
+
+  const vs = player.videoSession
+  const isVideo = !!vs
+
   switch (e.code) {
     case 'Space':
       e.preventDefault()
-      player.toggle()
+      if (isVideo) vs.handlers?.toggle?.()
+      else player.toggle()
       break
     case 'Escape':
       if (player.showLyrics) player.showLyrics = false
       break
     case 'ArrowRight':
-      player.seek(player.currentTime + 5)
+      if (isVideo) {
+        // 视频：按当前播放位置 +5s 转发
+        e.preventDefault()
+        vs.handlers?.seek?.((vs.currentTime || 0) + 5)
+      } else {
+        player.seek(player.currentTime + 5)
+      }
       break
     case 'ArrowLeft':
-      player.seek(Math.max(0, player.currentTime - 5))
+      if (isVideo) {
+        e.preventDefault()
+        vs.handlers?.seek?.(Math.max(0, (vs.currentTime || 0) - 5))
+      } else {
+        player.seek(Math.max(0, player.currentTime - 5))
+      }
       break
     case 'ArrowUp':
       e.preventDefault()
