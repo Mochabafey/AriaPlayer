@@ -104,4 +104,174 @@ function applyPatches(dir) {
       console.log('[vendor] 已应用 app.js 补丁（关闭版本检查）')
     }
   }
+
+  // 补丁 4：启动时不再同步等待 generateConfig 联网刷新。
+  // generateConfig() 内含两次联网请求（register_anonimous 注册匿名 token +
+  // getXeapiPublicKey 取公钥），上游实现每次启动都 await 它，弱网/上游抖动
+  // 实测可阻塞 19s，表现为「启动中…」长时间卡住。
+  // 改为：缓存已存在 → 直接放行启动、刷新丢后台；缓存缺失 → 仍同步等待。
+  // 同时把 generateConfig 里的纯本地部分（global.cnIp / global.deviceId）
+  // 拆成 initLocalConfig() 导出，避免跳过同步刷新时这两个全局量缺失。
+  if (fs.existsSync(appJs)) {
+    let appSrc = fs.readFileSync(appJs, 'utf-8')
+    const ORIG_START = `  // 启动时更新anonymous_token
+  const generateConfig = require('./generateConfig')
+  await generateConfig()
+  require('./server').serveNcmApi({`
+    if (appSrc.includes(ORIG_START)) {
+      appSrc = appSrc.replace(
+        ORIG_START,
+        `  // 启动时更新anonymous_token
+  //
+  // [patched] 启动路径优化：generateConfig() 内含两次联网请求
+  // （register_anonimous 注册匿名 token + getXeapiPublicKey 取公钥）。
+  // 上游实现每次启动都 await 它，弱网/上游抖动时实测可阻塞 19s，
+  // 表现为「启动中…」长时间卡住、服务迟迟不就绪。
+  // 改为：缓存已存在 → 直接放行启动，刷新丢后台异步；
+  //       缓存缺失（首次运行）→ 仍同步等待，保证首次可用。
+  // 注：util/request.js 在 require 时同步读取 anonymous_token 文件，
+  // 故此处只需保证「文件已存在且非空」；后台刷新写同一文件，
+  // 本进程已读入内存的旧值不影响运行，下次启动生效。
+  const generateConfig = require('./generateConfig')
+  const tokenPath = path.resolve(tmpPath, 'anonymous_token')
+  const keyPath = path.resolve(tmpPath, 'xeapi_public_key')
+  const hasCache =
+    fs.existsSync(tokenPath) &&
+    fs.statSync(tokenPath).size > 0 &&
+    fs.existsSync(keyPath) &&
+    fs.statSync(keyPath).size > 0
+
+  if (hasCache) {
+    generateConfig.initLocalConfig()
+    console.log('[app] anonymous_token 缓存命中，跳过同步配置刷新（后台异步更新）')
+    generateConfig().catch((e) => console.log('[app] background generateConfig failed:', e))
+  } else {
+    await generateConfig()
+  }
+  require('./server').serveNcmApi({`
+      )
+      fs.writeFileSync(appJs, appSrc)
+      console.log('[vendor] 已应用 app.js 补丁（跳过同步联网配置刷新）')
+    }
+  }
+
+  // 补丁 5：generateConfig 导出 initLocalConfig()，把纯本地随机计算
+  // （global.cnIp / global.deviceId）从联网流程里拆出来同步执行。
+  const genCfg = path.join(dir, 'generateConfig.js')
+  if (fs.existsSync(genCfg)) {
+    let gSrc = fs.readFileSync(genCfg, 'utf-8')
+    const ORIG_GEN = `async function generateConfig() {
+  global.cnIp = generateRandomChineseIP()`
+    if (gSrc.includes(ORIG_GEN)) {
+      gSrc = gSrc.replace(
+        ORIG_GEN,
+        `/**
+ * [patched] 本地配置初始化（纯计算，零网络，毫秒级）。
+ * global.cnIp 与 global.deviceId 是纯本地随机计算（见 util/index.js 的
+ * generateRandomChineseIP / generateDeviceId），却原先夹在两次联网请求之间，
+ * 导致「跳过同步联网刷新」时这两个全局量会缺失（server.js 用 global.cnIp
+ * 兜底 req.ip、request.js 用 global.deviceId 拼 cookie）。拆出后可同步就位。
+ */
+function initLocalConfig() {
+  global.cnIp = generateRandomChineseIP()
+  if (!global.deviceId) {
+    try {
+      global.deviceId = require('./util/index').generateDeviceId()
+    } catch (_) {}
+  }
+}
+
+async function generateConfig() {
+  initLocalConfig()`
+      )
+      gSrc = gSrc.replace(
+        'module.exports = generateConfig',
+        'module.exports = generateConfig\nmodule.exports.initLocalConfig = initLocalConfig'
+      )
+      fs.writeFileSync(genCfg, gSrc)
+      console.log('[vendor] 已应用 generateConfig.js 补丁（拆分本地配置初始化）')
+    }
+  }
+
+  // 补丁 6：main.js 惰性模块加载。
+  // 原实现 forEach 同步 require 全部 436 个模块，其中 register_checktoken_v2
+  // 顶层引 jsdom（单模块 812ms，占全量加载耗时的 68%）。本应用只用
+  // register_anonimous 一个函数，其余纯属浪费。改为首次调用时才 require。
+  const mainJs = path.join(dir, 'main.js')
+  if (fs.existsSync(mainJs)) {
+    let mSrc = fs.readFileSync(mainJs, 'utf-8')
+    const ORIG_MAIN = `let requestModule = null
+
+moduleFiles.forEach((file) => {
+  if (!file.endsWith('.js')) return
+
+  const filePath = path.join(modulePath, file)
+  let fileModule = require(filePath)
+  let fn = file.split('.').shift() || ''`
+    if (mSrc.includes(ORIG_MAIN)) {
+      mSrc = mSrc.replace(
+        ORIG_MAIN,
+        `let requestModule = null
+
+// [patched] 惰性模块加载：原实现 forEach 同步 require 全部 436 个模块文件，
+// 其中 register_checktoken_v2 顶层引 jsdom（单模块加载 812ms，占全量 68%）。
+// 本应用只用到 register_anonimous，其余 435 个纯属浪费（server.js 已改为
+// 按路由惰性加载，这里的全量 require 是启动耗时的最大残余项）。
+// 改为：只记文件名，函数首次被调用时才 require（Node require 自带缓存）。
+const fileModuleCache = new Map()
+const loadFileModule = (filePath) => {
+  if (!fileModuleCache.has(filePath)) {
+    fileModuleCache.set(filePath, require(filePath))
+  }
+  return fileModuleCache.get(filePath)
+}
+
+moduleFiles.forEach((file) => {
+  if (!file.endsWith('.js')) return
+
+  const filePath = path.join(modulePath, file)
+  let fn = file.split('.').shift() || ''`
+      )
+      mSrc = mSrc.replace(
+        '    return fileModule(',
+        '    return loadFileModule(filePath)('
+      )
+      fs.writeFileSync(mainJs, mSrc)
+      console.log('[vendor] 已应用 main.js 补丁（惰性模块加载）')
+    }
+  }
+
+  // 补丁 7：server.js 惰性路由注册。
+  // getModulesDefinitions 原先 require 全部模块；改为只扫描文件名建路由表，
+  // 模块本体延迟到该路由首次被请求时才 require。
+  if (fs.existsSync(serverJs)) {
+    let sSrc = fs.readFileSync(serverJs, 'utf-8')
+    if (sSrc.includes("getModulesDefinitions(path.join(__dirname, 'module'), special)")) {
+      sSrc = sSrc.replace(
+        "getModulesDefinitions(path.join(__dirname, 'module'), special)",
+        "getModulesDefinitions(path.join(__dirname, 'module'), special, false)"
+      )
+      // 插入惰性解析器
+      sSrc = sSrc.replace(
+        '  for (const moduleDef of moduleDefinitions) {\n    // Register the route.',
+        `  for (const moduleDef of moduleDefinitions) {
+    // [patched] 惰性解析：moduleDef.module 可能是已加载的函数（moduleDefs 传入），
+    // 也可能是模块文件路径字符串（自动扫描），后者首次命中时 require。
+    const resolveModule = () => {
+      if (typeof moduleDef.module === 'function') return moduleDef.module
+      const loaded = require(moduleDef.module)
+      moduleDef.module = loaded // 回填，后续直接命中
+      return loaded
+    }
+
+    // Register the route.`
+      )
+      sSrc = sSrc.replace(
+        'const moduleResponse = await moduleDef.module(query,',
+        'const moduleResponse = await resolveModule()(query,'
+      )
+      fs.writeFileSync(serverJs, sSrc)
+      console.log('[vendor] 已应用 server.js 补丁（惰性路由注册）')
+    }
+  }
 }

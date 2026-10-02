@@ -90,3 +90,20 @@ if (fs.existsSync(reqPath)) {
 }
 
 console.log('[vendor-qqmusic] 完成！qqmusic/ 已就绪。')
+
+// 本地补丁：关闭启动时的版本检查。
+// src/app.ts 原实现 exec('npm info qq-music-api version') 会 fork 一个 npm 进程
+// 联网查 registry，弱网/被墙环境下可能挂住数十秒，抢 CPU 与网络并拖慢启动。
+// 本项目内置固定版本、不需要更新提示（api-enhanced 侧同样已关闭 checkVersion）。
+const appTsPath = path.join(dir, 'src', 'app.ts')
+if (fs.existsSync(appTsPath)) {
+  let src = fs.readFileSync(appTsPath, 'utf-8')
+  if (src.includes("if (!isTestEnv) {\n  const versionCheckProcess = exec(")) {
+    src = src.replace(
+      "if (!isTestEnv) {\n  const versionCheckProcess = exec(",
+      "// [patched] 关闭启动版本检查：exec `npm info` 联网查 registry 会拖慢启动\nif (!isTestEnv && process.env.QQMUSIC_VERSION_CHECK === '1') {\n  const versionCheckProcess = exec("
+    )
+    fs.writeFileSync(appTsPath, src)
+    console.log('[vendor-qqmusic] 已应用 app.ts 补丁（关闭启动版本检查）')
+  }
+}
