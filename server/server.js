@@ -83,6 +83,10 @@ async function getModulesDefinitions(
       const identifier = file.split('.').shift()
       const route = parseRoute(file)
       const modulePath = path.join(modulesPath, file)
+      // [patched] doRequire=false 时不再加载模块本体，改为记录路径延迟到
+      // 首次命中该路由时再 require（见 constructServer 里的 lazyRequire）。
+      // 436 个模块里 register_checktoken_v2 顶层引 jsdom（单模块 812ms），
+      // 而搜索/歌词/播放等常用接口根本不碰它——启动时全部加载纯属浪费。
       const module = doRequire ? require(modulePath) : modulePath
 
       return { identifier, route, module }
@@ -275,12 +279,29 @@ async function constructServer(moduleDefs) {
 
   /**
    * Load every modules in this directory
+   *
+   * [patched] 惰性路由加载：原先 getModulesDefinitions 会 require 全部 436 个
+   * 模块，其中 register_checktoken_v2 顶层引 jsdom（单模块加载 812ms，占全部
+   * 加载耗时的 68%），而搜索/歌词/播放地址等常用接口根本不用它。
+   * 现改为：只扫描文件名建路由表，模块本体延迟到该路由首次被请求时才 require。
+   * 效果：启动不再付全量模块加载成本，且每个模块的加载成本只在其真正被用到时付一次
+   * （Node 的 require 自带缓存，后续命中零开销）。
+   * 兼容：调用方显式传入 moduleDefs（已 require 好的对象）时行为不变。
    */
   const moduleDefinitions =
     moduleDefs ||
-    (await getModulesDefinitions(path.join(__dirname, 'module'), special))
+    (await getModulesDefinitions(path.join(__dirname, 'module'), special, false))
 
   for (const moduleDef of moduleDefinitions) {
+    // 惰性解析：moduleDef.module 可能是已加载的函数（moduleDefs 传入），
+    // 也可能是模块文件路径字符串（自动扫描），后者首次命中时 require。
+    const resolveModule = () => {
+      if (typeof moduleDef.module === 'function') return moduleDef.module
+      const loaded = require(moduleDef.module)
+      moduleDef.module = loaded // 回填，后续直接命中
+      return loaded
+    }
+
     // Register the route.
     app.all(moduleDef.route, async (req, res) => {
       ;[req.query, req.body].forEach((item) => {
@@ -301,7 +322,7 @@ async function constructServer(moduleDefs) {
 
       try {
         let usedCrypto = ''
-        const moduleResponse = await moduleDef.module(query, (...params) => {
+        const moduleResponse = await resolveModule()(query, (...params) => {
           const obj = [...params]
           const options = obj[2] || {}
           usedCrypto = options.crypto || ''

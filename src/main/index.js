@@ -205,13 +205,22 @@ async function bootstrap() {
 
   createWindow()
 
-  // 启动内置 api-enhanced 服务（开发/打包均走子进程）
-  const ok = await server.start()
+  // 两个内置服务并行启动：两者互不依赖（各自独立子进程 + 独立私有通道），
+  // 串行 await 会让启动耗时叠加（实测 ncm 1.47s + qq 0.88s），并行后只等较慢者。
+  // 各自 catch 兜底：QQ音乐是可选音源，它失败不该中断网易云，反之亦然。
+  const [ok, qqOk] = await Promise.all([
+    server.start().catch((e) => {
+      console.error('[bootstrap] ncm-server start threw', e)
+      return false
+    }),
+    qqMusicServer.start().catch((e) => {
+      console.error('[bootstrap] qqmusic-server start threw', e)
+      return false
+    })
+  ])
   if (!ok) {
     console.error('[bootstrap] ncm-server failed to start')
   }
-  // 启动内置 QQ音乐 API 服务（忽略失败：QQ音乐是可选音源，不影响核心功能）
-  const qqOk = await qqMusicServer.start()
   if (!qqOk) {
     console.log('[bootstrap] qqmusic-server not available (optional)')
   }

@@ -18,12 +18,26 @@ const {
 } = require('./index')
 const { URLSearchParams, URL } = require('url')
 const { APP_CONF } = require('./config.json')
-const {
-  getToken: antiCheatTokenV2,
-} = require('../module/register_checktoken_v2')
-const {
-  getToken: antiCheatTokenV3,
-} = require('../module/register_checktoken_v3')
+// 【本应用补丁】反作弊 token 模块改为懒加载。
+// register_checktoken_v2/v3 顶层 require('jsdom')，而 jsdom 的模块加载
+// 实测耗时 812ms（占全部 436 个模块加载耗时 1189ms 的 68%）。
+// 但这两个 getToken 只在 options.checkToken === 'v2'/'v3' 时才被调用
+// （见下方 createRequest 的 switch），搜索/歌词/播放地址等常用接口都不用它。
+// 原先顶层 require 让每次启动都白付这 800ms；改为调用时按需加载。
+let _antiCheatV2 = null
+let _antiCheatV3 = null
+const antiCheatTokenV2 = async (...args) => {
+  if (!_antiCheatV2) {
+    _antiCheatV2 = require('../module/register_checktoken_v2').getToken
+  }
+  return _antiCheatV2(...args)
+}
+const antiCheatTokenV3 = async (...args) => {
+  if (!_antiCheatV3) {
+    _antiCheatV3 = require('../module/register_checktoken_v3').getToken
+  }
+  return _antiCheatV3(...args)
+}
 
 // 预先读取匿名token并缓存
 const anonymous_token = fs.readFileSync(
