@@ -6,10 +6,12 @@ import LyricPanel from './components/LyricPanel.vue'
 import AppToast from './components/AppToast.vue'
 import { usePlayerStore } from './stores/player'
 import { useSettingsStore } from './stores/settings'
+import { useDownloadsStore } from './stores/downloads'
 import { ncm } from './api'
 
 const player = usePlayerStore()
 const settings = useSettingsStore()
+const downloads = useDownloadsStore()
 const route = useRoute()
 const router = useRouter()
 const serverState = ref('down')
@@ -21,6 +23,7 @@ const icons = {
   discover: 'M3 12a9 9 0 1 1 18 0 9 9 0 0 1-18 0Zm12.5-4.5-4.7 1.4a2 2 0 0 0-1.3 1.3l-1.4 4.7c-.2.6.5 1.3 1.1 1.1l4.7-1.4a2 2 0 0 0 1.3-1.3l1.4-4.7c.2-.6-.5-1.3-1.1-1.1ZM13.4 13.4a1.9 1.9 0 1 1-2.7-2.7 1.9 1.9 0 0 1 2.7 2.7Z',
   library: 'M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-13ZM9 4v16M9 12h11',
   resolver: 'M13.5 3.5 6 13h4.5L10.5 20.5 18 11h-4.5l3-7.5Z',
+  video: 'M3 6.5A2.5 2.5 0 0 1 5.5 4h9A2.5 2.5 0 0 1 17 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 3 17.5v-11Zm14 3.2 4-2.3v9.2l-4-2.3v-4.6Z',
   search: 'M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm9.8 15.3-4.3-4.3',
   profile: 'M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm-7 15.2C5.9 16 8.7 14.5 12 14.5s6.1 1.5 7 4.7',
   downloads: 'M12 4v9m0 0 4-4m-4 4-4-4M5 19h14',
@@ -34,7 +37,8 @@ const navGroups = [
     items: [
       { to: '/discover', icon: 'discover', label: '推荐' },
       { to: '/search', icon: 'search', label: '搜索' },
-      { to: '/resolver', icon: 'resolver', label: '解析' }
+      { to: '/resolver', icon: 'resolver', label: '解析' },
+      { to: '/bili', icon: 'video', label: 'B站MV' }
     ]
   },
   {
@@ -88,6 +92,10 @@ onMounted(async () => {
   if (Number.isFinite(v) && v >= 0 && v <= 1) player.setVolume(v)
   // 恢复上次的播放队列（不自动播放，展示上次听的列表和歌曲）
   player.restoreQueue()
+  // 下载状态全局初始化：角标与进度指示器需要在任意页面都能反映进度，
+  // 不能只依赖 DownloadsView 挂载（原实现只有进下载页才有数据）
+  downloads.load()
+  downloads.watch()
   ncm.onServerStatus((s) => (serverState.value = s))
   ncm.serverStatus().then((s) => (serverState.value = s))
   // 窗口最大化状态（初始查询 + 订阅变化）
@@ -146,6 +154,14 @@ let offMaxListener = null
           >
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path :d="icons[n.icon]"/></svg>
             <span class="nav-label">{{ n.label }}</span>
+            <!-- 下载角标：进行中显示进度环+数量，有失败显示红点
+                 （原实现侧边栏完全无提示，不在下载页就看不到任何状态） -->
+            <span v-if="n.to === '/downloads' && downloads.activeCount" class="nav-badge active" :title="`${downloads.activeCount} 个任务下载中`">
+              {{ downloads.activeCount }}
+            </span>
+            <span v-else-if="n.to === '/downloads' && downloads.failedCount" class="nav-badge failed" :title="`${downloads.failedCount} 个任务失败或暂停`">
+              !
+            </span>
           </RouterLink>
         </div>
       </nav>
@@ -300,6 +316,41 @@ let offMaxListener = null
   width: 18px;
   height: 18px;
   flex-shrink: 0;
+}
+
+/* 下载角标：贴导航项右缘。
+   进行中 = 强调色圆形数字；失败 = 红点叹号（两种状态互斥显示，进行中优先） */
+.nav-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.nav-badge.active {
+  background: var(--accent);
+  color: #fff;
+  /* 呼吸动画：暗示"正在跑"，静止的角标容易被忽略 */
+  animation: badge-pulse 1.6s var(--ease) infinite;
+}
+/* 导航项激活（珊瑚红底）时角标改白底红字，否则红底红字糊成一团 */
+.nav-item.active .nav-badge.active {
+  background: #fff;
+  color: var(--accent);
+}
+.nav-badge.failed {
+  background: #ff9f0a;
+  color: #fff;
+}
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
 /* 服务状态 */
