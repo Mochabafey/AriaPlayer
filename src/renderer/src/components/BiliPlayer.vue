@@ -12,6 +12,7 @@
  * 本组件只负责播放与交互。
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import Hls from 'hls.js'
 import { usePlayerStore } from '../stores/player'
 
 const props = defineProps({
@@ -276,9 +277,81 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointermove', onProgressMove)
   window.removeEventListener('pointerup', onProgressUp)
   clearTimeout(hideTimer)
+  // 销毁 HLS 实例：否则它会继续轮询播放列表（ffmpeg 已停，白耗资源）
+  destroyHls()
   // 释放底部条接管，否则离开视频页后底部条仍显示视频信息却无法控制
   player.releaseVideo()
 })
+
+/**
+ * HLS 实例（B 站实时合流产出的是 m3u8 + m4s 分片，<video> 不能直接播）。
+ * 用 hls.js 播放本地 m3u8：它会不断重读播放列表，ffmpeg 每产出一个新分片
+ * 就能被加载 —— 于是「首片生成即可开播」，无需等整片合流完成。
+ */
+let hls = null
+
+/** 销毁 HLS 实例（切换源/卸载时调用，避免残留轮询与连接） */
+function destroyHls() {
+  if (hls) {
+    try { hls.destroy() } catch { /* ignore */ }
+    hls = null
+  }
+}
+
+/**
+ * 挂载播放源。
+ * - m3u8（实时合流）→ hls.js
+ * - 其他（durl mp4 / 合流后的本地 mp4）→ 直接给 video.src
+ */
+function attachSource(v, src) {
+  destroyHls()
+  const isHls = /\.m3u8(\?|$)/i.test(src) || src.includes('index.m3u8')
+  console.log(`[bili-player] attachSource hls=${isHls} src=${String(src).slice(0, 90)}`)
+  if (isHls) {
+    if (Hls.isSupported()) {
+      hls = new Hls({
+        // 本地文件由 ncm-audio:// 协议提供，无需防盗链头
+        // 实时合流期间列表在增长：缩短轮询间隔让新分片更快被发现
+        liveSyncDurationCount: 1,
+        manifestLoadingMaxRetry: 10,
+        levelLoadingMaxRetry: 10,
+        fragLoadingMaxRetry: 10,
+        // 列表里暂时没有分片时不报错，继续等（ffmpeg 正在生成）
+        manifestLoadingTimeOut: 20000
+      })
+      // 诊断：记录 hls.js 的关键事件与错误详情
+      hls.on(Hls.Events.MANIFEST_PARSED, (_e, d) => {
+        console.log(`[bili-player] MANIFEST_PARSED levels=${d?.levels?.length ?? '?'}`)
+      })
+      hls.on(Hls.Events.LEVEL_LOADED, (_e, d) => {
+        console.log(`[bili-player] LEVEL_LOADED frags=${d?.details?.fragments?.length ?? '?'}`)
+      })
+      hls.on(Hls.Events.FRAG_LOADED, (_e, d) => {
+        console.log(`[bili-player] FRAG_LOADED sn=${d?.frag?.sn}`)
+      })
+      hls.loadSource(src)
+      hls.attachMedia(v)
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        // 打印所有错误（含非致命），便于定位
+        console.log(`[bili-player] HLS ERROR fatal=${data.fatal} type=${data.type} details=${data.details} reason=${data.reason || ''} err=${data.error?.message || ''}`)
+        if (!data.fatal) return
+        // 合流刚启动时列表可能还没写好分片，这类错误可自愈，不打扰用户
+        if (data.type === 'networkError') {
+          hls?.startLoad()
+        } else {
+          errorMsg.value = '播放失败：' + (data.details || data.type)
+        }
+      })
+    } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari 等原生支持 HLS
+      v.src = src
+    } else {
+      errorMsg.value = '当前环境不支持 HLS 播放'
+    }
+  } else {
+    v.src = src
+  }
+}
 
 /** url 变化：重置状态并（可选）自动播放 */
 watch(
@@ -290,6 +363,7 @@ watch(
     duration.value = 0
     if (!u) {
       // 无源（关闭播放器/切换中）：释放底部条接管
+      destroyHls()
       player.releaseVideo()
       return
     }
@@ -328,8 +402,16 @@ watch(
         }
       }
     )
-    v.load()
-    if (props.autoplay) v.play().catch(() => {})
+    attachSource(v, u)
+    if (props.autoplay) {
+      // HLS 要等 MANIFEST_PARSED 才能 play，直接 play 会抛 NotSupportedError
+      if (hls) {
+        hls.once(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}) })
+      } else {
+        v.load()
+        v.play().catch(() => {})
+      }
+    }
     poke()
   },
   { immediate: true }
@@ -378,7 +460,29 @@ function onError() {
     @mousemove="poke"
     @mouseleave="controlsVisible = false"
   >
-    <!-- 合流中：显示进度而不是播放器 -->
+    <!--
+      video 元素始终渲染（不用 v-if 切换）：
+      合流时若用 v-if 把 video 卸载，会连带丢失 videoRef、播放状态与底部条接管，
+      切画质后表现为「画面回到旧档位、播放停止」。这里改为合流时用叠加层盖住。
+    -->
+    <video
+      ref="videoRef"
+      class="bp-video"
+      :src="url || undefined"
+      :poster="poster || undefined"
+      playsinline
+      @click="togglePlay"
+      @play="onVideoEvent"
+      @pause="onVideoEvent"
+      @timeupdate="onVideoEvent"
+      @progress="onVideoEvent"
+      @durationchange="onVideoEvent"
+      @loadedmetadata="onVideoEvent"
+      @ended="emit('ended')"
+      @error="onError"
+    />
+
+    <!-- 合流中：叠加进度层（不卸载 video） -->
     <div v-if="merging" class="bp-merging">
       <div class="bp-merge-box">
         <div class="bp-merge-title">正在合并音视频流…</div>
@@ -392,24 +496,7 @@ function onError() {
       </div>
     </div>
 
-    <template v-else>
-      <video
-        ref="videoRef"
-        class="bp-video"
-        :src="url || undefined"
-        :poster="poster || undefined"
-        playsinline
-        @click="togglePlay"
-        @play="onVideoEvent"
-        @pause="onVideoEvent"
-        @timeupdate="onVideoEvent"
-        @progress="onVideoEvent"
-        @durationchange="onVideoEvent"
-        @loadedmetadata="onVideoEvent"
-        @ended="emit('ended')"
-        @error="onError"
-      />
-
+    <template v-if="!merging">
       <!-- 中央播放按钮（暂停时） -->
       <button v-if="!playing && url" class="bp-center-play" @click.stop="togglePlay">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
@@ -767,13 +854,16 @@ function onError() {
   border-radius: 8px;
 }
 
-/* 合流中 */
+/* 合流中：叠加在 video 之上（不卸载 video，避免丢失播放状态与接管） */
 .bp-merging {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 遮住下方的 video 画面（合流期间画面是旧的，容易误解） */
+  background: rgba(0, 0, 0, 0.82);
+  z-index: 6;
 }
 .bp-merge-box { width: min(420px, 78%); text-align: center; }
 .bp-merge-title { color: #fff; font-size: 14px; font-weight: 600; margin-bottom: 14px; }

@@ -78,6 +78,9 @@ const INVOKE_ALLOWLIST = new Set([
   'bili:video-info',
   'bili:resolve',
   'bili:merge-status',
+  'bili:hls-status',
+  'bili:hls-stop',
+  'bili:hls-stop-all',
   'bili:cache-stats',
   'bili:cache-clear'
 ])

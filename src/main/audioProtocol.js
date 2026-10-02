@@ -4,6 +4,7 @@ import path from 'path'
 import { Readable } from 'stream'
 import { openAudioSource, createRangeStream, sessionInfo, toWeb } from './audioCache'
 import { UA, HDRS, fetchUpstream, parseSafeHttpUrl, headersFor } from './upstream.js'
+import { hlsDirOf } from './biliStream.js'
 
 const FORWARD_HEADERS = [
   'content-type',
@@ -26,7 +27,13 @@ const MIME = {
   '.aac': 'audio/aac',
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg',
-  '.wav': 'audio/wav'
+  '.wav': 'audio/wav',
+  // HLS：B 站实时合流产出 m3u8 播放列表 + m4s 分片（fMP4）。
+  // 缺这两个类型会让 hls.js 拿到的 Content-Type 变成 octet-stream，
+  // 进而误判为「不是 HLS 内容」而拒绝解析。
+  '.m3u8': 'application/vnd.apple.mpegurl',
+  '.m4s': 'video/iso.segment',
+  '.mp4': 'video/mp4'
 }
 
 /**
@@ -61,7 +68,11 @@ export function registerAudioProtocol() {
         const headers = {
           'Content-Type': mime,
           'Content-Length': String(end - start + 1),
-          'Accept-Ranges': 'bytes'
+          'Accept-Ranges': 'bytes',
+          // CORS：页面在 file:// 下，fetch/XHR 访问自定义协议需要该头
+          //（见 hls 分支的详细说明）。媒体元素不受限，但统一加上更省心。
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Expose-Headers': 'Content-Length, Content-Range'
         }
         // 客户端带 Range 一律回 206（Chromium media 初始请求就带 bytes=0-，
         // 回 200 会导致 seek 时 200/206 实体冲突 → ERR=2；规范也禁止 200 带 CR）
@@ -81,6 +92,72 @@ export function registerAudioProtocol() {
         const mime = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : 'image/jpeg'
         return new Response(fs.createReadStream(p), {
           headers: { 'Content-Type': mime, 'Cache-Control': 'max-age=86400' }
+        })
+      }
+
+      /**
+       * HLS 目录通道：ncm-audio://hls/<file>?dir=<编码后的目录>
+       *
+       * 为什么需要它：B 站实时合流产出 m3u8 + 多个 .m4s 分片，
+       * m3u8 内部用**相对路径**引用分片（seg00000.m4s）。hls.js 会基于
+       * m3u8 自身的 URL 解析相对路径 —— 若 m3u8 通过
+       * `ncm-audio://local?path=...` 提供，解析结果会变成
+       * `ncm-audio://local/seg00000.m4s`（路径丢失，拿不到真实文件）。
+       *
+       * 这里让目录成为 URL 的**路径部分**，hls.js 的相对路径解析就能
+       * 自然拼出 `ncm-audio://hls/seg00000.m4s?dir=...`，协议层据此还原
+       * 真实文件路径。零 TCP 端口，符合项目设计。
+       */
+      /**
+       * HLS 通道（路径式）：ncm-audio://hls/<sessionId>/<file>
+       *
+       * 为什么需要它：B 站实时合流产出 m3u8 + 多个 .m4s 分片，
+       * m3u8 内部用**相对路径**引用分片（如 `seg00000.m4s`、
+       * `#EXT-X-MAP:URI="init.mp4"`）。hls.js 用标准 URL 相对解析拼出分片
+       * 地址 —— 而标准解析会**丢弃 base URL 的 query 部分**。
+       *
+       * 早期实现把目录放在 `?dir=` 里，结果分片请求变成
+       * `ncm-audio://hls/seg00000.m4s`（dir 丢失）→ 全部 404。
+       *
+       * 改为把目录编码进**路径**：URL 形如
+       *   ncm-audio://hls/<sessionId>/index.m3u8
+       *   ncm-audio://hls/<sessionId>/seg00000.m4s
+       * 相对解析只替换最后一段，sessionId 得以保留，协议层据此定位会话目录。
+       * 零 TCP 端口，符合项目设计。
+       */
+      if (u.hostname === 'hls') {
+        const segs = u.pathname.replace(/^\/+/, '').split('/').filter(Boolean)
+        const sessionId = segs[0]
+        const file = decodeURIComponent(segs.slice(1).join('/'))
+        if (!sessionId || !file) return new Response('bad hls request', { status: 400 })
+        const dir = hlsDirOf(sessionId)
+        if (!dir) return new Response('unknown hls session', { status: 404 })
+        // 防目录穿越：解析后的绝对路径必须在会话目录之内
+        const baseDir = path.resolve(dir)
+        const target = path.resolve(baseDir, file)
+        if (!target.startsWith(baseDir + path.sep)) {
+          return new Response('forbidden', { status: 403 })
+        }
+        if (!fs.existsSync(target)) return new Response('not found', { status: 404 })
+        const stat = fs.statSync(target)
+        const mime = MIME[path.extname(target).toLowerCase()] || 'application/octet-stream'
+        return new Response(fs.createReadStream(target), {
+          headers: {
+            'Content-Type': mime,
+            'Content-Length': String(stat.size),
+            'Accept-Ranges': 'bytes',
+            /**
+             * CORS 头：页面运行在 file:// 协议下（打包版 loadFile），
+             * hls.js 用 fetch/XHR 加载 m3u8 与分片 —— 跨源请求需要该头。
+             * 另外还需在 registerSchemesAsPrivileged 里开 corsEnabled，
+             * 否则 Chromium 在发出请求前就以 CORS 拒绝（响应头无效）。
+             */
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Range',
+            'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
+            // 实时合流期间列表与分片都在变，禁止缓存以免拿到旧内容
+            'Cache-Control': 'no-store'
+          }
         })
       }
 

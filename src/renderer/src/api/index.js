@@ -88,15 +88,22 @@ export const bili = {
   /** 视频详情（含 cid / 分P） */
   videoInfo: (bvid) => bridge.invoke('bili:video-info', bvid),
   /**
-   * 解析播放源 → 三种结果：
-   *   { mode:'proxy', url }            直接播（durl 单文件）
-   *   { mode:'ready', file }           已缓存的合流文件
-   *   { mode:'merge', key, needMerge } 需合流，轮询 mergeStatus
+   * 解析播放源 → 四种结果：
+   *   { mode:'proxy', url }                    直接播（durl 单文件）
+   *   { mode:'hls', sessionId, playlist }      HLS 实时合流，用 hls.js 播（默认）
+   *   { mode:'ready', file }                   已缓存的完整文件
+   *   { mode:'merge', key }                    全量合流，轮询 mergeStatus（live=false 时）
    */
-  resolve: (bvid, cid, quality, preferSingle = true) =>
-    bridge.invoke('bili:resolve', { bvid, cid, quality, preferSingle }),
-  /** 合流进度 */
+  resolve: (bvid, cid, quality, preferSingle = true, live = true) =>
+    bridge.invoke('bili:resolve', { bvid, cid, quality, preferSingle, live }),
+  /** 合流进度（全量合流模式） */
   mergeStatus: (key) => bridge.invoke('bili:merge-status', key),
+  /** HLS 会话状态（实时合流模式） */
+  hlsStatus: (sessionId) => bridge.invoke('bili:hls-status', sessionId),
+  /** 停止 HLS 会话（切换画质 / 关闭播放器） */
+  hlsStop: (sessionId) => bridge.invoke('bili:hls-stop', sessionId),
+  /** 停止全部 HLS 会话 */
+  hlsStopAll: () => bridge.invoke('bili:hls-stop-all'),
   /** 合流缓存管理 */
   cacheStats: () => bridge.invoke('bili:cache-stats'),
   cacheClear: () => bridge.invoke('bili:cache-clear')

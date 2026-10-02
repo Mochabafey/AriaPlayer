@@ -3,24 +3,34 @@
  *
  * 职责：把 B 站的两类流统一成「一个本地可播的地址」给渲染层。
  *
- * 两条路径：
- *   durl（单文件 mp4）→ 直接交给 ncm-audio:// 代理播放，零 ffmpeg 开销、秒开
- *   dash（音视频分离）→ ffmpeg 合流成本地 mp4，再播放
+ * 三条路径：
+ *   durl（单文件 mp4）  → 直接交给 ncm-audio:// 代理播放，零 ffmpeg 开销、秒开
+ *   dash + HLS 实时合流 → 边合边播，首片生成即可开播（默认走这条）
+ *   dash + 全量合流     → 落盘完整 mp4 后播放（用于下载 / HLS 不可用时兜底）
  *
- * 合流结果的缓存策略：
- *   合流成本高（要下完整个视频），所以按 bvid+cid+quality 缓存到磁盘，
- *   二次播放直接命中。缓存上限与 LRU 复用 audioCache 的思路，但独立目录
- *   （视频文件大，混在一起会把音频缓存的 LRU 挤爆）。
+ * 为什么默认用 HLS 实时合流：
+ *   全量合流要等整个视频下完才能播，用户盯着「正在合并…」等几十秒到几分钟，
+ *   体验割裂。HLS 方案下 ffmpeg 边合边切分片，渲染层用 hls.js 轮询播放列表，
+ *   首帧延迟从「整片时长」降到「约 1 个分片（2 秒）」。
+ *
+ * 缓存策略：
+ *   - 全量合流的 mp4 按 bvid+cid+quality 缓存（二次播放零网络）
+ *   - HLS 会话是临时的，播放结束即清理（分片很多，长期留存太占空间）
  */
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { app } from 'electron'
-import { mergeDashStreams } from './ffmpeg.js'
+import { mergeDashStreams, mergeDashToHls } from './ffmpeg.js'
 import { settingsRepo } from './db/settings.js'
 
 /** 合流任务表：key → { promise, output, percent, speed, error } */
 const jobs = new Map()
+
+/** HLS 实时合流会话表：sessionId → { hls, dir, key, startedAt } */
+const hlsSessions = new Map()
+/** HLS 会话自增 id */
+let hlsSeq = 0
 
 function cacheRoot() {
   return path.join(app.getPath('userData'), 'bili-cache')
@@ -66,7 +76,7 @@ export function cachedFile(key) {
   return null
 }
 
-/** 启动清理：删掉半成品（.part.mp4），并按上限淘汰 */
+/** 启动清理：删掉半成品（.part.mp4）与残留的 HLS 目录，并按上限淘汰 */
 export function initBiliCache() {
   try {
     const d = ensureDir()
@@ -76,6 +86,8 @@ export function initBiliCache() {
       try { fs.rmSync(path.join(d, name), { force: true }) } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
+  // 上次进程被杀时 HLS 目录不会走 stop 流程，启动时统一清掉
+  cleanupHlsDirs()
   enforceLimit()
 }
 
@@ -206,4 +218,123 @@ export function mergeToCache({ bvid, cid, quality, videoUrl, audioUrl, onProgres
   })()
 
   return job.promise
+}
+
+/* ---------------- HLS 实时合流会话 ---------------- */
+
+/** HLS 临时目录根（会话目录在其下，播放结束即删） */
+function hlsRoot() {
+  return path.join(app.getPath('userData'), 'bili-cache', 'hls')
+}
+
+/**
+ * 启动 HLS 实时合流会话。
+ *
+ * @param {object} p
+ *   - bvid, cid, quality
+ *   - videoUrl, audioUrl
+ *   - onStarted?: () => void  可开播时回调
+ * @returns {{ sessionId: string, playlist: string, dir: string }}
+ */
+export function startHlsSession({ bvid, cid, quality, videoUrl, audioUrl, onStarted }) {
+  const key = cacheKeyOf(bvid, cid, quality)
+  // 同 key 的旧会话先停掉（用户可能连点画质）
+  for (const [id, s] of hlsSessions) {
+    if (s.key === key) stopHlsSession(id)
+  }
+
+  const sessionId = `h${++hlsSeq}-${key}`
+  const dir = path.join(hlsRoot(), sessionId)
+  fs.mkdirSync(dir, { recursive: true })
+
+  const hls = mergeDashToHls(videoUrl, audioUrl, dir, {
+    onStarted: () => {
+      // 标记可播，并把播放列表路径回传（渲染层据此加载）
+      const s = hlsSessions.get(sessionId)
+      if (s) s.ready = true
+      onStarted?.()
+    },
+    onExit: (code, err) => {
+      const s = hlsSessions.get(sessionId)
+      if (s) {
+        s.exited = true
+        s.exitCode = code
+        s.exitError = err || ''
+      }
+      // 正常结束（code 0）时列表已完整，保留文件供播放器读完剩余分片；
+      // 异常结束也保留（渲染层可能还在读），由 LRU/启动清理回收
+    }
+  })
+
+  hlsSessions.set(sessionId, {
+    hls,
+    dir,
+    key,
+    ready: false,
+    exited: false,
+    startedAt: Date.now()
+  })
+
+  return { sessionId, playlist: hls.playlist, dir }
+}
+
+/** 查询 HLS 会话状态 */
+export function hlsSessionStatus(sessionId) {
+  const s = hlsSessions.get(sessionId)
+  if (!s) return { exists: false }
+  let segCount = 0
+  try {
+    segCount = fs.readdirSync(s.dir).filter((n) => n.endsWith('.m4s')).length
+  } catch { /* ignore */ }
+  return {
+    // sessionId 必须回传：前端 waitHlsReady 轮询时用它拼
+    // ncm-audio://hls/<sessionId>/index.m3u8，缺了会拼出 "undefined" 导致 404
+    sessionId,
+    exists: true,
+    ready: s.ready,
+    exited: s.exited,
+    exitCode: s.exitCode ?? null,
+    exitError: s.exitError || '',
+    playlist: s.hls.playlist,
+    dir: s.dir,
+    segCount
+  }
+}
+
+/**
+ * 按 sessionId 取会话目录（供 ncm-audio://hls 协议定位文件）。
+ * 找不到返回 null。
+ */
+export function hlsDirOf(sessionId) {
+  const s = hlsSessions.get(sessionId)
+  return s ? s.dir : null
+}
+
+/** 停止并清理 HLS 会话 */
+export function stopHlsSession(sessionId) {
+  const s = hlsSessions.get(sessionId)
+  if (!s) return false
+  try { s.hls.stop() } catch { /* ignore */ }
+  hlsSessions.delete(sessionId)
+  // 延迟删目录：播放器可能还在读最后几个分片，立即删会导致播放中断
+  setTimeout(() => {
+    try { fs.rmSync(s.dir, { recursive: true, force: true }) } catch { /* ignore */ }
+  }, 3000)
+  return true
+}
+
+/** 清理所有 HLS 会话（应用退出/切换视频时） */
+export function stopAllHlsSessions() {
+  for (const id of [...hlsSessions.keys()]) stopHlsSession(id)
+}
+
+/** 启动清理：删掉上次残留的 HLS 目录（进程被杀时不会走 stop 流程） */
+export function cleanupHlsDirs() {
+  try {
+    const root = hlsRoot()
+    if (!fs.existsSync(root)) return
+    for (const name of fs.readdirSync(root)) {
+      try { fs.rmSync(path.join(root, name), { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
 }

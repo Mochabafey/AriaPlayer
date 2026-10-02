@@ -19,10 +19,25 @@ import { initBiliCache } from './biliStream.js'
 // standard+secure：让 Chromium 按标准协议（类似 http）处理 ncm-audio://，
 // media 元素对「标准协议」的 seek/缓存/取消语义与自定义 scheme 不同——
 // 缺 standard 时 media seek 可能被误判失败（MEDIA_ERR_NETWORK 卡死）
+//
+// corsEnabled：允许该协议参与 CORS 校验。
+// 页面运行在 file:// 下（打包版 loadFile），hls.js 内部用 fetch/XHR 加载
+// m3u8 与分片 —— 从 file:// origin 发起的跨源请求会被 Chromium 在**发出前**
+// 就以 CORS 拒绝（响应头补 Access-Control-Allow-Origin 也没用，因为请求根本
+// 没到协议处理器）。必须开这个标志才能让 fetch 正常读到响应。
+// media 元素（<video>）走独立加载路径不受此限，所以直连 mp4 一直没问题，
+// 直到引入 HLS 才暴露。
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'ncm-audio',
-    privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true }
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true,
+      supportFetchAPI: true,
+      bypassCSP: true,
+      corsEnabled: true
+    }
   }
 ])
 

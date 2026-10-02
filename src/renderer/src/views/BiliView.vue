@@ -39,6 +39,8 @@ const merging = ref(false)
 const mergePercent = ref(0)
 const mergeText = ref('')
 let mergeTimer = null
+/** 当前 HLS 实时合流会话 id（切画质/离开页面时需停止，释放 ffmpeg） */
+let currentHlsSession = null
 
 /** 画质 */
 const qualities = ref([])
@@ -68,6 +70,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   clearInterval(mergeTimer)
   clearInterval(qrTimer)
+  // 停掉 HLS 会话，否则 ffmpeg 会在后台继续下载合流（白耗带宽与磁盘）
+  stopCurrentHls()
+  try { bili.hlsStopAll() } catch { /* ignore */ }
 })
 
 async function refreshLogin() {
@@ -130,10 +135,13 @@ async function play(v) {
 async function resolveAndPlay(cid, quality) {
   const bvid = current.value?.bvid
   if (!bvid || !cid) return
+  // 切换前先停掉上一个 HLS 会话，避免多个 ffmpeg 同时跑抢带宽
+  stopCurrentHls()
   try {
     // preferSingle 只在「没有指定画质」时开启：用户明确要高画质时
     // 必须走 DASH（durl 上限通常 720P，强行走它会被降级）
-    const r = await bili.resolve(bvid, cid, quality, !quality)
+    // live=true：无缓存时走 HLS 实时合流（首片即可开播，不再等整片下完）
+    const r = await bili.resolve(bvid, cid, quality, !quality, true)
 
     qualities.value = buildQualities(r.acceptQuality, r.acceptDesc)
     currentQuality.value = r.quality || 0
@@ -158,7 +166,16 @@ async function resolveAndPlay(cid, quality) {
       playUrl.value = `ncm-audio://local?path=${encodeURIComponent(r.file)}`
       return
     }
-    // mode === 'merge'：轮询合流进度
+    if (r.mode === 'hls') {
+      // HLS 实时合流：等主进程产出首个分片再交给 hls.js 播。
+      // 这期间显示「正在合流…」但只需约 1-2 秒（一个分片的时长）。
+      currentHlsSession = r.sessionId
+      merging.value = true
+      mergeText.value = `正在实时合流 ${r.qualityName || ''}`
+      await waitHlsReady(r.sessionId)
+      return
+    }
+    // mode === 'merge'：全量合流（兜底路径）
     merging.value = true
     mergeText.value = `正在合流 ${r.qualityName || ''}`
     await pollMerge(r.key)
@@ -166,6 +183,68 @@ async function resolveAndPlay(cid, quality) {
     toast('取流失败：' + (e?.message || '未知错误'), 'error')
     merging.value = false
   }
+}
+
+/**
+ * 等待 HLS 会话产出首个分片（可开播）。
+ * ffmpeg 切第一个分片通常 1-3 秒（取决于网络与分片时长），
+ * 比全量合流的「整片下完」快一个数量级。
+ */
+function waitHlsReady(sessionId) {
+  return new Promise((resolve) => {
+    let ticks = 0
+    clearInterval(mergeTimer)
+    mergeTimer = setInterval(async () => {
+      ticks++
+      try {
+        const s = await bili.hlsStatus(sessionId)
+        if (!s.exists) {
+          clearInterval(mergeTimer)
+          merging.value = false
+          toast('合流会话已失效，请重试', 'error')
+          return resolve()
+        }
+        // ffmpeg 异常退出且没有分片 → 报错
+        if (s.exited && s.segCount === 0) {
+          clearInterval(mergeTimer)
+          merging.value = false
+          toast('合流失败：' + (s.exitError || '未知错误'), 'error')
+          return resolve()
+        }
+        if (s.ready || s.segCount > 0) {
+          clearInterval(mergeTimer)
+          merging.value = false
+          /**
+           * 用 ncm-audio://hls/<sessionId>/index.m3u8 提供 m3u8。
+           *
+           * 关键：目录必须编码在**路径**里，不能用 query。
+           * m3u8 内部以相对路径引用分片（seg00000.m4s、init.mp4），
+           * hls.js 用标准 URL 相对解析拼地址 —— 标准解析会**丢弃 base 的
+           * query 部分**，于是 `?dir=...` 丢失，分片请求变成
+           * `ncm-audio://hls/seg00000.m4s` 全部 404。
+           * 放进路径后，相对解析只替换最后一段，sessionId 得以保留。
+           */
+          playUrl.value = `ncm-audio://hls/${encodeURIComponent(s.sessionId)}/index.m3u8`
+          return resolve()
+        }
+        // 进度反馈：合流无总时长，按已用时间给渐进提示
+        mergePercent.value = Math.min(90, ticks * 12)
+      } catch { /* 继续轮询 */ }
+      if (ticks > 200) {
+        clearInterval(mergeTimer)
+        merging.value = false
+        toast('合流超时，请重试', 'error')
+        resolve()
+      }
+    }, 250)
+  })
+}
+
+/** 停止当前 HLS 会话（切画质/离开页面时调用，释放 ffmpeg 进程） */
+function stopCurrentHls() {
+  if (!currentHlsSession) return
+  try { bili.hlsStop(currentHlsSession) } catch { /* ignore */ }
+  currentHlsSession = null
 }
 
 /** 轮询合流进度直到完成 */
@@ -209,18 +288,24 @@ function pollMerge(key) {
  * 保存用户选择到 settings.biliQuality，下次播放任意视频自动应用
  *（原实现只改当前播放，退出页面就丢，用户每次都要重选）。
  */
+/**
+ * 切画质。
+ * 保存用户选择到 settings.biliQuality，下次播放任意视频自动应用。
+ *
+ * 注意不要在这里先 `playUrl.value = ''`：那会触发 BiliPlayer 的 watch
+ * 走一遍「无源」分支（销毁 HLS + 释放底部条接管），随后新源就绪又触发
+ * 一次 watch —— 两次重挂载之间接管状态被打断，表现为「切换后画面回到旧档位
+ * 且播放停止」。让 resolveAndPlay 内部一次性换成新源即可。
+ */
 async function onQualityChange(qid) {
   if (!current.value?.cid) return
   const wasPlaying = !!playUrl.value
-  playUrl.value = ''
   await resolveAndPlay(current.value.cid, qid)
   // 记录实际生效的档位（上游可能降级），而非请求值
   if (currentQuality.value) {
     settings.set('biliQuality', currentQuality.value)
   }
   if (wasPlaying && playUrl.value) {
-    // 位置保持由 BiliPlayer 内部处理（url 变化时重新加载），
-    // 这里只提示用户
     toast('已切换清晰度', 'success')
   }
 }
@@ -274,6 +359,7 @@ function closePlayer() {
   current.value = null
   clearInterval(mergeTimer)
   merging.value = false
+  stopCurrentHls()
 }
 
 function fmtDur(s) {
