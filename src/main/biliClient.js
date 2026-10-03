@@ -550,3 +550,125 @@ export async function logout() {
   clearCookie()
   return { ok: true }
 }
+
+/* ---------------- 字幕 ---------------- */
+
+/**
+ * 拉取 B 站视频自带字幕（CC 字幕）。
+ *
+ * 注意：B 站字幕**不是所有视频都有**（需要 UP 主上传或 AI 生成），
+ * 且多数需要登录 cookie 才能拿到。取不到时返回空数组，由调用方
+ * 回退到「搜网易云歌词」路径。
+ *
+ * 流程：player/v2 拿字幕列表（含 subtitle_url）→ 下载该 URL 的 JSON。
+ *
+ * @returns {Promise<Array<{from:number,to:number,text:string}>>}
+ */
+export async function fetchSubtitle(bvid, cid) {
+  try {
+    const qs = await signParams({ bvid, cid })
+    const res = await biliRequest(`https://api.bilibili.com/x/player/wbi/v2?${qs}`)
+    absorbCookies(res)
+    const list = res.json?.data?.subtitle?.subtitles || []
+    if (!list.length) return []
+    // 优先中文，其次第一条
+    const pick =
+      list.find((s) => /zh|cn/i.test(s.lan || '')) || list[0]
+    let url = pick?.subtitle_url || ''
+    if (!url) return []
+    // 协议相对 → https
+    if (url.startsWith('//')) url = 'https:' + url
+    const sub = await biliRequest(url)
+    const body = sub.json?.body || []
+    return body
+      .map((x) => ({
+        from: Number(x.from) || 0,
+        to: Number(x.to) || 0,
+        text: String(x.content || '').trim()
+      }))
+      .filter((x) => x.text)
+  } catch {
+    return []
+  }
+}
+
+/* ---------------- 标题清洗 + 歌词搜索 ---------------- */
+
+/**
+ * 从 B 站视频标题提取用于搜歌的关键词。
+ *
+ * 实测 B 站音乐区标题噪声很多，例如：
+ *   【4K】皇后乐队《波西米亚狂想曲》MV  AI高清修复
+ *   【4K60FPS】皇后乐队Queen《波西米亚狂想曲》核能现场！无法超越的经典！
+ *   Queen - Bohemian Rhapsody (Official Video)
+ *   百万级装备听《Bohemian Rhapsody》波西米亚狂想曲 - Queen
+ *
+ * 清洗策略（按顺序）：
+ *   1. 去掉【】[]（）() 内的装饰内容（画质/标签/前缀）
+ *   2. 去掉常见噪声词（4K/8K/MV/官方/高清修复/AI/中文字幕/现场/live…）
+ *   3. 去掉尾部的话题与感叹
+ *   4. 提取《》或 "" 里的歌名（B 站音乐视频惯例：歌名放书名号里）
+ *
+ * @returns {{ keyword: string, songName: string, artist: string }}
+ */
+export function cleanTitle(rawTitle) {
+  let t = String(rawTitle || '')
+
+  /**
+   * 1) 优先提取《》「」"" 内的内容作为歌名。
+   *
+   * 关键：**不能**把【】[]（）也算进来 —— 它们装的是画质/标签
+   *（【4K】【中文字幕】【Hi-Res无损】），当歌名会把关键词变成 "4K"，
+   * 搜索结果全错。B 站音乐视频的歌名惯例放在书名号或引号里。
+   */
+  const quoted = t.match(/[《「"“]([^》」"”]{1,60})[》」"”]/)
+  let songName = quoted ? quoted[1].trim() : ''
+
+  // 2) 去掉所有括号内容（含【】[]（）），它们是标签而非歌名
+  t = t.replace(/[【\[（(][^】\]）)]*[】\]）)]/g, ' ')
+
+  // 3) 去噪声词（画质/来源/版本等）
+  // 注意：中文噪声词不能加 \b（\b 在 CJK 与 ASCII 边界行为不符合预期，
+  // 会导致 "AI高清修复" 这类连写词清不掉），故中文部分单独用不带 \b 的替换。
+  t = t.replace(
+    /\b(4K|8K|1080P|720P|60FPS|FPS|MV|PV|OP|ED|HD|HDR|Hi-?Res|Official|official|Video|video|Audio|audio|ver\.?|Ver\.?|version|Performance|performance|Live|LIVE|live|AI)\b/gi,
+    ' '
+  )
+  t = t.replace(
+    /(无损|官方|高清修复|高清|修复|重制|中文字幕|字幕|完整版|现场版|纯享|核能现场|百万级装备听|电影|主题曲|片头曲|片尾曲|插曲|翻唱|原唱|超清|标清|流畅)/g,
+    ' '
+  )
+  // 4) 去多余符号与空白
+  t = t.replace(/[!！?？~～、,，.。:：;；\-—_|/\\]+/g, ' ')
+  t = t.replace(/\s+/g, ' ').trim()
+
+  /**
+   * 5) 解析歌手：
+   *    若已有书名号歌名，则把「书名号及其内容」整体从剩余文本里去掉，
+   *    剩下的若是一段短文本就当作歌手名。
+   *    否则按「A - B」拆分（B 站常见「Artist - Song」）。
+   */
+  let artist = ''
+  if (songName) {
+    // 连书名号一起移除（只移内容会留下《》残留混进歌手名）
+    let rest = t.replace(/[《「"“][^》」"”]*[》」"”]/g, ' ')
+    rest = rest.replace(songName, ' ')
+    rest = rest.replace(/[《》「」""'']/g, ' ')
+    rest = rest.replace(/\s+/g, ' ').trim()
+    // 太长的不是歌手名（多半是副标题/描述），丢弃避免污染关键词
+    if (rest && rest.length <= 24 && !/[。！？!?]/.test(rest)) artist = rest
+  } else {
+    const parts = t.split(/\s+-\s+/).map((x) => x.trim()).filter(Boolean)
+    if (parts.length >= 2) {
+      // 「Artist - Song」是 B 站/YouTube 更常见的格式
+      artist = parts[0]
+      songName = parts.slice(1).join(' - ')
+    } else {
+      songName = t
+    }
+  }
+
+  // 关键词：歌名优先，带上歌手提高命中率
+  const keyword = [songName, artist].filter(Boolean).join(' ').trim() || t
+  return { keyword, songName, artist }
+}

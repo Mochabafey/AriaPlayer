@@ -219,7 +219,8 @@ async function bootstrap() {
   })
   registerPlaylistIpc()
   registerNcmConvertIpc(() => mainWindow)
-  registerBiliIpc()
+  // 传入 ncm server：B 站字幕/歌词功能需要经私有通道搜网易云
+  registerBiliIpc(() => server)
 
   createWindow()
 

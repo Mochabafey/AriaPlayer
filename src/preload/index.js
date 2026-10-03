@@ -81,6 +81,11 @@ const INVOKE_ALLOWLIST = new Set([
   'bili:hls-status',
   'bili:hls-stop',
   'bili:hls-stop-all',
+  // B站字幕 / 歌词（B站页的三行字幕）
+  'bili:subtitle',
+  'bili:auto-lyric',
+  'bili:search-song',
+  'bili:song-lyric',
   'bili:cache-stats',
   'bili:cache-clear'
 ])

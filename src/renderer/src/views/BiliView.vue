@@ -401,6 +401,8 @@ const qrStatusText = computed(() => ({
         :merging="merging"
         :merge-percent="mergePercent"
         :merge-text="mergeText"
+        :bvid="current.bvid"
+        :cid="current.cid"
         @quality-change="onQualityChange"
       />
       <div class="pa-meta">

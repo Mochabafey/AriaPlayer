@@ -104,12 +104,21 @@ export const bili = {
   hlsStop: (sessionId) => bridge.invoke('bili:hls-stop', sessionId),
   /** 停止全部 HLS 会话 */
   hlsStopAll: () => bridge.invoke('bili:hls-stop-all'),
+  /** B 站视频自带字幕（CC），多数视频没有，取不到返回空数组 */
+  subtitle: (bvid, cid) => bridge.invoke('bili:subtitle', { bvid, cid }),
+  /** 按视频标题自动匹配网易云歌词（清洗标题 → 搜歌 → 取歌词） */
+  autoLyric: (title) => bridge.invoke('bili:auto-lyric', { title }),
+  /** 手动搜网易云歌曲（歌词匹配不准时的兜底） */
+  searchSong: (keyword, limit = 10) => bridge.invoke('bili:search-song', { keyword, limit }),
+  /** 按歌曲 id 取歌词（手动选定后加载） */
+  songLyric: (id) => bridge.invoke('bili:song-lyric', { id }),
   /** 合流缓存管理 */
   cacheStats: () => bridge.invoke('bili:cache-stats'),
   cacheClear: () => bridge.invoke('bili:cache-clear')
 }
 
-export const ncm = {  // 服务状态
+export const ncm = {
+  // 服务状态
   serverStatus: () => bridge.invoke('ncm:server-status'),
   serverRestart: () => bridge.invoke('ncm:server-restart'),
   onServerStatus: (cb) => bridge.on('ncm:server-status', cb),

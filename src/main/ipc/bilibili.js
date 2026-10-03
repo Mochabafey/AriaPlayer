@@ -1,4 +1,5 @@
 import { ipcMain } from 'electron'
+import http from 'http'
 import {
   searchVideos,
   videoInfo,
@@ -9,7 +10,9 @@ import {
   logout,
   setCookieString,
   getCookieString,
-  clearCookie
+  clearCookie,
+  fetchSubtitle,
+  cleanTitle
 } from '../biliClient.js'
 import {
   mergeToCache,
@@ -31,7 +34,42 @@ import {
  * B 站 CDN——防盗链头需要主进程注入）。渲染层只拿到「本地可播地址」或
  * 「需要合流」的标记，然后轮询合流进度。
  */
-export function registerBiliIpc() {
+export function registerBiliIpc(getNcmServer) {
+  /**
+   * 经私有通道向内置网易云服务发请求（搜歌 / 取歌词用）。
+   * 复用 registerApiIpc 里同样的 socketPath 方式，避免重复起 TCP 连接。
+   *
+   * 启动竞态兜底：B 站页可能在 ncm 服务就绪前就请求歌词（窗口先于服务显示），
+   * 此时直接返回 null 会让「自动匹配歌词」静默失败。这里短暂等待服务就绪
+   * ——与 ipc/api.js 的 ncm:api 保持一致的策略。
+   */
+  async function ncmGet(srv, urlPath) {
+    if (!srv) return null
+    if (srv.status !== 'ready') {
+      const ready = await srv.waitUntilReady(12000)
+      if (!ready) return null
+    }
+    return new Promise((resolve) => {
+      const req = http.request(
+        { socketPath: srv.socketPath, path: urlPath, method: 'GET' },
+        (res) => {
+          const chunks = []
+          res.on('data', (c) => chunks.push(c))
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')))
+            } catch {
+              resolve(null)
+            }
+          })
+        }
+      )
+      req.on('error', () => resolve(null))
+      req.setTimeout(20000, () => req.destroy(new Error('ncm timeout')))
+      req.end()
+    })
+  }
+
   // ---- 登录态 ----
   ipcMain.handle('bili:login-status', () => checkLogin())
 
@@ -189,6 +227,113 @@ export function registerBiliIpc() {
       error: st.error,
       file: st.done ? st.output : null
     }
+  })
+
+  // ---- 字幕 / 歌词 ----
+
+  /**
+   * 取 B 站视频自带字幕（CC）。多数视频没有，取不到返回空数组。
+   */
+  ipcMain.handle('bili:subtitle', async (_e, { bvid, cid }) => {
+    const list = await fetchSubtitle(bvid, cid)
+    return { ok: true, list }
+  })
+
+  /**
+   * 按 B 站视频标题自动匹配网易云歌词。
+   *
+   * 流程：清洗标题 → 搜网易云 → 取首条命中 → 拉歌词（含翻译）。
+   * 匹配质量用「歌名+歌手是否都出现在标题里」粗判，供前端提示置信度。
+   *
+   * @returns {{ ok, keyword, matched?: {id,name,artist}, lyrics?: Array, tlyric?: string, confidence }}
+   */
+  ipcMain.handle('bili:auto-lyric', async (_e, { title }) => {
+    const srv = getNcmServer && getNcmServer()
+    const { keyword, songName, artist } = cleanTitle(title)
+    if (!keyword) return { ok: false, reason: 'no-keyword' }
+
+    const search = await ncmGet(
+      srv,
+      `/cloudsearch?keywords=${encodeURIComponent(keyword)}&type=1&limit=5`
+    )
+    const songs = search?.result?.songs || []
+    if (!songs.length) {
+      return { ok: false, reason: 'no-result', keyword }
+    }
+
+    // 选匹配度最高的一条：歌名包含关系 + 歌手出现在标题里
+    const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, '')
+    const tNorm = norm(title)
+    let best = null
+    let bestScore = -1
+    for (const s of songs) {
+      const n = norm(s.name)
+      const a = norm((s.ar || []).map((x) => x.name).join(''))
+      let score = 0
+      if (n && tNorm.includes(n)) score += 2
+      if (a && tNorm.includes(a)) score += 2
+      if (songName && norm(songName) === n) score += 1
+      if (score > bestScore) {
+        bestScore = score
+        best = s
+      }
+    }
+    if (!best) return { ok: false, reason: 'no-match', keyword }
+
+    const lyric = await ncmGet(srv, `/lyric?id=${best.id}`)
+    const lrc = lyric?.lrc?.lyric || ''
+    const tlyric = lyric?.tlyric?.lyric || ''
+    if (!lrc) return { ok: false, reason: 'no-lyric', keyword, matched: { id: best.id, name: best.name } }
+
+    return {
+      ok: true,
+      keyword,
+      matched: {
+        id: best.id,
+        name: best.name,
+        artist: (best.ar || []).map((x) => x.name).join('/'),
+        album: best.al?.name || '',
+        duration: Math.round((best.dt || 0) / 1000)
+      },
+      lyrics: lrc,
+      tlyric,
+      // 置信度：0=仅关键词命中 1=歌名命中 2=歌名+歌手都命中
+      confidence: Math.min(2, Math.max(0, bestScore - (songName ? 1 : 0)))
+    }
+  })
+
+  /**
+   * 手动搜索网易云歌曲（歌词匹配不准时的兜底入口）。
+   */
+  ipcMain.handle('bili:search-song', async (_e, { keyword, limit = 10 }) => {
+    const srv = getNcmServer && getNcmServer()
+    if (!keyword) return { ok: true, list: [] }
+    const search = await ncmGet(
+      srv,
+      `/cloudsearch?keywords=${encodeURIComponent(keyword)}&type=1&limit=${limit}`
+    )
+    const songs = search?.result?.songs || []
+    return {
+      ok: true,
+      list: songs.map((s) => ({
+        id: s.id,
+        name: s.name,
+        artist: (s.ar || []).map((x) => x.name).join('/'),
+        album: s.al?.name || '',
+        duration: Math.round((s.dt || 0) / 1000)
+      }))
+    }
+  })
+
+  /** 按歌曲 id 取歌词（手动选定后加载） */
+  ipcMain.handle('bili:song-lyric', async (_e, { id }) => {
+    const srv = getNcmServer && getNcmServer()
+    if (!id) return { ok: false }
+    const lyric = await ncmGet(srv, `/lyric?id=${id}`)
+    const lrc = lyric?.lrc?.lyric || ''
+    const tlyric = lyric?.tlyric?.lyric || ''
+    if (!lrc) return { ok: false, reason: 'no-lyric' }
+    return { ok: true, lyrics: lrc, tlyric }
   })
 
   // ---- HLS 实时合流会话 ----

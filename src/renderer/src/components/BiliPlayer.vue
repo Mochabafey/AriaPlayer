@@ -14,6 +14,9 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Hls from 'hls.js'
 import { usePlayerStore } from '../stores/player'
+import { parseLrc, activeIndex } from '../utils/lrc'
+import { bili } from '../api'
+import BiliSubtitle from './BiliSubtitle.vue'
 
 const props = defineProps({
   /** 可播地址（ncm-audio:// 或本地 file） */
@@ -35,7 +38,11 @@ const props = defineProps({
   /** 合流状态文本 */
   mergeText: { type: String, default: '' },
   /** 自动播放 */
-  autoplay: { type: Boolean, default: true }
+  autoplay: { type: Boolean, default: true },
+  /** B 站视频标识（用于自动匹配歌词；为空则不启用字幕） */
+  bvid: { type: String, default: '' },
+  /** 分P id（拉字幕需要） */
+  cid: { type: [String, Number], default: '' }
 })
 
 const emit = defineEmits(['quality-change', 'ended', 'error'])
@@ -63,6 +70,129 @@ const qualityOpen = ref(false)
 /** 倍速菜单 */
 const rateOpen = ref(false)
 const errorMsg = ref('')
+
+/* ---------------- 三行字幕（叠在视频上） ----------------
+ * 歌词来源优先级：
+ *   1. B 站自带字幕（CC）—— 与视频天然同步，最准
+ *   2. 按视频标题自动匹配网易云歌词 —— 覆盖绝大多数音乐 MV
+ *   3. 手动搜索（用户改关键词）—— 前两者都失败/匹配错时的兜底
+ * 只在 B 站页启用（有 bvid 时），不影响歌曲播放页的 LyricPanel。
+ */
+const subLines = ref([])
+const subLabel = ref('')
+const subLoading = ref(false)
+/** 字幕搜索面板展开态 */
+const subSearchOpen = ref(false)
+const subKeyword = ref('')
+const subResults = ref([])
+const subSearching = ref(false)
+
+/** 当前行索引（复用歌曲歌词页的算法，保证滚动时机一致） */
+const subActive = computed(() => activeIndex(subLines.value, currentTime.value))
+
+/**
+ * 加载字幕。
+ *
+ * 两个来源**并行**取，择优使用：
+ *   - B 站自带字幕（CC）：与视频天然同步，但很多视频没有；即使有，
+ *     也可能只是部分翻译（实测某 MV 只有 56 句英文，而完整歌词有 100+ 句）
+ *   - 网易云歌词：按视频标题自动匹配，覆盖绝大多数音乐 MV，通常最完整
+ * 择优规则：两边都有时取**行数更多**的那个（更完整）；
+ *          只有一边有就用它。手动搜索始终可覆盖。
+ */
+async function loadSubtitle() {
+  if (!props.bvid) return
+  subLines.value = []
+  subLabel.value = ''
+  subLoading.value = true
+  try {
+    // 并行请求两个来源（互不依赖，串行会白等）
+    const [biliRes, autoRes] = await Promise.all([
+      props.cid ? bili.subtitle(props.bvid, props.cid).catch(() => null) : Promise.resolve(null),
+      bili.autoLyric(props.title).catch(() => null)
+    ])
+
+    // B 站自带字幕 → 统一结构
+    const ccLines = (biliRes?.list || []).map((x) => ({ time: x.from, text: x.text }))
+
+    // 网易云歌词 → 统一结构
+    let ncmLines = []
+    let ncmLabel = ''
+    let ncmKeyword = ''
+    if (autoRes?.ok) {
+      ncmLines = parseLrc(autoRes.lyrics, autoRes.tlyric)
+      const m = autoRes.matched
+      // 置信度低时明确提示，用户可点搜索框改
+      const conf =
+        autoRes.confidence >= 2 ? '' : autoRes.confidence === 1 ? '（匹配度一般）' : '（匹配度低，建议手动搜）'
+      ncmLabel = `网易云 · ${m?.name || ''}${m?.artist ? ' - ' + m.artist : ''}${conf}`
+    }
+    ncmKeyword = autoRes?.keyword || ''
+
+    // 择优：行数多的更完整
+    if (ncmLines.length >= ccLines.length && ncmLines.length > 0) {
+      subLines.value = ncmLines
+      subLabel.value = ncmLabel
+    } else if (ccLines.length > 0) {
+      subLines.value = ccLines
+      subLabel.value = `B站字幕 · ${ccLines.length} 句`
+    } else {
+      subLabel.value = '未找到匹配歌词，可点此搜索'
+    }
+    // 预填关键词，方便用户直接改
+    subKeyword.value = ncmKeyword || props.title || ''
+  } catch {
+    subLabel.value = ''
+  } finally {
+    subLoading.value = false
+  }
+}
+
+/** 打开字幕搜索面板（并预填当前标题作为关键词） */
+function openSubSearch() {
+  subSearchOpen.value = true
+  if (!subKeyword.value) subKeyword.value = props.title || ''
+  if (subKeyword.value && !subResults.value.length) doSubSearch()
+}
+
+/** 搜网易云歌曲 */
+async function doSubSearch() {
+  const kw = subKeyword.value.trim()
+  if (!kw || subSearching.value) return
+  subSearching.value = true
+  try {
+    const r = await bili.searchSong(kw, 12)
+    subResults.value = r.list || []
+  } catch {
+    subResults.value = []
+  } finally {
+    subSearching.value = false
+  }
+}
+
+/** 选定某首歌的歌词作为字幕 */
+async function pickSubtitle(song) {
+  subSearching.value = true
+  try {
+    const r = await bili.songLyric(song.id)
+    if (r?.ok) {
+      subLines.value = parseLrc(r.lyrics, r.tlyric)
+      subLabel.value = `网易云 · ${song.name}${song.artist ? ' - ' + song.artist : ''}`
+      subSearchOpen.value = false
+    } else {
+      errorMsg.value = '这首歌没有歌词'
+      setTimeout(() => { errorMsg.value = '' }, 2500)
+    }
+  } finally {
+    subSearching.value = false
+  }
+}
+
+/** 关闭字幕（用户不想看时） */
+function clearSubtitle() {
+  subLines.value = []
+  subLabel.value = ''
+}
 
 const RATES = [2, 1.5, 1.25, 1, 0.75, 0.5]
 
@@ -306,7 +436,6 @@ function destroyHls() {
 function attachSource(v, src) {
   destroyHls()
   const isHls = /\.m3u8(\?|$)/i.test(src) || src.includes('index.m3u8')
-  console.log(`[bili-player] attachSource hls=${isHls} src=${String(src).slice(0, 90)}`)
   if (isHls) {
     if (Hls.isSupported()) {
       hls = new Hls({
@@ -319,21 +448,9 @@ function attachSource(v, src) {
         // 列表里暂时没有分片时不报错，继续等（ffmpeg 正在生成）
         manifestLoadingTimeOut: 20000
       })
-      // 诊断：记录 hls.js 的关键事件与错误详情
-      hls.on(Hls.Events.MANIFEST_PARSED, (_e, d) => {
-        console.log(`[bili-player] MANIFEST_PARSED levels=${d?.levels?.length ?? '?'}`)
-      })
-      hls.on(Hls.Events.LEVEL_LOADED, (_e, d) => {
-        console.log(`[bili-player] LEVEL_LOADED frags=${d?.details?.fragments?.length ?? '?'}`)
-      })
-      hls.on(Hls.Events.FRAG_LOADED, (_e, d) => {
-        console.log(`[bili-player] FRAG_LOADED sn=${d?.frag?.sn}`)
-      })
       hls.loadSource(src)
       hls.attachMedia(v)
       hls.on(Hls.Events.ERROR, (_e, data) => {
-        // 打印所有错误（含非致命），便于定位
-        console.log(`[bili-player] HLS ERROR fatal=${data.fatal} type=${data.type} details=${data.details} reason=${data.reason || ''} err=${data.error?.message || ''}`)
         if (!data.fatal) return
         // 合流刚启动时列表可能还没写好分片，这类错误可自愈，不打扰用户
         if (data.type === 'networkError') {
@@ -413,8 +530,19 @@ watch(
       }
     }
     poke()
+    // 换源即重新匹配字幕（不同视频的歌词不同）。
+    // 只在 B 站页启用（有 bvid），不影响歌曲播放页。
+    if (props.bvid) loadSubtitle()
   },
   { immediate: true }
+)
+
+/** bvid 变化（切分P/切视频）时也重新匹配字幕 */
+watch(
+  () => [props.bvid, props.cid],
+  () => {
+    if (props.bvid && props.url) loadSubtitle()
+  }
 )
 
 /** 供底部条接管后调用：跳转到指定秒 */
@@ -492,6 +620,65 @@ function onError() {
         <div class="bp-merge-meta">
           <span>{{ mergeText || 'B 站高清为音视频分离流，需先合流才能播放' }}</span>
           <span v-if="mergePercent > 0">{{ Math.round(mergePercent) }}%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 三行字幕：叠在视频上、进度条上方（仅 B 站页，不影响歌曲歌词页） -->
+    <BiliSubtitle
+      v-if="!merging && subLines.length"
+      :lines="subLines"
+      :time="currentTime"
+      :active-index="subActive"
+      :show-trans="true"
+      :source-label="subLabel"
+    />
+
+    <!-- 字幕来源 / 手动搜索入口（右下角小按钮，不抢画面） -->
+    <div v-if="!merging && bvid" class="bp-sub-btn-wrap" @click.stop>
+      <button
+        class="bp-sub-btn"
+        :class="{ on: subLines.length, loading: subLoading }"
+        :title="subLines.length ? '歌词：' + subLabel + '（点击可换）' : '搜索歌词'"
+        @click="subSearchOpen ? (subSearchOpen = false) : openSubSearch()"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h16M4 12h10M4 18h7"/>
+        </svg>
+        <span class="bp-sub-label">{{ subLoading ? '匹配中…' : (subLines.length ? '歌词' : '搜歌词') }}</span>
+      </button>
+
+      <!-- 手动搜索面板：自动匹配不准时的兜底 -->
+      <div v-if="subSearchOpen" class="bp-sub-panel">
+        <div class="bp-sub-head">
+          <span>搜索歌词</span>
+          <button class="bp-sub-x" title="关闭" @click="subSearchOpen = false">✕</button>
+        </div>
+        <div class="bp-sub-input-row">
+          <input
+            v-model="subKeyword"
+            class="bp-sub-input"
+            placeholder="歌名 / 歌手"
+            @keyup.enter="doSubSearch"
+          />
+          <button class="bp-sub-go" :disabled="subSearching" @click="doSubSearch">
+            {{ subSearching ? '…' : '搜索' }}
+          </button>
+        </div>
+        <div v-if="subResults.length" class="bp-sub-list">
+          <button
+            v-for="s in subResults"
+            :key="s.id"
+            class="bp-sub-item"
+            @click="pickSubtitle(s)"
+          >
+            <span class="bp-sub-name">{{ s.name }}</span>
+            <span class="bp-sub-artist">{{ s.artist }}</span>
+          </button>
+        </div>
+        <div v-else-if="!subSearching" class="bp-sub-empty">输入关键词搜索，点结果即作为字幕</div>
+        <div v-if="subLines.length" class="bp-sub-foot">
+          <button class="bp-sub-clear" @click="clearSubtitle(); subSearchOpen = false">关闭字幕</button>
         </div>
       </div>
     </div>
@@ -865,6 +1052,125 @@ function onError() {
   background: rgba(0, 0, 0, 0.82);
   z-index: 6;
 }
+
+/* ---- 字幕按钮与搜索面板 ---- */
+.bp-sub-btn-wrap {
+  position: absolute;
+  right: 14px;
+  /* 贴在控制条上方，与画质按钮错开（画质在控制条内） */
+  bottom: 62px;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.bp-sub-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), transform 0.15s var(--ease);
+}
+.bp-sub-btn:hover { background: rgba(0, 0, 0, 0.84); transform: scale(1.03); }
+.bp-sub-btn.on { color: var(--accent, #fb7299); }
+.bp-sub-btn.loading { opacity: 0.75; }
+.bp-sub-btn svg { width: 13px; height: 13px; }
+.bp-sub-label { white-space: nowrap; }
+
+.bp-sub-panel {
+  width: 260px;
+  background: rgba(24, 24, 26, 0.96);
+  backdrop-filter: blur(14px);
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bp-sub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #fff;
+}
+.bp-sub-x {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+.bp-sub-x:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.bp-sub-input-row { display: flex; gap: 6px; }
+.bp-sub-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 5px 9px;
+  color: #fff;
+  font-size: 12.5px;
+  outline: none;
+}
+.bp-sub-input::placeholder { color: rgba(255, 255, 255, 0.4); }
+.bp-sub-input:focus { border-color: var(--accent, #fb7299); }
+.bp-sub-go {
+  padding: 5px 11px;
+  border-radius: 6px;
+  background: var(--accent, #fb7299);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bp-sub-go:disabled { opacity: 0.5; }
+.bp-sub-list {
+  max-height: 190px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.bp-sub-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: left;
+  color: rgba(255, 255, 255, 0.88);
+  transition: background 0.13s var(--ease);
+}
+.bp-sub-item:hover { background: rgba(255, 255, 255, 0.1); }
+.bp-sub-name { font-size: 12.5px; font-weight: 600; }
+.bp-sub-artist { font-size: 11px; color: rgba(255, 255, 255, 0.5); }
+.bp-sub-empty {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.45);
+  padding: 8px 2px;
+  line-height: 1.5;
+}
+.bp-sub-foot { border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 8px; }
+.bp-sub-clear {
+  width: 100%;
+  padding: 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 12px;
+}
+.bp-sub-clear:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
 .bp-merge-box { width: min(420px, 78%); text-align: center; }
 .bp-merge-title { color: #fff; font-size: 14px; font-weight: 600; margin-bottom: 14px; }
 .bp-merge-bar {
