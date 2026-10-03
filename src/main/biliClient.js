@@ -642,11 +642,13 @@ export function cleanTitle(rawTitle) {
   // 注意：中文噪声词不能加 \b（\b 在 CJK 与 ASCII 边界行为不符合预期，
   // 会导致 "AI高清修复" 这类连写词清不掉），故中文部分单独用不带 \b 的替换。
   t = t.replace(
-    /\b(4K|8K|1080P|720P|60FPS|FPS|MV|PV|OP|ED|HD|HDR|Hi-?Res|Official|official|Video|video|Audio|audio|ver\.?|Ver\.?|version|Performance|performance|Live|LIVE|live|AI)\b/gi,
+    // 画质/帧率：含 2160P/1440P 等 —— 漏掉它们会让搜索词变成
+    // 「周杰伦 晴天 2160P 版」，搜到完全无关的歌（实测搜出《布拉格广场》）
+    /\b(4K|8K|2K|1080P|1440P|2160P|720P|480P|60FPS|30FPS|FPS|MV|PV|OP|ED|HD|HDR|Hi-?Res|Official|official|Video|video|Audio|audio|ver\.?|Ver\.?|version|Performance|performance|Live|LIVE|live|AI)\b/gi,
     ' '
   )
   t = t.replace(
-    /(无损|官方|高清修复|高清|修复|重制|中文字幕|字幕|完整版|现场版|纯享|核能现场|百万级装备听|电影|主题曲|片头曲|片尾曲|插曲|翻唱|原唱|超清|标清|流畅)/g,
+    /(无损|官方|高清修复|高清|修复|重制|重置|中文字幕|字幕|完整版|现场版|纯享|核能现场|百万级装备听|电影|主题曲|片头曲|片尾曲|插曲|翻唱|原唱|超清|标清|流畅|版|合集|全曲|首发)/g,
     ' '
   )
   // 4) 去多余符号与空白

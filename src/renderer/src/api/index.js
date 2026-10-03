@@ -106,8 +106,8 @@ export const bili = {
   hlsStopAll: () => bridge.invoke('bili:hls-stop-all'),
   /** B 站视频自带字幕（CC），多数视频没有，取不到返回空数组 */
   subtitle: (bvid, cid) => bridge.invoke('bili:subtitle', { bvid, cid }),
-  /** 按视频标题自动匹配网易云歌词（清洗标题 → 搜歌 → 取歌词） */
-  autoLyric: (title) => bridge.invoke('bili:auto-lyric', { title }),
+  /** 按视频标题自动匹配网易云歌词（传 duration 可优先匹配等长原唱） */
+  autoLyric: (title, duration) => bridge.invoke('bili:auto-lyric', { title, duration }),
   /** 手动搜网易云歌曲（歌词匹配不准时的兜底） */
   searchSong: (keyword, limit = 10) => bridge.invoke('bili:search-song', { keyword, limit }),
   /** 按歌曲 id 取歌词（手动选定后加载） */

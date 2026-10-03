@@ -251,32 +251,65 @@ export function registerBiliIpc(getNcmServer) {
    *
    * @returns {{ ok, keyword, matched?: {id,name,artist}, lyrics?: Array, tlyric?: string, confidence }}
    */
-  ipcMain.handle('bili:auto-lyric', async (_e, { title }) => {
+  ipcMain.handle('bili:auto-lyric', async (_e, { title, duration }) => {
     const srv = getNcmServer && getNcmServer()
     const { keyword, songName, artist } = cleanTitle(title)
     if (!keyword) return { ok: false, reason: 'no-keyword' }
 
     const search = await ncmGet(
       srv,
-      `/cloudsearch?keywords=${encodeURIComponent(keyword)}&type=1&limit=5`
+      `/cloudsearch?keywords=${encodeURIComponent(keyword)}&type=1&limit=10`
     )
     const songs = search?.result?.songs || []
     if (!songs.length) {
       return { ok: false, reason: 'no-result', keyword }
     }
 
-    // 选匹配度最高的一条：歌名包含关系 + 歌手出现在标题里
+    /**
+     * 选最佳匹配。
+     *
+     * 评分维度（原实现只看歌名/歌手是否出现在标题里，会选中翻唱版）：
+     *   1. 歌名/歌手命中标题          —— 基础相关度
+     *   2. **时长接近视频时长**        —— 关键：原唱与 MV 时长通常一致；
+     *      翻唱/钢琴版/片段版时长差异大（实测 MV 317s，搜到的
+     *      「晴天(深情版)」279s、「晴天 - Jay」112s 都是错的）
+     *   3. 排除翻唱/伴奏/片段等标记    —— 这些版本的时间轴与 MV 对不上
+     */
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, '')
     const tNorm = norm(title)
+    const durSec = Number(duration) || 0
+
+    /** 版本噪声词：命中则降权（这些版本的时间轴与 MV 通常不一致） */
+    const VERSION_NOISE = /翻唱|cover|伴奏|instrumental|钢琴|piano|吉他|guitar|纯音乐|片段|剪辑|remix|dj|加速|减速|深情版|女声版|男声版|童声|抖音|铃声|karaoke|伴奏版/i
+
     let best = null
-    let bestScore = -1
+    let bestScore = -Infinity
     for (const s of songs) {
       const n = norm(s.name)
       const a = norm((s.ar || []).map((x) => x.name).join(''))
+      const songDur = Math.round((s.dt || 0) / 1000)
       let score = 0
-      if (n && tNorm.includes(n)) score += 2
-      if (a && tNorm.includes(a)) score += 2
-      if (songName && norm(songName) === n) score += 1
+
+      // 1) 基础相关度
+      if (n && tNorm.includes(n)) score += 3
+      if (a && tNorm.includes(a)) score += 3
+      if (songName && norm(songName) === n) score += 2
+      // 歌名完全相等（而非仅包含）更可信
+      if (n && norm(songName) === n) score += 1
+
+      // 2) 时长接近度（权重最高 —— 这是区分原唱与翻唱的关键）
+      if (durSec > 0 && songDur > 0) {
+        const diff = Math.abs(songDur - durSec)
+        if (diff <= 3) score += 6        // 几乎等长 → 极可能是同一版本
+        else if (diff <= 10) score += 3
+        else if (diff <= 25) score += 1
+        else score -= 4                  // 差太多 → 多半是别的版本
+      }
+
+      // 3) 版本噪声降权
+      const fullName = `${s.name} ${(s.ar || []).map((x) => x.name).join(' ')} ${s.al?.name || ''}`
+      if (VERSION_NOISE.test(fullName)) score -= 5
+
       if (score > bestScore) {
         bestScore = score
         best = s
@@ -301,8 +334,22 @@ export function registerBiliIpc(getNcmServer) {
       },
       lyrics: lrc,
       tlyric,
-      // 置信度：0=仅关键词命中 1=歌名命中 2=歌名+歌手都命中
-      confidence: Math.min(2, Math.max(0, bestScore - (songName ? 1 : 0)))
+      score: bestScore,
+      /**
+       * 置信度：时长差 ≤3s 视为高度可信（2），≤10s 一般（1），否则低（0）。
+       * 改用时长维度 —— 歌名/歌手命中但时长差很大时多半是别的版本，
+       * 那种歌词时间轴与 MV 对不上，不该给高置信度。
+       */
+      confidence: (() => {
+        const songDur = Math.round((best.dt || 0) / 1000)
+        if (!durSec || !songDur) return 1
+        const diff = Math.abs(songDur - durSec)
+        if (diff <= 3) return 2
+        if (diff <= 10) return 1
+        return 0
+      })(),
+      /** 时长差（秒），供前端提示是否需要手动对轨 */
+      durationDiff: durSec && best.dt ? Math.abs(Math.round(best.dt / 1000) - durSec) : null
     }
   })
 

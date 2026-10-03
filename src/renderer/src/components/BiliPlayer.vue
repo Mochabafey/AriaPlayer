@@ -16,6 +16,7 @@ import Hls from 'hls.js'
 import { usePlayerStore } from '../stores/player'
 import { useSettingsStore } from '../stores/settings'
 import { parseLrc, activeIndex } from '../utils/lrc'
+import { computeOffset } from '../utils/lrcSync'
 import { bili } from '../api'
 import BiliSubtitle from './BiliSubtitle.vue'
 
@@ -95,6 +96,63 @@ const subConfidence = ref(2)
  * 切视频（bvid 变化）时清除。
  */
 const subManual = ref(false)
+
+/* ---------------- 自动对轨 ---------------- */
+
+/**
+ * 歌词时间偏移（秒）。歌词时间 + offset = 视频时间。
+ *
+ * 为什么需要：LRC 时间戳是相对**歌曲**的，而播放时间是相对**视频**的。
+ * MV 常带额外前奏/尾奏（实测某 MV 317s vs 原曲 269s，差 48s），
+ * 直接套用会错位（用户看到「00:34 显示开头的歌词」）。
+ */
+const subOffset = ref(0)
+/** 对轨置信度 0~1（低时提示用户手动微调） */
+const subSyncConfidence = ref(0)
+/** 是否已自动对轨过 */
+const subSynced = ref(false)
+/** 原始歌词（未施加偏移），改偏移时基于它重算 */
+let rawSubLines = []
+
+/** 施加当前偏移到歌词（不修改原始数据） */
+function applySubOffset() {
+  const off = subOffset.value
+  subLines.value = off
+    ? rawSubLines.map((l) => ({ ...l, time: Math.max(0, l.time + off) }))
+    : rawSubLines.slice()
+}
+
+/**
+ * 自动对轨：用 B 站 CC 字幕（与视频同步）作为基准，
+ * 与歌词做文本匹配求偏移量。
+ *
+ * @param {Array<{time,text}>} ccLines
+ * @param {Array<{time,text}>} lyricLines
+ * @returns {{ ok, offset, confidence, samples, reliable }}
+ */
+function autoSync(ccLines, lyricLines) {
+  const r = computeOffset(ccLines, lyricLines)
+  if (r.ok) {
+    subOffset.value = r.offset
+    subSyncConfidence.value = r.confidence
+    subSynced.value = true
+    applySubOffset()
+    console.log(`[bili-lyric] 自动对轨 offset=${r.offset}s confidence=${r.confidence} samples=${r.samples} reliable=${r.reliable}`)
+  }
+  return r
+}
+
+/** 手动微调偏移（±0.5s / ±2s） */
+function nudgeOffset(delta) {
+  subOffset.value = Math.round((subOffset.value + delta) * 10) / 10
+  applySubOffset()
+}
+
+/** 重置偏移 */
+function resetOffset() {
+  subOffset.value = 0
+  applySubOffset()
+}
 /** 搜索结果面板展开态 */
 const subSearchOpen = ref(false)
 const subKeyword = ref('')
@@ -138,6 +196,11 @@ async function loadSubtitle() {
   subFromLabel.value = ''
   subConfidence.value = 2
   subLoading.value = true
+  // 换视频/换歌词时重置对轨状态
+  subOffset.value = 0
+  subSyncConfidence.value = 0
+  subSynced.value = false
+  rawSubLines = []
   try {
     // 来源偏好：auto=两源择优 / netease=只用网易云 / bili=只用 B 站字幕
     const src = settings.settings.biliLyricSource || 'auto'
@@ -145,11 +208,14 @@ async function loadSubtitle() {
     const wantNcm = src === 'auto' || src === 'netease'
 
     // 并行请求（互不依赖，串行会白等）
+    // 传 duration：让匹配优先选与视频等长的原唱（而非翻唱/片段）
     const [biliRes, autoRes] = await Promise.all([
       wantBili && props.cid
         ? bili.subtitle(props.bvid, props.cid).catch(() => null)
         : Promise.resolve(null),
-      wantNcm ? bili.autoLyric(props.title).catch(() => null) : Promise.resolve(null)
+      wantNcm
+        ? bili.autoLyric(props.title, props.duration || undefined).catch(() => null)
+        : Promise.resolve(null)
     ])
 
     // B 站自带字幕 → 统一结构
@@ -168,32 +234,74 @@ async function loadSubtitle() {
 
     /**
      * 选择规则：
-     *   auto      → 取行数多的（更完整）
-     *   netease   → 只用网易云（用户明确选择，即使行数少也用）
+     *   auto      → 择优：优先**可靠**的源
+     *   netease   → 只用网易云（用户明确选择）
      *   bili      → 只用 B 站字幕
+     *
+     * 「可靠」的判定（auto 模式下）—— 任一不满足即视为不可靠：
+     *   1. 置信度 >= 1（歌名命中或时长接近）
+     *   2. **时长差 <= 15s**（关键：时长差大说明是片段版/加速版/别的歌，
+     *      其歌词时间轴与 MV 对不上，用了只会更糟）
+     *   3. 歌词行数 >= 20（太少多半是片段版）
+     *
+     * 不可靠时回退 B 站 CC 字幕 —— 它与视频天然同步，且是 UP 主按 MV 做的。
+     *
+     * 实测案例：周杰伦《晴天》MV（317s）—— 网易云因版权只有翻唱/片段版
+     *（"晴天 - Jay 112s" 时长差 205s、歌词仅 16 行），
+     * 而该 MV 有 56 条同步 CC 字幕，此时必须用 CC。
      */
+    const ncmReliable =
+      autoRes?.ok &&
+      ncmLines.length >= 20 &&
+      ncmConf >= 1 &&
+      (autoRes.durationDiff == null || autoRes.durationDiff <= 15)
+
     if (src === 'netease') {
-      subLines.value = ncmLines
+      rawSubLines = ncmLines
       subMatched.value = ncmMatched
       subFromLabel.value = '网易云'
       subConfidence.value = ncmConf
     } else if (src === 'bili') {
-      subLines.value = ccLines
+      rawSubLines = ccLines
       subFromLabel.value = 'B站字幕'
+    } else if (ccLines.length > 0 && !ncmReliable) {
+      // 网易云不可靠（版权/翻唱/片段）→ 优先 CC 字幕（天然同步）
+      rawSubLines = ccLines
+      subFromLabel.value = 'B站字幕'
+      subSyncConfidence.value = 1 // CC 本身同步，无需对轨
+      console.log(
+        `[bili-lyric] 网易云不可靠（行数=${ncmLines.length} 置信度=${ncmConf} ` +
+        `时长差=${autoRes?.durationDiff}），回退 B站字幕（${ccLines.length} 条）`
+      )
     } else if (ncmLines.length >= ccLines.length && ncmLines.length > 0) {
-      subLines.value = ncmLines
+      rawSubLines = ncmLines
       subMatched.value = ncmMatched
       subFromLabel.value = '网易云'
       subConfidence.value = ncmConf
     } else if (ccLines.length > 0) {
-      subLines.value = ccLines
+      rawSubLines = ccLines
       subFromLabel.value = 'B站字幕'
     }
+
+    /**
+     * 自动对轨：用 CC 字幕（与视频同步）作为基准，与歌词做文本匹配求偏移。
+     * 只在两者都有足够行数时尝试。
+     */
+    if (ccLines.length >= 4 && ncmLines.length >= 4) {
+      const r = autoSync(ccLines, ncmLines)
+      // 若最终显示的是 CC 字幕，不该施加偏移（CC 本身与视频同步）
+      if (subFromLabel.value === 'B站字幕') {
+        subOffset.value = 0
+        subSynced.value = false
+      }
+      if (!r.ok) console.log('[bili-lyric] 自动对轨未成功：' + (r.reason || ''))
+    }
+    applySubOffset()
 
     // subLabel 仅作 title 悬浮用（完整信息，含匹配提示）
     subLabel.value = subMatched.value
       ? `${subFromLabel.value} · ${subMatched.value.name}${subMatched.value.artist ? ' - ' + subMatched.value.artist : ''}` +
-        (ncmConf < 2 ? '（匹配度可能不准，可手动搜索修正）' : '')
+        (subSynced.value ? `（已对轨 ${subOffset.value >= 0 ? '+' : ''}${subOffset.value}s）` : '')
       : subLines.value.length
         ? subFromLabel.value
         : '未匹配到歌词'
@@ -842,6 +950,23 @@ function onError() {
               @click="toggleTrans"
             >译</button>
 
+            <!-- 对轨微调：歌词与视频错位时手动校准 -->
+            <span
+              class="bp-sync"
+              :class="{ warn: subSynced && subSyncConfidence < 0.6 }"
+              :title="subSynced
+                ? `已自动对轨 ${subOffset >= 0 ? '+' : ''}${subOffset}s（置信度 ${Math.round(subSyncConfidence * 100)}%），可微调`
+                : '歌词与画面不同步时可微调'"
+            >
+              <button class="bp-sync-btn" title="提前 2 秒" @click="nudgeOffset(-2)">−</button>
+              <button
+                class="bp-sync-val"
+                title="点击重置为 0"
+                @click="resetOffset"
+              >{{ subOffset >= 0 ? '+' : '' }}{{ subOffset }}s</button>
+              <button class="bp-sync-btn" title="延后 2 秒" @click="nudgeOffset(2)">+</button>
+            </span>
+
             <div class="bp-sbox">
               <input
                 v-model="subKeyword"
@@ -1277,6 +1402,41 @@ function onError() {
 }
 .bp-lyric-btn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
 .bp-lyric-btn.on { background: rgba(251, 114, 153, 0.85); color: #fff; }
+
+/* 对轨微调（− 值 +） */
+.bp-sync {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  height: 24px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+/* 置信度低时提示可能需要微调 */
+.bp-sync.warn { background: rgba(240, 160, 32, 0.28); }
+.bp-sync-btn {
+  width: 20px;
+  height: 24px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background 0.13s var(--ease);
+}
+.bp-sync-btn:hover { background: rgba(255, 255, 255, 0.2); }
+.bp-sync-val {
+  min-width: 38px;
+  height: 24px;
+  padding: 0 3px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.13s var(--ease);
+}
+.bp-sync-val:hover { background: rgba(255, 255, 255, 0.16); }
 
 /* 搜索框 */
 .bp-sbox {
