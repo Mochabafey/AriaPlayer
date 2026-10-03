@@ -446,11 +446,18 @@ powershell -ExecutionPolicy Bypass -File scripts\pack-signed.ps1           # 签
 
 **触发方式**：
 
-| 事件 | 行为 |
-|---|---|
-| push / PR | 只跑 `npm ci` + 编译三进程 → **验证代码能编译**（约 1-2 分钟） |
-| 推 `v*` tag | 完整打包三平台 + **自动创建 Release**（约 6 分钟） |
-| Actions 页面手动触发 | 同上（可指定平台） |
+| 你的操作 | 行为 | 耗时 |
+|---|---|---|
+| push / PR 到 master | 只跑 `npm ci` + 编译三进程 → **验证代码能编译** | 约 1-2 分钟 |
+| 命令行 `git push origin v0.4.0` | 完整打包三平台 + 创建 Release | 约 6 分钟 |
+| **网页 Releases 页建 Release** | 同上（自动建 tag） | 约 6 分钟 |
+| **网页 Tags 页单独建 tag** | 同上 | 约 6 分钟 |
+| Actions 页面手动触发 | 打包并上传 artifact（不发 Release） | 约 6 分钟 |
+
+> **为什么监听三个事件**：GitHub 网页界面创建 tag 时**不会触发 `push` 事件**
+> （官方行为）。只监听 `push.tags` 的话，在网页上打 tag 会「什么都没发生」。
+> 故额外监听 `release`（建 Release）与 `create`（单独建 tag）。
+> `create` 事件对「新建分支」也会触发，已用 `github.ref_type == 'tag'` 过滤。
 
 **为什么普通 push 不打包**：完整打包三平台约 18 分钟 runner 时间
 （3 job × 6 min），私有仓库免费额度 2000 分钟/月 —— 每次 push 都打包
@@ -460,14 +467,17 @@ powershell -ExecutionPolicy Bypass -File scripts\pack-signed.ps1           # 签
 
 ```bash
 # 1. 改 package.json 的 version（必须与 tag 一致，CI 会校验）
-# 2. 提交
-git add -A && git commit -m "chore: release v0.3.0"
+# 2. 提交并推送
+git add -A && git commit -m "chore: release v0.4.0"
 git push
 
-# 3. 打 tag 并推送 → 自动构建三平台 + 创建 Release
-git tag v0.3.0
-git push origin v0.3.0
+# 3. 打 tag → 自动构建三平台 + 发布 Release
+git tag v0.4.0
+git push origin v0.4.0
 ```
+
+也可以在网页上操作：**Releases → Draft a new release → 填 tag 名（如 `v0.4.0`）
+→ Publish release**，CI 会自动构建并把三平台产物挂上去。
 
 CI 会校验 `tag` 与 `package.json` 的 `version` 一致（不一致直接失败，
 避免产物文件名与 tag 对不上）。
