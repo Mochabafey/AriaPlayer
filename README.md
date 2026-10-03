@@ -440,6 +440,56 @@ powershell -ExecutionPolicy Bypass -File scripts\pack-signed.ps1           # 签
 - `afterPack` 钩子补全 `resources/ncm-server` 的 node_modules
   （electron-builder 的 extraResources **不复制依赖**）
 
+### 三平台自动构建（GitHub Actions）
+
+`.github/workflows/build.yml` 在 Windows / macOS / Linux 三个 runner 上并行构建。
+
+**触发方式**：
+
+| 事件 | 行为 |
+|---|---|
+| push / PR | 只跑 `npm ci` + 编译三进程 → **验证代码能编译**（约 1-2 分钟） |
+| 推 `v*` tag | 完整打包三平台 + **自动创建 Release**（约 6 分钟） |
+| Actions 页面手动触发 | 同上（可指定平台） |
+
+**为什么普通 push 不打包**：完整打包三平台约 18 分钟 runner 时间
+（3 job × 6 min），私有仓库免费额度 2000 分钟/月 —— 每次 push 都打包
+约 110 次就烧完。日常只需知道「能否编译」，出包走 tag 或手动触发。
+
+**发版流程**：
+
+```bash
+# 1. 改 package.json 的 version（必须与 tag 一致，CI 会校验）
+# 2. 提交
+git add -A && git commit -m "chore: release v0.3.0"
+git push
+
+# 3. 打 tag 并推送 → 自动构建三平台 + 创建 Release
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+CI 会校验 `tag` 与 `package.json` 的 `version` 一致（不一致直接失败，
+避免产物文件名与 tag 对不上）。
+
+**CI 上必须现场准备的依赖**（本地已有、但被 `.gitignore` 排除）：
+
+| 依赖 | 原因 |
+|---|---|
+| `qqmusic/` | 22000+ 文件，不入库 → CI 跑 `vendor-qqmusic.mjs` 现场克隆 |
+| `resources/ffmpeg/` | 平台相关二进制 → CI 跑 `fetch-ffmpeg.mjs` 按平台下载 |
+| `server/` | **已入库**，但 CI 仍跑 `vendor-server.mjs` 以应用本地补丁 |
+
+**ffmpeg 数据源按平台区分**（踩过坑）：
+
+```
+Windows / Linux → BtbN/FFmpeg-Builds（zip / tar.xz）
+macOS           → eugeneware/ffmpeg-static（裸可执行文件）
+```
+
+BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
+（`ffmpeg-master-latest-macos64-gpl.zip` 返回 404）。
+
 ---
 
 ## 目录结构

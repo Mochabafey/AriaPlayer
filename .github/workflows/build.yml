@@ -34,12 +34,9 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-    # tag 推送或手动触发才真正打包；普通 push 只验证编译
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      startsWith(github.ref, 'refs/tags/v') ||
-      github.event_name == 'pull_request' ||
-      github.event_name == 'push'
+    # 注意：这里不写 job 级 if —— 本 job 在四种事件下都要跑
+    #（push / PR 验证编译；tag / 手动触发 额外打包）。
+    # 「是否打包」由下面 Package / Upload 步骤的 if 控制。
     strategy:
       fail-fast: false
       matrix:
@@ -129,14 +126,22 @@ jobs:
         run: node scripts/build-app.mjs
 
       # ---- 打包 ----
+      #
+      # 只在「需要产物」时执行，普通 push 仅验证编译能过。
+      #
+      # 为什么这样分：完整打包三平台约 18 分钟 runner 时间（3 job × 6 min），
+      # 而私有仓库免费额度是 2000 分钟/月 —— 若每次 push 都打包，
+      # 约 110 次推送就烧完。日常改动只需知道「代码能否编译」，
+      # 真正要出包时走 tag 或手动触发。
       - name: Package
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
-          # electron-builder 在 CI 上从 GitHub 拉 electron 与工具链；
-          # 国内网络可用时改镜像加速（此处保留官方源，CI runner 在境外）
+          # electron-builder 在 CI 上从 GitHub 拉 electron 与工具链
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder ${{ matrix.target }} --publish never
 
       - name: Upload artifact
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
@@ -155,6 +160,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      # 校验 tag 与 package.json 版本一致，避免产物文件名与 tag 对不上
+      #（实测踩过：v0.2.1 的 tag 上构建出 0.2.4 的产物）
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          echo "tag=$TAG  package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag ($TAG) 与 package.json version ($PKG) 不一致，产物文件名会对不上"
+            exit 1
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -166,7 +186,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Aria Player ${{ github.ref_name }}
-          draft: true
+          # draft: false → 直接公开发布（本仓库为私有仓库，仅协作者可见）
+          draft: false
           generate_release_notes: true
           files: |
             artifacts/**/*.exe
@@ -176,13 +197,30 @@ jobs:
           body: |
             ## 下载
 
-            | 平台 | 文件 |
-            |---|---|
-            | Windows | `Aria Player-*-setup.exe`（安装版）/ `*-portable.exe`（免安装） |
-            | macOS | `Aria Player-*.dmg` |
-            | Linux | `*.AppImage` / `*.deb` |
+            | 平台 | 文件 | 说明 |
+            |---|---|---|
+            | Windows | `Aria Player-*-setup.exe` | 安装版（可选目录、创建快捷方式「咏叹调」） |
+            | Windows | `Aria Player-*-portable.exe` | 免安装版，双击即用 |
+            | macOS | `Aria Player-*.dmg` | 同时含 Intel(x64) 与 Apple Silicon(arm64) |
+            | Linux | `*.AppImage` | 免安装，`chmod +x` 后双击运行 |
+            | Linux | `*.deb` | Debian/Ubuntu 包管理安装 |
 
-            > 三个平台均**未签名**。首次运行可能被系统拦截：
-            > - Windows：SmartScreen 警告 → 「更多信息」→「仍要运行」
-            > - macOS：右键打开，或 `xattr -dr com.apple.quarantine "/Applications/Aria Player.app"`
-            > - Linux：`chmod +x *.AppImage`
+            ## 首次运行提示
+
+            三个平台均**未签名**，系统可能拦截：
+
+            - **Windows**：SmartScreen 警告 → 「更多信息」→「仍要运行」
+            - **macOS**：右键 → 打开；或终端执行
+              `xattr -dr com.apple.quarantine "/Applications/Aria Player.app"`
+            - **Linux**：`chmod +x "Aria Player-*.AppImage"`
+
+            ## 说明
+
+            应用**内置**完整运行时依赖，无需自行安装任何东西：
+
+            - 网易云 API 服务（api-enhanced）
+            - QQ 音乐 API 服务（qq-music-api）
+            - ffmpeg（B 站 DASH 合流 / 转码兜底）
+
+            三个服务均通过 **Named Pipe / Unix Socket** 与主进程通信，
+            不占用任何 TCP 端口。
