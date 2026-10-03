@@ -106,7 +106,14 @@ async function main() {
   const dest = path.join(targetDir, exeName)
 
   // 临时文件：压缩包保持原扩展名（解压工具靠它判断格式），裸二进制用 .bin
-  const tmpExt = src.kind === 'archive' ? path.extname(src.asset) : '.bin'
+  //
+  // 注意不能用 path.extname()：它对 'xxx.tar.xz' 只返回 '.xz'，
+  // 而下面的解压分支需要识别完整的 '.tar.xz'（实测踩过：
+  // 扩展名被截成 .xz 后落到 unzip 分支，报
+  // "End-of-central-directory signature not found"）。
+  const tmpExt = src.kind === 'archive'
+    ? (src.asset.endsWith('.tar.xz') ? '.tar.xz' : '.zip')
+    : '.bin'
   const tmpFile = path.join(os.tmpdir(), `ffmpeg-${Date.now()}${tmpExt}`)
 
   try {
@@ -131,9 +138,11 @@ async function main() {
           { stdio: 'inherit' }
         )
       } else {
-        // tar.xz 用 tar（Linux/macOS 自带）；旧版脚本假设 zip 用 unzip，这里按实际扩展名分支
-        if (tmpFile.endsWith('.tar.xz')) {
-          execSync(`tar -xJf '${tmpFile}' -C '${tmpDir}'`)
+        // Linux 是 .tar.xz，macOS（若将来改用压缩包）可能是 zip。
+        // 用 tar 的自动格式识别（-xf 不加压缩标志，tar 会按 magic 判断），
+        // 比写死 -xJf 更健壮；只有确实是 zip 时才用 unzip。
+        if (src.asset.endsWith('.tar.xz') || src.asset.endsWith('.tar.gz') || src.asset.endsWith('.tgz')) {
+          execSync(`tar -xf '${tmpFile}' -C '${tmpDir}'`)
         } else {
           execSync(`unzip -q -o '${tmpFile}' -d '${tmpDir}'`)
         }
