@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { api, coverUrl, qqmusic, waitServerReady, serverReadyNow } from '../api'
 import { useSettingsStore } from './settings'
-import { tick as scrobbleTick, maybeScrobble, resetScrobble } from '../utils/scrobble'
+import { tick as scrobbleTick, maybeScrobble, resetScrobble, flushScrobble } from '../utils/scrobble'
 import { ampOf } from '../utils/volume'
 
 // 播放记录持久化：下次打开恢复上次的队列 / 当前歌曲 / 播放进度
@@ -174,6 +174,20 @@ export const usePlayerStore = defineStore('player', () => {
     })
     el.addEventListener('ended', (e) => {
       if (e.target !== audioEl) return
+      /**
+       * 播完：补报完整时长。
+       *
+       * 这一步最关键 —— 整首歌听完时，累计时长应上报到**整曲长度**，
+       * 而不是最后一次「满 60 秒」的整点（例如 4:20 的歌只报到 4:00）。
+       * 用 duration 作为 position 传入，确保 flush 取到整曲时长。
+       *
+       * 不 await：切歌不能被网络请求阻塞。
+       */
+      const song = current.value
+      if (song) {
+        // finished=true：以整曲时长上报（listenedSec 遇卡顿会略小于曲长）
+        flushScrobble(song, el.duration || 0, el.duration || 0, true).catch(() => {})
+      }
       next(true)
     })
     el.addEventListener('error', (e) => {
@@ -398,6 +412,19 @@ export const usePlayerStore = defineStore('player', () => {
     pendingRecoverAt = null
     clearTimeout(seekGuard) // 切歌重置：旧 seek 的看门狗不再有效
     seekGuard = null
+    /**
+     * 切歌前补报上一首的尾部时长。
+     *
+     * 补报策略是「每满 60 秒一次」，若听了 90 秒就切走，最后 30 秒会随
+     * resetScrobble() 丢掉 → 累计时长系统性偏少。这里先 flush 再 reset。
+     *
+     * 用 current.value（上一首）而非入参 song（新一首），且不 await：
+     * 上报是后台行为，不能阻塞切歌。
+     */
+    const prev = current.value
+    if (prev && audioEl) {
+      flushScrobble(prev, audioEl.currentTime, audioEl.duration).catch(() => {})
+    }
     resetScrobble() // 切歌：清空听歌打卡的累计时长与去重标记
     // 先拆 src 再 pause：pause 监听器据「无 src」识别这是切歌程序性停流，
     // 不会把乐观播放态闪回暂停（异步 pause 事件晚于同步赋值到达）

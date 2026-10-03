@@ -28,6 +28,19 @@ import { api, bili } from '../api'
 const MIN_PLAY_SEC = 30
 /** 或播放过半即上报 */
 const HALF_RATIO = 0.5
+/**
+ * 二次上报（补报）间隔（秒）。
+ *
+ * 为什么需要：原先「一次播放只上报一次」，且报的是**门槛刚过那一刻**的
+ * listenedSec（≈30s）。听 5 分钟的歌也只报 30 秒 —— 网易云的「听歌时长」
+ * 因此几乎不增长（用户实测：听半小时只涨 1 分钟）。
+ *
+ * 现在改为**按完整播放的整分钟数补报**：每听满 60 秒就再报一次，
+ * 让累计时长如实增长。B 站网页播放器的心跳也是这个思路。
+ */
+const REPEAT_INTERVAL_SEC = 60
+/** 单次上报的时长上限（秒）：超过一首歌的长度没有意义，防止异常值 */
+const MAX_REPORT_SEC = 3600
 
 /** 已上报过的标识（每次切歌清空），防重复上报 */
 let reportedForEpoch = null
@@ -37,6 +50,8 @@ let listenedSec = 0
 let lastTickAt = 0
 /** 播放代次号：切歌后旧的上报请求作废 */
 let reportEpoch = 0
+/** 本次播放已上报到的时长（秒），用于按整分钟补报 */
+let reportedUpto = 0
 
 /** 累计播放时长（只在真正播放时推进，拖动 seek 不计入） */
 function tick(playing, currentTime) {
@@ -59,6 +74,7 @@ export function resetScrobble() {
   reportedForEpoch = null
   listenedSec = 0
   lastTickAt = 0
+  reportedUpto = 0
 }
 
 /** 当前累计的有效播放秒数（供 MV 上报用） */
@@ -67,7 +83,81 @@ export function listenedSeconds() {
 }
 
 /**
+ * 收尾上报：切歌/播完前把**尚未上报的尾部时长**补上。
+ *
+ * 为什么需要：补报是「每满 60 秒一次」，若一首歌听了 90 秒就切走，
+ * 最后那 30 秒（60→90）会随 resetScrobble() 一起丢掉 —— 累计时长会
+ * 系统性偏少。这里在切歌前主动补一次，保证不丢。
+ *
+ * 调用时机：`player.js` 的 startCurrent（切歌）与 ended（播完）里，
+ * **在 resetScrobble() 之前**调用。
+ *
+ * @param {object} song 当前歌曲
+ * @param {number} position 当前播放位置（秒）
+ * @param {number} duration 总时长（秒）
+ * @param {boolean} finished 是否「整曲播完」。播完时以 duration 为准上报，
+ *   因为 listenedSec 按墙上时间累加，遇卡顿/暂停会略小于实际曲长，
+ *   若照它上报会少几秒（例如 4:20 的歌报成 4:17）。
+ * @returns {Promise<boolean>} 是否发起了补报
+ */
+export async function flushScrobble(song, position, duration, finished = false) {
+  if (!song || song.fromLocal) return false
+  if (!/^\d+$/.test(String(song.id ?? ''))) return false
+
+  const total = duration || song.duration || 0
+  /**
+   * 上报时长：
+   *   播完 → 取整曲时长（真实听完）
+   *   切歌 → 取 min(累计播放, 当前播放位置)，不虚报未听到的部分
+   */
+  const played = finished && total > 0
+    ? total
+    : Math.max(0, Math.min(listenedSec, position || 0))
+
+  // 已达过门槛、且尾部还有未上报的时长（≥5 秒，太短无意义）
+  if (reportedForEpoch !== `${reportEpoch}:${song.id}`) return false
+  if (played - reportedUpto < 5) return false
+
+  const reportSec = Math.round(
+    Math.min(played, total > 0 ? total : MAX_REPORT_SEC, MAX_REPORT_SEC)
+  )
+  if (reportSec <= reportedUpto) return false
+
+  reportedUpto = reportSec
+  try {
+    await api('scrobble_v1', {
+      id: song.id,
+      sourceid: song.id,
+      time: reportSec,
+      total: Math.round(total) || undefined,
+      name: song.name || '',
+      artist: song.artist || '',
+      source: 'list'
+    })
+    return true
+  } catch {
+    // 静默失败：不阻塞切歌
+    return false
+  }
+}
+
+/**
  * 判断是否达到上报门槛并上报。
+ *
+ * ## 上报策略（修复「听歌时长几乎不增长」）
+ *
+ * 原实现：一次播放**只上报一次**，且报的是门槛刚过那一刻的 listenedSec
+ *（约 30s）。听 5 分钟的歌也只报 30 秒 —— 网易云累计时长因此几乎不动。
+ *
+ * 现实现分两阶段：
+ *   1. **首次上报**：有效播放 ≥30s 或过半时触发（对齐官方门槛）
+ *   2. **后续补报**：之后每听满 60 秒再报一次，累计时长如实增长
+ *
+ * 上报的 `time` 取「已完整播放的时长」，而不是门槛瞬间值 ——
+ * 参考实现（folltoshe/netease-report-listen-song）用的就是
+ * `Math.floor(song.time / 2)`（歌长的一半），本实现更精确：
+ * 用真实累计播放秒数，且随播放推进持续补报。
+ *
  * @param {object} song    当前歌曲（需 id / name / artist / duration / source）
  * @param {number} position 当前播放位置（秒）
  * @param {number} duration 总时长（秒）
@@ -77,23 +167,43 @@ export async function maybeScrobble(song, position, duration) {
   if (!song || song.fromLocal) return false
   // 只上报网易云曲目：QQ 源是 songmid（含字母），QQ 音乐有自己的记录体系
   if (!/^\d+$/.test(String(song.id ?? ''))) return false
-  // 本次播放已上报过 → 跳过
-  const key = `${reportEpoch}:${song.id}`
-  if (reportedForEpoch === key) return false
 
-  const played = Math.min(listenedSec, position || 0)
   const total = duration || song.duration || 0
-  const reachedMin = played >= MIN_PLAY_SEC
-  const reachedHalf = total > 0 && played >= total * HALF_RATIO
-  if (!reachedMin && !reachedHalf) return false
+  /**
+   * 可上报的时长：取「累计真实播放秒数」与「当前播放位置」的较小值。
+   *
+   * 为什么要 min：listenedSec 是墙上时间累加，seek 到后面时 position
+   * 会跳变，而 listenedSec 不会 —— 取 min 保证不会报出超过实际播放量的值。
+   */
+  const played = Math.max(0, Math.min(listenedSec, position || 0))
+
+  const key = `${reportEpoch}:${song.id}`
+
+  // ---- 阶段 1：首次上报（需达门槛）----
+  if (reportedForEpoch !== key) {
+    const reachedMin = played >= MIN_PLAY_SEC
+    const reachedHalf = total > 0 && played >= total * HALF_RATIO
+    if (!reachedMin && !reachedHalf) return false
+  } else {
+    // ---- 阶段 2：后续补报（每满 REPEAT_INTERVAL_SEC 一次）----
+    // 以「已上报到的时长」为基准，避免同一秒内被多次触发
+    if (played - reportedUpto < REPEAT_INTERVAL_SEC) return false
+  }
+
+  // 上报值：整秒，且不超过单曲时长（防异常值）
+  const reportSec = Math.round(
+    Math.min(played, total > 0 ? total : MAX_REPORT_SEC, MAX_REPORT_SEC)
+  )
+  if (reportSec <= 0) return false
 
   reportedForEpoch = key
+  reportedUpto = reportSec
   const epoch = reportEpoch
   try {
     await api('scrobble_v1', {
       id: song.id,
       sourceid: song.id,
-      time: Math.round(played),
+      time: reportSec,
       total: Math.round(total) || undefined,
       name: song.name || '',
       artist: song.artist || '',
@@ -102,8 +212,11 @@ export async function maybeScrobble(song, position, duration) {
     return true
   } catch (e) {
     // 未登录（401）/服务未就绪：静默失败，不影响播放。
-    // 允许下次 timeupdate 重试（不占 reported 标记）
-    if (epoch === reportEpoch) reportedForEpoch = null
+    // 允许下次 timeupdate 重试（回退已上报标记）
+    if (epoch === reportEpoch) {
+      reportedForEpoch = null
+      reportedUpto = 0
+    }
     return false
   }
 }
