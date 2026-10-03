@@ -125,7 +125,8 @@ async function play(v) {
 
   try {
     const info = await bili.videoInfo(v.bvid)
-    current.value = { ...v, cid: info.cid, pages: info.pages, stat: info.stat, desc: info.desc }
+    // aid 也存下来：B 站观看记录上报需要它（只有 bvid/cid 时部分接口版本会失败）
+    current.value = { ...v, cid: info.cid, aid: info.aid, pages: info.pages, stat: info.stat, desc: info.desc }
     const preferred = Number(settings.settings.biliQuality) || 0
     await resolveAndPlay(info.cid, preferred || undefined)
   } catch (e) {
@@ -398,7 +399,11 @@ async function doLyricSearch() {
  * 提到父层再透传（那会让 BiliPlayer 的歌词逻辑散落两处）。
  */
 async function applyLyric(song) {
-  const ok = await playerRef.value?.applyLyricById(song.id, song)
+  const ok = await playerRef.value?.applyLyricById(song.id, {
+    name: song.name,
+    artist: song.artist,
+    duration: song.duration
+  })
   if (ok) {
     lyricCurrentId.value = song.id
     toast(`已应用歌词：${song.name}`, 'success')
@@ -449,6 +454,7 @@ const qrStatusText = computed(() => ({
         :merge-text="mergeText"
         :bvid="current.bvid"
         :cid="current.cid"
+        :aid="current.aid"
         @quality-change="onQualityChange"
       />
       <div class="pa-meta">

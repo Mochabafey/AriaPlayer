@@ -562,6 +562,83 @@ export async function logout() {
   return { ok: true }
 }
 
+/* ---------------- 观看记录上报 ---------------- */
+
+/**
+ * 上报观看进度（心跳）。
+ *
+ * B 站网页播放器每隔约 15 秒调一次 `/x/click-interface/web/heartbeat`，
+ * 用于记录「观看历史」与「稍后再看」的播放进度。本应用此前从未调用，
+ * 所以在 B 站 App/网页的「历史记录」里看不到用咏叹调看过的视频。
+ *
+ * 接口要点（实测）：
+ *   - POST form-urlencoded，需登录 cookie（SESSDATA）
+ *   - 需要 aid + cid + bvid（三者都给最稳，不同版本接口取值不同）
+ *   - `played_time` 传**当前播放位置**（秒），B 站据此记录进度
+ *   - `realtime` 传本次实际播放的秒数
+ *   - `type=3` 表示「视频」
+ *   - 返回 code 0 为成功；未登录返回 -101，参数错返回 -400
+ *
+ * @param {object} p
+ *   - aid, cid, bvid
+ *   - playedTime: 当前播放位置（秒）
+ *   - realtime:   本次实际播放时长（秒）
+ *   - duration:   视频总时长（秒）
+ * @returns {Promise<{ok:boolean, code?:number, message?:string}>}
+ */
+export async function reportProgress({ aid, cid, bvid, playedTime, realtime, duration }) {
+  try {
+    if (!cid || (!aid && !bvid)) return { ok: false, message: 'missing ids' }
+    const form = new URLSearchParams({
+      aid: String(aid || ''),
+      cid: String(cid),
+      bvid: String(bvid || ''),
+      // type=3：普通视频（B 站内部类型枚举）
+      type: '3',
+      // 播放位置（秒）—— 历史记录据此显示进度
+      played_time: String(Math.max(0, Math.round(playedTime || 0))),
+      // 本次实际播放秒数
+      realtime: String(Math.max(0, Math.round(realtime || 0))),
+      // 起始位置：0 表示从头播
+      start_ts: String(Math.floor(Date.now() / 1000)),
+      // 播放器标识，B 站按此区分来源
+      player: 'interactive',
+      // 视频总时长（部分版本需要）
+      ...(duration ? { video_duration: String(Math.round(duration)) } : {})
+    }).toString()
+
+    const res = await biliRequest('https://api.bilibili.com/x/click-interface/web/heartbeat', {
+      method: 'POST',
+      body: form,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    })
+    absorbCookies(res)
+    const code = res.json?.code
+    return {
+      ok: code === 0,
+      code,
+      message: res.json?.message || res.json?.msg || ''
+    }
+  } catch (e) {
+    return { ok: false, message: e.message }
+  }
+}
+
+/**
+ * 标记「已看完」（B 站历史记录里的进度打满）。
+ * 视频播到结尾时调用，让 B 站侧显示完整观看而非中途退出。
+ */
+export async function reportFinished({ aid, cid, bvid, duration }) {
+  return reportProgress({
+    aid,
+    cid,
+    bvid,
+    playedTime: duration || 0,
+    realtime: duration || 0,
+    duration
+  })
+}
+
 /* ---------------- 字幕 ---------------- */
 
 /**

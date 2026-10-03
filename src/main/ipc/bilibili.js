@@ -12,7 +12,9 @@ import {
   getCookieString,
   clearCookie,
   fetchSubtitle,
-  cleanTitle
+  cleanTitle,
+  reportProgress,
+  reportFinished
 } from '../biliClient.js'
 import {
   mergeToCache,
@@ -385,6 +387,28 @@ export function registerBiliIpc(getNcmServer) {
     const tlyric = lyric?.tlyric?.lyric || ''
     if (!lrc) return { ok: false, reason: 'no-lyric' }
     return { ok: true, lyrics: lrc, tlyric }
+  })
+
+  // ---- 观看记录上报 ----
+
+  /**
+   * 上报观看进度到 B 站（历史记录）。
+   * 未登录时静默失败（B 站返回 -101），不影响播放。
+   */
+  ipcMain.handle('bili:report-progress', async (_e, p) => {
+    const r = await reportProgress(p || {})
+    // 上报结果留日志：未登录 -101 / 参数错 -400 / 网络异常都便于定位
+    if (r.ok) {
+      console.log(`[bili-report] 上报成功 played=${p?.playedTime}s realtime=${p?.realtime}s`)
+    } else {
+      console.warn(`[bili-report] 上报失败 code=${r.code} msg=${r.message} played=${p?.playedTime}`)
+    }
+    return r
+  })
+
+  /** 标记已看完 */
+  ipcMain.handle('bili:report-finished', async (_e, p) => {
+    return await reportFinished(p || {})
   })
 
   // ---- HLS 实时合流会话 ----

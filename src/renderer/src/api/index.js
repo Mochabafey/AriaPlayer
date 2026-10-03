@@ -112,6 +112,10 @@ export const bili = {
   searchSong: (keyword, limit = 10) => bridge.invoke('bili:search-song', { keyword, limit }),
   /** 按歌曲 id 取歌词（手动选定后加载） */
   songLyric: (id) => bridge.invoke('bili:song-lyric', { id }),
+  /** 上报观看进度到 B 站（历史记录） */
+  reportProgress: (p) => bridge.invoke('bili:report-progress', p),
+  /** 标记已看完 */
+  reportFinished: (p) => bridge.invoke('bili:report-finished', p),
   /** 合流缓存管理 */
   cacheStats: () => bridge.invoke('bili:cache-stats'),
   cacheClear: () => bridge.invoke('bili:cache-clear')

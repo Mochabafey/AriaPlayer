@@ -17,6 +17,7 @@ import { usePlayerStore } from '../stores/player'
 import { useSettingsStore } from '../stores/settings'
 import { parseLrc, activeIndex, splitBilingual } from '../utils/lrc'
 import { computeOffset } from '../utils/lrcSync'
+import { tick, maybeScrobble, tickBili, maybeReportBili, reportBiliFinished, resetBiliReport } from '../utils/scrobble'
 import { bili } from '../api'
 import BiliSubtitle from './BiliSubtitle.vue'
 
@@ -44,7 +45,9 @@ const props = defineProps({
   /** B 站视频标识（用于自动匹配歌词；为空则不启用字幕） */
   bvid: { type: String, default: '' },
   /** 分P id（拉字幕需要） */
-  cid: { type: [String, Number], default: '' }
+  cid: { type: [String, Number], default: '' },
+  /** 视频 aid（B 站观看记录上报需要） */
+  aid: { type: [String, Number], default: '' }
 })
 
 const emit = defineEmits(['quality-change', 'ended', 'error'])
@@ -411,7 +414,7 @@ async function pickSubtitle(song) {
     const r = await bili.songLyric(song.id)
     if (r?.ok) {
       subLines.value = parseLrc(r.lyrics, r.tlyric)
-      subMatched.value = { name: song.name, artist: song.artist }
+      subMatched.value = { id: song.id, name: song.name, artist: song.artist, duration: song.duration }
       subFromLabel.value = '网易云'
       subConfidence.value = 2 // 手动选定视为准确
       subManual.value = true  // 锁定，避免换源时被自动匹配覆盖
@@ -452,7 +455,7 @@ async function applyLyricById(id, meta) {
     const r = await bili.songLyric(id)
     if (!r?.ok) return false
     subLines.value = parseLrc(r.lyrics, r.tlyric)
-    subMatched.value = { name: meta?.name || '', artist: meta?.artist || '' }
+    subMatched.value = { id, name: meta?.name || '', artist: meta?.artist || '', duration: meta?.duration }
     subFromLabel.value = '网易云'
     subConfidence.value = 2 // 手动选定视为准确
     subManual.value = true  // 锁定，避免换源时被自动匹配覆盖
@@ -524,6 +527,58 @@ function onVideoEvent() {
     paused: v.paused,
     buffered: buffered.value
   })
+
+  /**
+   * 双上报：B 站观看历史 + 网易云听歌打卡。
+   *
+   * B 站：按需心跳（首次 30s/过半，之后每 20s 一次）
+   * 网易云：仅当歌词用的是网易云曲目时上报（用 CC 字幕时无对应歌曲，跳过）
+   *
+   * 失败静默处理，绝不影响播放。
+   */
+  if (props.bvid && props.cid) {
+    tickBili(!v.paused)
+    maybeReportBili({
+      bvid: props.bvid,
+      cid: props.cid,
+      aid: props.aid,
+      position: currentTime.value,
+      duration: duration.value,
+      playing: !v.paused
+    }).catch((e) => console.warn('[bili-report] maybeReportBili 异常:', e?.message || e))
+
+    // 网易云：用当前歌词对应的曲目（手动选定或自动匹配到的）
+    const ncmSong = subMatched.value?.id
+      ? {
+          id: subMatched.value.id,
+          name: subMatched.value.name,
+          artist: subMatched.value.artist,
+          duration: subMatched.value.duration
+        }
+      : null
+    if (ncmSong && !v.paused) {
+      // 借用歌曲上报的计数器（MV 场景下与歌曲播放互斥，不会冲突）
+      tick(true, currentTime.value)
+      maybeScrobble(ncmSong, currentTime.value, duration.value || ncmSong.duration).catch(() => {})
+    }
+  }
+}
+
+/**
+ * 播放结束：标记 B 站「已看完」并通知父组件。
+ *
+ * 上报看完让 B 站历史记录里的进度打满（否则显示中途退出）。
+ */
+function onEnded() {
+  if (props.bvid && props.cid) {
+    reportBiliFinished({
+      bvid: props.bvid,
+      cid: props.cid,
+      aid: props.aid,
+      duration: duration.value
+    }).catch(() => {})
+  }
+  emit('ended')
 }
 
 /**
@@ -825,6 +880,8 @@ watch(
   () => {
     subManual.value = false
     subDisabled.value = false
+    // 换视频：重置上报状态（避免把上一个视频的播放时长算到新视频上）
+    resetBiliReport()
     if (props.bvid && props.url) loadSubtitle()
   }
 )
@@ -890,7 +947,7 @@ function onError() {
       @progress="onVideoEvent"
       @durationchange="onVideoEvent"
       @loadedmetadata="onVideoEvent"
-      @ended="emit('ended')"
+      @ended="onEnded"
       @error="onError"
     />
 
