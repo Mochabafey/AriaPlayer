@@ -97,6 +97,13 @@ const subConfidence = ref(2)
  */
 const subManual = ref(false)
 
+/**
+ * 歌词是否被用户关闭。
+ * 与「清空歌词」不同：这是**持久意图**，换源/切画质都保持关闭，
+ * 直到用户主动打开或换视频。
+ */
+const subDisabled = ref(false)
+
 /* ---------------- 自动对轨 ---------------- */
 
 /**
@@ -153,6 +160,27 @@ function resetOffset() {
   subOffset.value = 0
   applySubOffset()
 }
+
+/**
+ * 歌词显示开关。
+ *
+ * 关掉后置 subDisabled = true —— 换源/切画质都不会自动加载回来
+ *（原实现只有「✕」按钮，清空后换源又被 loadSubtitle 恢复，等于关不掉）。
+ * 重新打开时按当前来源偏好重新加载。
+ */
+function toggleLyricVisible() {
+  if (subDisabled.value) {
+    subDisabled.value = false
+    loadSubtitle()
+  } else {
+    subDisabled.value = true
+    subLines.value = []
+    rawSubLines = []
+    subMatched.value = null
+    subLabel.value = ''
+    subSearchOpen.value = false
+  }
+}
 /** 搜索结果面板展开态 */
 const subSearchOpen = ref(false)
 const subKeyword = ref('')
@@ -190,6 +218,8 @@ const subWarn = computed(() => subMatched.value && subConfidence.value < 2)
  */
 async function loadSubtitle() {
   if (!props.bvid) return
+  // 用户关闭了歌词：不加载（换源/切画质也保持关闭）
+  if (subDisabled.value) return
   subLines.value = []
   subLabel.value = ''
   subMatched.value = null
@@ -773,11 +803,17 @@ watch(
   { immediate: true }
 )
 
-/** bvid 变化（切分P/切视频）时重新匹配字幕，并清除手动锁定 */
+/**
+ * bvid 变化（切分P/切视频）时重新匹配字幕。
+ *
+ * 同时清除手动锁定与关闭状态 —— 换视频是「新场景」，
+ * 用户之前关掉歌词是针对上一个视频的意图，新视频应默认显示。
+ */
 watch(
   () => props.bvid,
   () => {
     subManual.value = false
+    subDisabled.value = false
     if (props.bvid && props.url) loadSubtitle()
   }
 )
@@ -925,6 +961,22 @@ function onError() {
             放在按钮行而非单独一行，让歌词能更贴近进度条。
           -->
           <div v-if="bvid" class="bp-subrow">
+            <!--
+              歌词显示开关（最左，语义最清晰）。
+              关掉后换源/切画质不会自动恢复 —— 用 subDisabled 持久记住用户的选择。
+            -->
+            <button
+              class="bp-lyric-btn toggle"
+              :class="{ on: !subDisabled && subLines.length }"
+              :title="subDisabled ? '显示歌词' : '关闭歌词'"
+              @click="toggleLyricVisible"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6h16M4 12h10M4 18h7"/>
+              </svg>
+              <span>{{ subDisabled ? '歌词' : '歌词开' }}</span>
+            </button>
+
             <span
               class="bp-src"
               :class="{ warn: subWarn }"
@@ -978,11 +1030,16 @@ function onError() {
               <button class="bp-sgo" :disabled="subSearching" @click="doSubSearch">
                 {{ subSearching ? '…' : '搜索' }}
               </button>
+              <!--
+                清空搜索结果（不是关闭歌词 —— 关闭歌词用左侧的「歌词开」开关）。
+                原先此处文案是「关闭歌词」且调用 clearSubtitle，与开关职责重叠、
+                且换源后会被 loadSubtitle 恢复，等于关不掉，容易误解。
+              -->
               <button
-                v-if="subLines.length"
+                v-if="subResults.length || subSearchOpen"
                 class="bp-sclear"
-                title="关闭歌词"
-                @click="clearSubtitle()"
+                title="清空搜索结果"
+                @click="subResults = []; subSearchOpen = false"
               >✕</button>
             </div>
 
@@ -1402,6 +1459,14 @@ function onError() {
 }
 .bp-lyric-btn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
 .bp-lyric-btn.on { background: rgba(251, 114, 153, 0.85); color: #fff; }
+/* 带图标的开关（歌词显示） */
+.bp-lyric-btn.toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+}
+.bp-lyric-btn.toggle svg { width: 12px; height: 12px; }
 
 /* 对轨微调（− 值 +） */
 .bp-sync {
