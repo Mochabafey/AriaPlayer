@@ -1278,6 +1278,8 @@ function onError() {
   align-items: center;
   justify-content: center;
   transition: background 0.18s var(--ease), transform 0.18s var(--ease);
+  /* 显式层级：歌词有 z-index: 4，无 z-index 的绝对定位元素会被它盖住 */
+  z-index: 5;
 }
 .bp-center-play:hover { background: var(--accent); transform: translate(-50%, -50%) scale(1.08); }
 .bp-center-play svg { width: 30px; height: 30px; margin-left: 3px; }
@@ -1295,6 +1297,8 @@ function onError() {
   transform: translateY(-6px);
   transition: opacity 0.22s var(--ease), transform 0.22s var(--ease);
   pointer-events: none;
+  /* 显式层级：否则被歌词（z-index: 4）盖住，标题在歌词区域时看不清 */
+  z-index: 5;
 }
 .bp-top.show { opacity: 1; transform: translateY(0); }
 .bp-title { font-size: 14px; font-weight: 600; line-height: 1.4; }
@@ -1311,6 +1315,12 @@ function onError() {
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.22s var(--ease), transform 0.22s var(--ease);
+  /*
+   * 层级必须**高于歌词**（.bs-wrap 是 4）：
+   * 控制条是交互层，画质/倍速菜单从按钮向上弹出，若被歌词盖住就点不到。
+   * 实测问题：打开画质菜单时，菜单被歌词块遮挡，只能看到菜单底部一两项。
+   */
+  z-index: 5;
 }
 .bp-controls.show { opacity: 1; transform: translateY(0); }
 
@@ -1463,6 +1473,8 @@ function onError() {
   font-size: 13px;
   padding: 10px 18px;
   border-radius: 8px;
+  /* 错误提示必须盖住一切（含歌词 z-index: 4 与合流层 6） */
+  z-index: 7;
 }
 
 /* 合流中：叠加在 video 之上（不卸载 video，避免丢失播放状态与接管） */
@@ -1647,7 +1659,8 @@ function onError() {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  z-index: 3;
+  /* 与 .bp-controls 同级：搜索结果从控制条内向上弹出，需盖住歌词（z-index 4） */
+  z-index: 5;
 }
 .bp-sres-item {
   display: flex;
