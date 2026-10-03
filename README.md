@@ -65,6 +65,16 @@
 - **本地曲库** — 文件夹扫描、元数据读取、ID3 写回（MP3）、封面墙、自建歌单、m3u/json 导入导出、NCM 批量转换
 - **安全加固** — IPC 白名单桥 + sandbox 渲染隔离、音频代理 URL 校验（防 SSRF）、HLS 协议目录穿越防护
 - **登录态加密** — cookie 经 safeStorage / AES-256-GCM 加密存盘，不进仓库
+
+> **凭据存放位置**：所有登录态（网易云 / QQ 音乐 / B 站）经加密后存在
+> `%APPDATA%/Aria Player/ncm-store/`（**项目目录之外**），`.gitignore` 已排除。
+> 全历史核查确认：`SESSDATA` / `bili_jct` / `DedeUserID` / `MUSIC_U` 等
+> 真实凭据值**从未进入 git 历史**（仓库中的 `MUSIC_U=xxx` 均为上游文档占位符）。
+>
+> 已知历史遗留：`server/data/deviceid.txt`（网易云**设备指纹池**，非账号凭据）
+> 曾进入过 git 历史，现已从 HEAD 移除并加入 `.gitignore`，但历史副本仍在。
+> 风险很低（随机设备 ID，与账号无关），如需彻底清理可用
+> `git filter-repo --path server/data/deviceid.txt --invert-paths` 后强推。
 - **零原生依赖打包** — 纯 JS（music-metadata、node-id3、node:sqlite、hls.js），无 better-sqlite3 等编译依赖
 
 ---
