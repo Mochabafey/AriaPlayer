@@ -14,6 +14,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Hls from 'hls.js'
 import { usePlayerStore } from '../stores/player'
+import { useSettingsStore } from '../stores/settings'
 import { parseLrc, activeIndex } from '../utils/lrc'
 import { bili } from '../api'
 import BiliSubtitle from './BiliSubtitle.vue'
@@ -48,6 +49,7 @@ const props = defineProps({
 const emit = defineEmits(['quality-change', 'ended', 'error'])
 
 const player = usePlayerStore()
+const settings = useSettingsStore()
 const videoRef = ref(null)
 const wrapRef = ref(null)
 
@@ -87,6 +89,12 @@ const subMatched = ref(null)
 const subFromLabel = ref('')
 /** 匹配置信度：2=歌名+歌手都命中，1=歌名命中，0=仅关键词 */
 const subConfidence = ref(2)
+/**
+ * 用户是否手动指定过歌词。
+ * 为 true 时换源（切画质/换线路）不再自动重载歌词，避免覆盖用户的选择；
+ * 切视频（bvid 变化）时清除。
+ */
+const subManual = ref(false)
 /** 搜索结果面板展开态 */
 const subSearchOpen = ref(false)
 const subKeyword = ref('')
@@ -131,10 +139,17 @@ async function loadSubtitle() {
   subConfidence.value = 2
   subLoading.value = true
   try {
-    // 并行请求两个来源（互不依赖，串行会白等）
+    // 来源偏好：auto=两源择优 / netease=只用网易云 / bili=只用 B 站字幕
+    const src = settings.settings.biliLyricSource || 'auto'
+    const wantBili = src === 'auto' || src === 'bili'
+    const wantNcm = src === 'auto' || src === 'netease'
+
+    // 并行请求（互不依赖，串行会白等）
     const [biliRes, autoRes] = await Promise.all([
-      props.cid ? bili.subtitle(props.bvid, props.cid).catch(() => null) : Promise.resolve(null),
-      bili.autoLyric(props.title).catch(() => null)
+      wantBili && props.cid
+        ? bili.subtitle(props.bvid, props.cid).catch(() => null)
+        : Promise.resolve(null),
+      wantNcm ? bili.autoLyric(props.title).catch(() => null) : Promise.resolve(null)
     ])
 
     // B 站自带字幕 → 统一结构
@@ -151,8 +166,21 @@ async function loadSubtitle() {
     }
     const ncmKeyword = autoRes?.keyword || ''
 
-    // 择优：行数多的更完整
-    if (ncmLines.length >= ccLines.length && ncmLines.length > 0) {
+    /**
+     * 选择规则：
+     *   auto      → 取行数多的（更完整）
+     *   netease   → 只用网易云（用户明确选择，即使行数少也用）
+     *   bili      → 只用 B 站字幕
+     */
+    if (src === 'netease') {
+      subLines.value = ncmLines
+      subMatched.value = ncmMatched
+      subFromLabel.value = '网易云'
+      subConfidence.value = ncmConf
+    } else if (src === 'bili') {
+      subLines.value = ccLines
+      subFromLabel.value = 'B站字幕'
+    } else if (ncmLines.length >= ccLines.length && ncmLines.length > 0) {
       subLines.value = ncmLines
       subMatched.value = ncmMatched
       subFromLabel.value = '网易云'
@@ -160,8 +188,8 @@ async function loadSubtitle() {
     } else if (ccLines.length > 0) {
       subLines.value = ccLines
       subFromLabel.value = 'B站字幕'
-      subConfidence.value = 2
     }
+
     // subLabel 仅作 title 悬浮用（完整信息，含匹配提示）
     subLabel.value = subMatched.value
       ? `${subFromLabel.value} · ${subMatched.value.name}${subMatched.value.artist ? ' - ' + subMatched.value.artist : ''}` +
@@ -177,6 +205,33 @@ async function loadSubtitle() {
     subLoading.value = false
   }
 }
+
+/** 切换歌词来源（auto → netease → bili 循环） */
+function cycleLyricSource() {
+  const order = ['auto', 'netease', 'bili']
+  const cur = settings.settings.biliLyricSource || 'auto'
+  const next = order[(order.indexOf(cur) + 1) % order.length]
+  settings.set('biliLyricSource', next)
+  loadSubtitle()
+}
+
+const lyricSourceLabel = computed(() => {
+  const m = { auto: '自动', netease: '网易云', bili: 'B站' }
+  return m[settings.settings.biliLyricSource] || '自动'
+})
+
+/** 翻译开关（MV 页独立于歌曲页） */
+function toggleTrans() {
+  settings.set('biliShowTrans', !settings.settings.biliShowTrans)
+}
+
+const showTrans = computed(() => settings.settings.biliShowTrans !== false)
+
+/** 来源变化时重新加载 */
+watch(
+  () => settings.settings.biliLyricSource,
+  () => { if (props.bvid && props.url) loadSubtitle() }
+)
 
 /** 打开字幕搜索面板（并预填当前标题作为关键词） */
 function openSubSearch() {
@@ -210,6 +265,7 @@ async function pickSubtitle(song) {
       subMatched.value = { name: song.name, artist: song.artist }
       subFromLabel.value = '网易云'
       subConfidence.value = 2 // 手动选定视为准确
+      subManual.value = true  // 锁定，避免换源时被自动匹配覆盖
       subLabel.value = `网易云 · ${song.name}${song.artist ? ' - ' + song.artist : ''}`
       subSearchOpen.value = false
       subResults.value = []
@@ -231,6 +287,34 @@ function clearSubtitle() {
   subSearchOpen.value = false
   subResults.value = []
 }
+
+/**
+ * 按歌曲 id 应用歌词（供父组件的常驻搜索面板调用）。
+ *
+ * 歌词渲染在本组件内（叠在视频上），而搜索面板在父组件 ——
+ * 通过 defineExpose 暴露此方法，避免把歌词状态提到父层再透传
+ *（那会让歌词逻辑散落两处）。
+ *
+ * @returns {Promise<boolean>} 是否成功应用
+ */
+async function applyLyricById(id, meta) {
+  if (!id) return false
+  try {
+    const r = await bili.songLyric(id)
+    if (!r?.ok) return false
+    subLines.value = parseLrc(r.lyrics, r.tlyric)
+    subMatched.value = { name: meta?.name || '', artist: meta?.artist || '' }
+    subFromLabel.value = '网易云'
+    subConfidence.value = 2 // 手动选定视为准确
+    subManual.value = true  // 锁定，避免换源时被自动匹配覆盖
+    subLabel.value = `网易云 · ${meta?.name || ''}${meta?.artist ? ' - ' + meta.artist : ''}`
+    return true
+  } catch {
+    return false
+  }
+}
+
+defineExpose({ applyLyricById, clearSubtitle, reloadSubtitle: loadSubtitle })
 
 const RATES = [2, 1.5, 1.25, 1, 0.75, 0.5]
 
@@ -568,17 +652,24 @@ watch(
       }
     }
     poke()
-    // 换源即重新匹配字幕（不同视频的歌词不同）。
-    // 只在 B 站页启用（有 bvid），不影响歌曲播放页。
-    if (props.bvid) loadSubtitle()
+    /**
+     * 换源时重新匹配字幕（不同视频的歌词不同）。
+     *
+     * 但**用户手动选定过歌词时要保留** —— 切画质/换线路也会走这里，
+     * 若无条件重载，用户精心挑的歌词会被自动匹配覆盖（实测：选了《晴天》
+     * 的歌词，切一次画质就变回自动匹配的 Bohemian Rhapsody）。
+     * 手动指定时置 subManual = true，直到换视频（bvid 变化）才清除。
+     */
+    if (props.bvid && !subManual.value) loadSubtitle()
   },
   { immediate: true }
 )
 
-/** bvid 变化（切分P/切视频）时也重新匹配字幕 */
+/** bvid 变化（切分P/切视频）时重新匹配字幕，并清除手动锁定 */
 watch(
-  () => [props.bvid, props.cid],
+  () => props.bvid,
   () => {
+    subManual.value = false
     if (props.bvid && props.url) loadSubtitle()
   }
 )
@@ -669,7 +760,7 @@ function onError() {
       :lines="subLines"
       :time="currentTime"
       :active-index="subActive"
-      :show-trans="true"
+      :show-trans="showTrans"
       :controls-visible="controlsVisible"
       @seek="seekTo"
     />
@@ -735,6 +826,22 @@ function onError() {
               <span v-else class="bp-src-dot" :class="{ ok: subLines.length }"></span>
               <span class="bp-src-text">{{ subSourceText }}</span>
             </span>
+
+            <!-- 歌词来源切换：自动 → 网易云 → B站 -->
+            <button
+              class="bp-lyric-btn"
+              :title="'歌词来源：' + lyricSourceLabel + '（点击切换 自动/网易云/B站）'"
+              @click="cycleLyricSource"
+            >{{ lyricSourceLabel }}</button>
+
+            <!-- 翻译开关（MV 页独立于歌曲页） -->
+            <button
+              class="bp-lyric-btn"
+              :class="{ on: showTrans }"
+              :title="showTrans ? '隐藏翻译' : '显示翻译'"
+              @click="toggleTrans"
+            >译</button>
+
             <div class="bp-sbox">
               <input
                 v-model="subKeyword"
@@ -1154,6 +1261,22 @@ function onError() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* 歌词来源 / 翻译开关（小胶囊按钮） */
+.bp-lyric-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.bp-lyric-btn:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
+.bp-lyric-btn.on { background: rgba(251, 114, 153, 0.85); color: #fff; }
 
 /* 搜索框 */
 .bp-sbox {

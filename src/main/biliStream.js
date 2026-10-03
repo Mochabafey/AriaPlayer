@@ -233,10 +233,14 @@ function hlsRoot() {
  * @param {object} p
  *   - bvid, cid, quality
  *   - videoUrl, audioUrl
+ *   - videoBackups?, audioBackups?: string[]  备用流地址（主地址失败时自动切换）
  *   - onStarted?: () => void  可开播时回调
  * @returns {{ sessionId: string, playlist: string, dir: string }}
  */
-export function startHlsSession({ bvid, cid, quality, videoUrl, audioUrl, onStarted }) {
+export function startHlsSession({
+  bvid, cid, quality, videoUrl, audioUrl,
+  videoBackups, audioBackups, onStarted
+}) {
   const key = cacheKeyOf(bvid, cid, quality)
   // 同 key 的旧会话先停掉（用户可能连点画质）
   for (const [id, s] of hlsSessions) {
@@ -248,11 +252,22 @@ export function startHlsSession({ bvid, cid, quality, videoUrl, audioUrl, onStar
   fs.mkdirSync(dir, { recursive: true })
 
   const hls = mergeDashToHls(videoUrl, audioUrl, dir, {
+    videoBackups,
+    audioBackups,
     onStarted: () => {
       // 标记可播，并把播放列表路径回传（渲染层据此加载）
       const s = hlsSessions.get(sessionId)
       if (s) s.ready = true
       onStarted?.()
+    },
+    onRetry: (attempt, url) => {
+      // 切换备用地址时记录，前端可提示「正在重试备用线路」
+      const s = hlsSessions.get(sessionId)
+      if (s) {
+        s.retrying = true
+        s.retryCount = attempt
+      }
+      console.warn(`[bili-hls] 切换到第 ${attempt} 个流地址`)
     },
     onExit: (code, err) => {
       const s = hlsSessions.get(sessionId)
@@ -260,6 +275,7 @@ export function startHlsSession({ bvid, cid, quality, videoUrl, audioUrl, onStar
         s.exited = true
         s.exitCode = code
         s.exitError = err || ''
+        s.retrying = false
       }
       // 正常结束（code 0）时列表已完整，保留文件供播放器读完剩余分片；
       // 异常结束也保留（渲染层可能还在读），由 LRU/启动清理回收

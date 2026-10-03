@@ -454,6 +454,17 @@ async function fetchDash(bvid, cid, qn) {
   // 音频优先选最高码率
   const audio = (dash.audio || []).slice().sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0))[0]
 
+  /**
+   * 诊断：高码率流（1080P+ / 4K）合流卡住时，需要确认拿到的流地址与参数。
+   * 记录分辨率/码率/编码，便于判断是「上游降级」还是「地址失效」。
+   */
+  console.log(
+    `[bili-dash] 请求qn=${qn ?? '(默认)'} 实得=${video?.id}(${video?.width}x${video?.height}) ` +
+    `codec=${video?.codecs} bw=${Math.round((video?.bandwidth || 0) / 1000)}kbps ` +
+    `audio=${audio?.codecs} ${Math.round((audio?.bandwidth || 0) / 1000)}kbps ` +
+    `可用档位=[${[...new Set(videoList.map((v) => v.id))].join(',')}]`
+  )
+
   // 记录该画质下所有可用编码，便于排障时判断是否只有 HEVC
   const availableCodecs = byQn.map((v) => v.codecs)
 

@@ -163,7 +163,11 @@ export function registerBiliIpc(getNcmServer) {
           cid,
           quality: info.quality,
           videoUrl: info.video.url,
-          audioUrl: info.audio?.url
+          audioUrl: info.audio?.url,
+          // 备用地址：B 站流常含 PCDN 节点（域名带 mcdn、端口 8082），
+          // 稳定性差，实测会连接被重置（ffmpeg -138）。主地址失败时自动切换。
+          videoBackups: info.video?.backupUrls,
+          audioBackups: info.audio?.backupUrls
         })
         return {
           mode: 'hls',

@@ -18,6 +18,15 @@ export const useSettingsStore = defineStore('settings', {
       // B 站视频画质偏好（0 = 自动选最高可用；否则为 B 站画质 id 如 80=1080P）
       // 与 mvQuality 分开：两边的档位体系不同（网易云 r 值 vs B 站 qn id）
       biliQuality: 0,
+      // B 站歌词偏好
+      //   biliLyricSource: 'auto' | 'netease' | 'bili'  —— 歌词来源
+      //     auto = 两源并行取，择优（行数多的更完整）
+      //     netease = 只用网易云（通常带翻译，最完整）
+      //     bili = 只用 B 站自带 CC 字幕（与视频天然同步）
+      //   biliShowTrans: 是否显示翻译（与歌曲页的 showTranslation 分开，
+      //     因为 MV 页用户更可能只想看原文或只想看译文）
+      biliLyricSource: 'auto',
+      biliShowTrans: true,
       playMode: 'list',
       showTranslation: true,
       audioCacheLimitMB: 2048,

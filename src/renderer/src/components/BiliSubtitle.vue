@@ -142,11 +142,12 @@ const hasContent = computed(() => props.lines.length > 0)
         :key="i"
         :data-idx="i"
         class="bs-line"
-        :class="{ cur: i === activeIndex }"
+        :class="{ cur: i === activeIndex, 'has-trans': showTrans && line.trans }"
         :title="'跳转到此句'"
         @click="onLineClick(line)"
       >
-        {{ line.text }}
+        <span class="bs-text">{{ line.text }}</span>
+        <!-- 翻译另起一行、放原文下方（字幕组惯例），当前句的翻译更突出 -->
         <span v-if="showTrans && line.trans" class="bs-trans">{{ line.trans }}</span>
       </p>
       <div class="bs-pad"></div>
@@ -234,14 +235,11 @@ const hasContent = computed(() => props.lines.length > 0)
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1px;
+  gap: 2px;
   padding: 0 6px;
   box-sizing: border-box;
   text-align: center;
-  font-size: var(--bs-font);
-  line-height: 1.35;
-  color: rgba(255, 255, 255, 0.42);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+  line-height: 1.3;
   cursor: pointer;
   transition: color 0.25s var(--ease, ease), transform 0.25s var(--ease, ease);
   /* 长句单行截断，避免行高不齐导致滚动位置跳变 */
@@ -250,26 +248,61 @@ const hasContent = computed(() => props.lines.length > 0)
   text-overflow: ellipsis;
 }
 
-.bs-line:hover { color: rgba(255, 255, 255, 0.72); }
-
-/* 当前行：高亮 + 轻微放大 */
-.bs-line.cur {
-  color: #fff;
-  font-weight: 700;
-  transform: scale(1.06);
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.95);
-}
-
-.bs-trans {
-  font-size: 0.68em;
+/*
+ * 原文（外语歌词）：**弱化**为配角。
+ * 有翻译时原文更淡更小 —— 用户主要读翻译，原文只作参考。
+ */
+.bs-text {
+  font-size: var(--bs-font);
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.72);
-  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.5);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
 }
-.bs-line.cur .bs-trans { color: rgba(255, 255, 255, 0.88); }
+/* 无翻译时原文就是主角，恢复正常亮度 */
+.bs-line:not(.has-trans) .bs-text { color: rgba(255, 255, 255, 0.62); }
+
+/*
+ * 翻译：**主角**，放原文下方（字幕组惯例）。
+ * 比原文更大、更亮、加粗，与原文形成明确的视觉层级。
+ */
+.bs-trans {
+  font-size: calc(var(--bs-font) * 1.02);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 非当前行：整体压暗，当前行突出 */
+.bs-line:not(.cur) .bs-text { color: rgba(255, 255, 255, 0.34); }
+.bs-line:not(.cur) .bs-trans { color: rgba(255, 255, 255, 0.5); font-weight: 500; }
+.bs-line:not(.cur):hover .bs-text { color: rgba(255, 255, 255, 0.6); }
+.bs-line:not(.cur):hover .bs-trans { color: rgba(255, 255, 255, 0.75); }
+
+/* 当前行：翻译最亮最大，原文次之 */
+.bs-line.cur {
+  transform: scale(1.04);
+}
+.bs-line.cur .bs-text {
+  color: rgba(255, 255, 255, 0.82);
+  font-weight: 600;
+}
+.bs-line.cur .bs-trans {
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.95), 0 0 3px rgba(0, 0, 0, 1);
+}
+/* 无翻译的当前行：原文即主角 */
+.bs-line.cur:not(.has-trans) .bs-text {
+  color: #fff;
+  font-weight: 700;
+  font-size: calc(var(--bs-font) * 1.02);
+}
 
 /*
  * 不再使用 min-width / min-height 媒体查询调字号：

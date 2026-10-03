@@ -48,6 +48,9 @@ const currentQuality = ref(0)
 /** 当前流的编码（排障与提示用） */
 const currentCodecs = ref('')
 
+/** BiliPlayer 组件引用（用于从下方搜索面板应用歌词） */
+const playerRef = ref(null)
+
 /** 登录 */
 const login = ref({ loggedIn: false })
 const qr = ref(null)
@@ -360,6 +363,48 @@ function closePlayer() {
   clearInterval(mergeTimer)
   merging.value = false
   stopCurrentHls()
+  // 清掉歌词搜索结果，避免下次进来看到上一个视频的候选
+  lyricResults.value = []
+}
+
+/* ---------------- 歌词搜索（播放器下方常驻面板） ---------------- */
+
+const lyricKeyword = ref('')
+const lyricResults = ref([])
+const lyricSearching = ref(false)
+/** 当前生效的歌词对应歌曲 id（用于列表高亮） */
+const lyricCurrentId = ref(null)
+
+/** 搜索网易云歌曲作为歌词候选 */
+async function doLyricSearch() {
+  const kw = lyricKeyword.value.trim()
+  if (!kw || lyricSearching.value) return
+  lyricSearching.value = true
+  try {
+    const r = await bili.searchSong(kw, 20)
+    lyricResults.value = r.list || []
+  } catch {
+    lyricResults.value = []
+  } finally {
+    lyricSearching.value = false
+  }
+}
+
+/**
+ * 应用某首歌的歌词。
+ *
+ * 歌词渲染在 BiliPlayer 内部（叠在视频上），而搜索面板在 BiliView —— 
+ * 两者是父子组件。这里通过 ref 调用子组件暴露的方法，避免把歌词状态
+ * 提到父层再透传（那会让 BiliPlayer 的歌词逻辑散落两处）。
+ */
+async function applyLyric(song) {
+  const ok = await playerRef.value?.applyLyricById(song.id, song)
+  if (ok) {
+    lyricCurrentId.value = song.id
+    toast(`已应用歌词：${song.name}`, 'success')
+  } else {
+    toast('这首歌没有歌词', 'error')
+  }
 }
 
 function fmtDur(s) {
@@ -392,6 +437,7 @@ const qrStatusText = computed(() => ({
         <div class="pa-title" :title="current.title">{{ current.title }}</div>
       </div>
       <BiliPlayer
+        ref="playerRef"
         :url="playUrl"
         :title="current.title"
         :author="current.author"
@@ -413,6 +459,52 @@ const qrStatusText = computed(() => ({
           {{ currentCodecs.split('.')[0].toUpperCase() }}
         </span>
         <span v-if="!login.loggedIn" class="tip">未登录最高 480P，扫码登录可解锁 1080P/4K</span>
+      </div>
+
+      <!--
+        歌词搜索面板：常驻在播放器下方的空白区域。
+        播放器只占屏幕上部的 16:9 区域，下方原本是空的 —— 用来放歌词候选列表，
+        用户可随时搜索并指定用哪首歌的歌词，不必挤在控制条的小弹窗里。
+      -->
+      <div class="lyric-panel-below">
+        <div class="lpb-head">
+          <span class="lpb-title">歌词</span>
+          <div class="lpb-search">
+            <input
+              v-model="lyricKeyword"
+              class="lpb-input"
+              placeholder="搜索歌名 / 歌手，回车搜索"
+              @keyup.enter="doLyricSearch"
+            />
+            <button class="lpb-btn" :disabled="lyricSearching" @click="doLyricSearch">
+              {{ lyricSearching ? '搜索中…' : '搜索' }}
+            </button>
+            <button
+              v-if="lyricResults.length"
+              class="lpb-btn ghost"
+              @click="lyricResults = []"
+            >清空</button>
+          </div>
+          <span class="lpb-hint">点结果即用该歌词；也可用播放器控制条上的搜索框</span>
+        </div>
+
+        <div v-if="lyricResults.length" class="lpb-list">
+          <button
+            v-for="s in lyricResults"
+            :key="s.id"
+            class="lpb-item"
+            :class="{ on: s.id === lyricCurrentId }"
+            @click="applyLyric(s)"
+          >
+            <span class="lpb-name">{{ s.name }}</span>
+            <span class="lpb-artist">{{ s.artist }}</span>
+            <span v-if="s.album" class="lpb-album">{{ s.album }}</span>
+            <span v-if="s.duration" class="lpb-dur">{{ fmtDur(s.duration) }}</span>
+          </button>
+        </div>
+        <div v-else class="lpb-empty">
+          搜索后这里会列出候选歌曲，点一下即可把它的歌词作为 MV 字幕显示。
+        </div>
       </div>
     </div>
 
@@ -600,6 +692,125 @@ const qrStatusText = computed(() => ({
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0 5px;
+}
+
+/* ---- 歌词搜索面板（播放器下方常驻）---- */
+.lyric-panel-below {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 占满剩余高度并独立滚动，避免把整页撑长 */
+  flex: 1;
+  min-height: 0;
+}
+.lpb-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.lpb-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.lpb-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 240px;
+  max-width: 460px;
+}
+.lpb-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 15px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s var(--ease);
+}
+.lpb-input:focus { border-color: var(--accent); }
+.lpb-btn {
+  flex: none;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 15px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: filter 0.15s var(--ease);
+}
+.lpb-btn:hover { filter: brightness(1.1); }
+.lpb-btn:disabled { opacity: 0.55; cursor: default; }
+.lpb-btn.ghost {
+  background: var(--bg-hover);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.lpb-btn.ghost:hover { color: var(--text); filter: none; }
+.lpb-hint {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.lpb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  max-height: 320px;
+}
+.lpb-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--text-dim);
+  transition: background 0.13s var(--ease), color 0.13s var(--ease);
+}
+.lpb-item:hover { background: var(--bg-hover); color: var(--text); }
+.lpb-item.on {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text);
+}
+.lpb-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lpb-artist, .lpb-album {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lpb-dur {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.lpb-empty {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  padding: 20px 0;
 }
 
 /* 二维码弹窗 */
