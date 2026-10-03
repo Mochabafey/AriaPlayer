@@ -629,6 +629,7 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 | `Get-Content`/`Set-Content` 损坏中文 | 源码中文乱码 | 改用编辑器工具（`edit`/`write`）读写源文件 |
 | `node -e "..."` 嵌套模板字符串 | 语法错误 | 写成脚本文件再执行 |
 | `spawn EPERM` | sandbox 下 piped stdio 被拒 | 用 `stdio: 'inherit'` |
+| **weapi 接口全部 502** | 每日推荐/我的歌单/推荐歌单等页面全空，而搜索/播放正常 | `weapi` 走 `music.163.com`，该域名在部分网络下解析到**不可达 IP**（IPv6 + 某 IPv4 均 ECONNRESET），而 `interface.music.163.com` 正常。实测 `/weapi/` 路径在 `interface*.music.163.com` 上完全可用 → 在 `request.js` 请求层加**域名自动回退**（仅网络错误时重试 + 5 分钟熔断）。影响 217 个接口 |
 | **打包版服务起不来（CI 构建）** | 界面显示「服务未就绪」，「我的」页卡在加载中 | `vendor-server.mjs` 旧判据「有 `app.js` 就 `process.exit(0)`」在 CI 上误跳过依赖安装（`server/node_modules` 被 gitignore 排除）→ 判据改为**「有源码**且**关键依赖齐全」**，并移除顶层 exit 以免连本地补丁一起跳过 |
 | **正则匹配转换前形式** | 「刚听完查不到记录，过一会又出现」 | `method.replace(/_/g,'/')` 之后才做 `FORCE_FETCH_RE.test(route)`，而正则写的是下划线形式 → 7 个实时接口的强制刷新**从未生效**。正则改用 `[/_]` 兼容两种形式 |
 | 打包版服务起不来（本地） | 缺依赖 | `afterPack` 钩子补全 node_modules |
