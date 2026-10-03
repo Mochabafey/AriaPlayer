@@ -629,7 +629,9 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 | `Get-Content`/`Set-Content` 损坏中文 | 源码中文乱码 | 改用编辑器工具（`edit`/`write`）读写源文件 |
 | `node -e "..."` 嵌套模板字符串 | 语法错误 | 写成脚本文件再执行 |
 | `spawn EPERM` | sandbox 下 piped stdio 被拒 | 用 `stdio: 'inherit'` |
-| 打包版服务起不来 | 缺依赖 | `afterPack` 钩子补全 node_modules |
+| **打包版服务起不来（CI 构建）** | 界面显示「服务未就绪」，「我的」页卡在加载中 | `vendor-server.mjs` 旧判据「有 `app.js` 就 `process.exit(0)`」在 CI 上误跳过依赖安装（`server/node_modules` 被 gitignore 排除）→ 判据改为**「有源码**且**关键依赖齐全」**，并移除顶层 exit 以免连本地补丁一起跳过 |
+| **正则匹配转换前形式** | 「刚听完查不到记录，过一会又出现」 | `method.replace(/_/g,'/')` 之后才做 `FORCE_FETCH_RE.test(route)`，而正则写的是下划线形式 → 7 个实时接口的强制刷新**从未生效**。正则改用 `[/_]` 兼容两种形式 |
+| 打包版服务起不来（本地） | 缺依赖 | `afterPack` 钩子补全 node_modules |
 | **构建产物累积** | 代码改了但行为不变、日志不输出 | Vite 每次产出带 hash 的新文件但**不清旧文件**；残留 44 个 `BiliView-*.js` 时 Electron 可能加载旧产物 → **先清 `dist/out/renderer` 再查代码** |
 | **Vite 生产构建 drop `console.log`** | 调试日志完全不输出（`.vue` 里的却保留），误判「代码没执行」 | 调试改用 `console.warn` |
 | **CSS 百分比位移 ≠ 容器宽度** | 弹幕滚动距离错误 | `translateX(100%)` 是相对**元素自身宽度**；需要「容器右边缘外→左边缘外」时必须由 JS 算像素值 |
