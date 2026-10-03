@@ -96,7 +96,10 @@ export const usePlayerStore = defineStore('player', () => {
       if (el.seeking) return
       currentTime.value = el.currentTime
       prefetchNext()
-      // 听歌打卡：累计真实播放时长，达标后上报（内部自行判断与去重）
+      // 听歌打卡：累计真实播放时长并判断是否达上报门槛。
+      // 这里**不发请求**（纯计算）—— 官方语义是「一次播放发一条日志」，
+      // 周期性上报递增的累计值会在累加模型下重复计入。
+      // 真正的上报在切歌 / 播完时由 flushScrobble 发一次（见下方 startCurrent / ended）。
       scrobbleTick(!el.paused, el.currentTime)
       maybeScrobble(current.value, el.currentTime, el.duration)
     })

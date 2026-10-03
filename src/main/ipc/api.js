@@ -17,8 +17,18 @@ const API_CACHE_RULES = [
   { re: /^lyric\b/, ttl: 7 * 24 * 60 * 60 * 1000 }, // 歌词（含翻译）极少变化
   { re: /^song\/detail\b/, ttl: 24 * 60 * 60 * 1000 } // 歌曲详情
 ]
-/** 登录态/实时数据：既不用本地缓存，也强制绕过服务端缓存 */
-const FORCE_FETCH_RE = /^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin|scrobble|like)/
+/**
+ * 登录态 / 实时数据：既不用本地 SQLite 缓存，也强制绕过服务端缓存。
+ *
+ * 服务端 `server.js` 对所有 200 响应挂了 `cache('2 minutes')`，
+ * 故「刚听完歌去查记录」必须带 `x-apicache-force-fetch` 头绕过，
+ * 否则会命中 2 分钟内的旧快照。
+ *
+ * 踩过的坑：`listen/data/*`（听歌足迹：今日收听 / 时长统计）原先不在此列，
+ * 导致用户「刚听完的歌在今日收听里查不到，过一会儿又出现了」——
+ * 被误判成「丢歌」。实际是服务端 2 分钟缓存未过期。
+ */
+const FORCE_FETCH_RE = /^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin|scrobble|like|listen_data)/
 
 export function registerApiIpc(getServer) {
   // ---- Cookie Jar：模拟浏览器会话，保持登录态 ----
