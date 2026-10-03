@@ -3,14 +3,27 @@ import { api, bili } from '../api'
 /**
  * 播放记录同步（双上报）。
  *
- * ## 网易云（听歌打卡）
+ * ## 网易云（听歌打卡）—— 需要**两个接口配合**
  *
  * 背景：本项目此前从未调用过 scrobble，所以用咏叹调听的歌在网易云
  * 客户端/网页的「最近播放」与「听歌排行」里完全看不到——不是接口缺失，
  * 而是前端根本没上报。
  *
- * 用 scrobble/v1（仿桌面客户端的 NCBL 加密上报，见 server/util/ncbl.js），
- * 比旧的 scrobble 更接近官方客户端行为；需要登录态（MUSIC_U）。
+ * ### 两个接口分工不同（实测确认，缺一不可）
+ *
+ * | 接口 | 写入「最近播放」 | 写入「听歌时长」 |
+ * |---|---|---|
+ * | `scrobble`（weblog startplay+play） | ✅ 确定生效 | 部分 |
+ * | `scrobble_v1`（NCBL clientlog） | ❌ **不可靠** | ✅ 是 |
+ *
+ * 实测证据：连续用 `scrobble_v1` 上报 3 首，只有 1 首进了「最近播放」；
+ * 而用 `scrobble` 上报后，歌曲**立刻**出现在「最近播放」最前面。
+ * 这正是「歌曲记录丢了好几首」的根因 —— clientlog 是异步日志管道，
+ * 不保证每条都落到播放记录里。
+ *
+ * 所以两者都要调：
+ *   - `scrobble`    → 保证「最近播放」列表完整
+ *   - `scrobble_v1` → 保证「听歌时长」准确增长
  *
  * ## B 站（观看历史）
  *
@@ -21,7 +34,7 @@ import { api, bili } from '../api'
  *
  *   - 播放时长 ≥ 30s，或
  *   - 播放时长 ≥ 总时长的 50%（短歌/试听片段）
- *   满足其一即上报一次；同一次播放只上报一次。
+ *   满足其一即首次上报；之后每满 60 秒补报一次时长。
  */
 
 /** 最短上报时长（秒），对齐网易云官方 30s 规则 */
@@ -83,6 +96,57 @@ export function listenedSeconds() {
 }
 
 /**
+ * 向网易云上报一次播放（**双接口**）。
+ *
+ * 为什么两个都发（实测确认，见文件头注释）：
+ *   - `scrobble`    → 写「最近播放」列表，**必须**发，否则歌曲记录会丢
+ *   - `scrobble_v1` → 写「听歌时长」，**必须**发，否则累计时长不增长
+ *
+ * 两者独立发起，互不阻塞：任一失败不影响另一个，也不影响播放。
+ *
+ * @param {object} song   歌曲对象
+ * @param {number} sec    本次上报的播放时长（秒）
+ * @param {number} total  歌曲总时长（秒）
+ * @param {boolean} first 是否本次播放的**首次**上报。只有首次才发旧版
+ *   `scrobble` —— 它的作用是「把这首歌写进最近播放」，一首歌发一次即可；
+ *   后续补报只发 `scrobble_v1` 累计时长，避免重复写记录。
+ */
+async function reportToNetease(song, sec, total, first = false) {
+  const jobs = [
+    // NCBL 客户端日志上报：写「听歌时长」
+    api('scrobble_v1', {
+      id: song.id,
+      sourceid: song.id,
+      time: sec,
+      total: Math.round(total) || undefined,
+      name: song.name || '',
+      artist: song.artist || '',
+      source: 'list'
+    })
+  ]
+  if (first) {
+    // 旧版 weblog 上报：写「最近播放」（缺它歌曲记录会丢）
+    jobs.push(
+      api('scrobble', {
+        id: song.id,
+        sourceid: song.id,
+        time: sec,
+        source: 'list'
+      })
+    )
+  }
+
+  const results = await Promise.allSettled(jobs)
+  // 全部失败才算失败（否则视为成功，避免重复上报）
+  const ok = results.some((r) => r.status === 'fulfilled')
+  if (!ok) {
+    const msg = results.map((r) => r.reason?.message).filter(Boolean).join(' | ')
+    throw new Error(msg || '上报失败')
+  }
+  return true
+}
+
+/**
  * 收尾上报：切歌/播完前把**尚未上报的尾部时长**补上。
  *
  * 为什么需要：补报是「每满 60 秒一次」，若一首歌听了 90 秒就切走，
@@ -125,15 +189,9 @@ export async function flushScrobble(song, position, duration, finished = false) 
 
   reportedUpto = reportSec
   try {
-    await api('scrobble_v1', {
-      id: song.id,
-      sourceid: song.id,
-      time: reportSec,
-      total: Math.round(total) || undefined,
-      name: song.name || '',
-      artist: song.artist || '',
-      source: 'list'
-    })
+    // 补报只发 scrobble_v1（累计时长）；「最近播放」在首次上报时已写过，
+    // 无需重复（重复发旧版接口只会重复往列表里塞记录）
+    await reportToNetease(song, reportSec, total, false)
     return true
   } catch {
     // 静默失败：不阻塞切歌
@@ -180,7 +238,8 @@ export async function maybeScrobble(song, position, duration) {
   const key = `${reportEpoch}:${song.id}`
 
   // ---- 阶段 1：首次上报（需达门槛）----
-  if (reportedForEpoch !== key) {
+  const isFirst = reportedForEpoch !== key
+  if (isFirst) {
     const reachedMin = played >= MIN_PLAY_SEC
     const reachedHalf = total > 0 && played >= total * HALF_RATIO
     if (!reachedMin && !reachedHalf) return false
@@ -200,15 +259,8 @@ export async function maybeScrobble(song, position, duration) {
   reportedUpto = reportSec
   const epoch = reportEpoch
   try {
-    await api('scrobble_v1', {
-      id: song.id,
-      sourceid: song.id,
-      time: reportSec,
-      total: Math.round(total) || undefined,
-      name: song.name || '',
-      artist: song.artist || '',
-      source: 'list'
-    })
+    // first=true 时额外调用旧版 scrobble 写「最近播放」
+    await reportToNetease(song, reportSec, total, isFirst)
     return true
   } catch (e) {
     // 未登录（401）/服务未就绪：静默失败，不影响播放。
