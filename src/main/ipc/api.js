@@ -20,15 +20,37 @@ const API_CACHE_RULES = [
 /**
  * 登录态 / 实时数据：既不用本地 SQLite 缓存，也强制绕过服务端缓存。
  *
- * 服务端 `server.js` 对所有 200 响应挂了 `cache('2 minutes')`，
- * 故「刚听完歌去查记录」必须带 `x-apicache-force-fetch` 头绕过，
- * 否则会命中 2 分钟内的旧快照。
+ * ## 服务端 2 分钟缓存（已实证）
  *
- * 踩过的坑：`listen/data/*`（听歌足迹：今日收听 / 时长统计）原先不在此列，
- * 导致用户「刚听完的歌在今日收听里查不到，过一会儿又出现了」——
- * 被误判成「丢歌」。实际是服务端 2 分钟缓存未过期。
+ * `server.js` 对所有 200 响应挂了 `cache('2 minutes', ...)`。
+ * 实测（统计服务端日志中路由处理器的执行次数）：
+ *
+ *     连续两次 /listen/data/today/song（无特殊头）
+ *       第 1 次 → 服务端处理 1 次
+ *       第 2 次 → 累计仍是 1 次   ← 命中缓存，中间件直接返回
+ *
+ *     带 `x-apicache-force-fetch: 1` 再试
+ *       第 2 次 → 累计 2 次       ← 绕过成功
+ *
+ * 这就是用户看到「刚听完的歌在今日收听里查不到，过一会儿又出现了」的原因：
+ * 前一次查询的结果被缓存 2 分钟，期间无论怎么查都是旧快照。
+ *
+ * ## ⚠️ 关键坑：正则要匹配**转换后**的 route
+ *
+ * 调用链是：
+ *
+ *     method（下划线形式）→ route（斜杠形式）→ 用正则判断
+ *     'record_recent_song' → 'record/recent/song' → FORCE_FETCH_RE.test(route)
+ *
+ * 所以正则里必须写**斜杠形式**。早期版本写成下划线形式
+ *（`record_recent`、`listen_data`…），导致这些接口的强制刷新
+ * **从未生效过** —— 包括「播放记录」与「听歌足迹」这两个最需要实时的接口。
+ *
+ * 下面用 `[/_]` 同时兼容两种写法，避免以后再踩（改 method 名或调整
+ * 转换逻辑都不会再静默失效）。
  */
-const FORCE_FETCH_RE = /^(login|logout|register|user_playlist|likelist|recommend_songs|record_recent|daily_signin|scrobble|like|listen_data)/
+const FORCE_FETCH_RE =
+  /^(login|logout|register|user[/_]playlist|likelist|recommend[/_]songs|record[/_]recent|daily[/_]signin|scrobble|like|listen[/_]data)/
 
 export function registerApiIpc(getServer) {
   // ---- Cookie Jar：模拟浏览器会话，保持登录态 ----
