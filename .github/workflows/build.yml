@@ -36,10 +36,19 @@ on:
         required: false
         default: ''
 
-# 同一分支/标签的重复触发只保留最新一次，避免浪费 CI 配额。
-# （网页建 Release 时可能同时触发 create + release，这里会合并为一次）
+# 同一 ref 的重复触发只保留最新一次，避免浪费 CI 配额。
+#
+# ⚠️ group 必须带上 `github.event_name`（实测踩过）：
+#   创建 tag 会**同时触发 push 与 create 两个事件**（API 与网页均如此，
+#   已用 `git/refs` API 实测确认）。若 group 只含 ref，两个 run 会落到
+#   同一组，`cancel-in-progress` 让后者取消前者 —— 每次打 tag 都白跑一个
+#   完整构建（3 job × 6 min ≈ 18 分钟配额），顺序反过来时还可能取消掉
+#   本该成功的那次。
+#
+#   带上 event_name 后，push / create / release / workflow_dispatch 各自
+#   独立成组，互不干扰；同一事件的真·重复触发（如连推两次）仍会被合并。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -180,21 +189,27 @@ jobs:
   # ---------------------------------------------------------------
   # 发布：把三平台产物挂到 Release
   #
-  # 支持三种入口：
-  #   1. 命令行推 tag（push 事件）→ 本 job 负责**创建** Release 并上传产物
-  #   2. 网页创建 Release（release 事件）→ Release 已存在，只**上传产物**
-  #   3. 网页单独建 tag（create 事件）→ 本 job **创建** Release 并上传产物
+  # 只在**不会重复**的入口执行（关键：避免并发写同一个 Release）：
   #
-  # softprops/action-gh-release 对「已存在的 Release」会自动追加资产，
-  # 故三种入口可以走同一段逻辑，无需分支。
+  #   1. push tag（命令行 `git push origin v0.4.0`）→ 创建 Release 并上传
+  #   2. release 事件（网页 Releases 页建 Release）→ Release 已存在，追加资产
+  #
+  # **刻意排除 create 事件**：创建 tag 会同时触发 push + create 两个事件
+  #（已用 git/refs API 实测确认）。若两者都跑本 job，就会有两个 run 并发
+  # 写同一个 Release —— softprops/action-gh-release 在这种并发下存在竞态
+  #（见 upstream issue #705），可能出现「Release 建了但资产只传了一半」
+  # 或报错。所以只让 push 事件负责建 Release；create 事件仍会构建并上传
+  # artifact（供 Actions 页面下载），只是不发 Release。
+  #
+  # 注：命令行推 tag 与网页建 tag 两种操作都会触发 push 事件，
+  # 所以「只靠 push 发 Release」能覆盖全部正常发布路径。
   # ---------------------------------------------------------------
   release:
     name: Publish Release
     needs: build
     if: |
-      startsWith(github.ref, 'refs/tags/v') ||
-      github.event_name == 'release' ||
-      (github.event_name == 'create' && github.ref_type == 'tag')
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
