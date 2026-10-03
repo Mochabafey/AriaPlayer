@@ -15,7 +15,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Hls from 'hls.js'
 import { usePlayerStore } from '../stores/player'
 import { useSettingsStore } from '../stores/settings'
-import { parseLrc, activeIndex } from '../utils/lrc'
+import { parseLrc, activeIndex, splitBilingual } from '../utils/lrc'
 import { computeOffset } from '../utils/lrcSync'
 import { bili } from '../api'
 import BiliSubtitle from './BiliSubtitle.vue'
@@ -249,7 +249,12 @@ async function loadSubtitle() {
     ])
 
     // B 站自带字幕 → 统一结构
-    const ccLines = (biliRes?.list || []).map((x) => ({ time: x.from, text: x.text }))
+    // splitBilingual：CC 字幕常把原文与中文翻译塞在同一条
+    //（"Is this the real life? Is this just fantasy? 这一切是真的吗？"），
+    // 拆成 text + trans 才能让翻译正确换行显示在下方
+    const ccLines = splitBilingual(
+      (biliRes?.list || []).map((x) => ({ time: x.from, text: x.text }))
+    )
 
     // 网易云歌词 → 统一结构
     let ncmLines = []

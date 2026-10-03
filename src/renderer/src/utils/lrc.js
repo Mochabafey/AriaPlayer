@@ -64,3 +64,40 @@ export function activeIndex(lines, time) {
   }
   return idx
 }
+
+/**
+ * 拆分「原文 + 译文混排」的字幕行。
+ *
+ * B 站 CC 字幕常见形态是把原文与中文翻译塞进同一条：
+ *   "Is this the real life? Is this just fantasy? 这一切是真的吗？亦或仅仅是幻觉？"
+ *
+ * 直接显示会挤成一行（原文与翻译糊在一起），与本应用「翻译另起一行放下方」
+ * 的样式冲突。这里按「首个中日韩字符」切分：
+ *   text  = 前半（原文，多为英文）
+ *   trans = 后半（中文翻译）
+ *
+ * 注意：纯中文歌词（无外文）不切分；中英混排但中文在前的也不切
+ *（避免把「周杰伦 Jay」这类名字切坏）。
+ *
+ * @param {Array<{time:number,text:string,trans?:string}>} lines
+ * @returns {Array<{time:number,text:string,trans?:string}>}
+ */
+export function splitBilingual(lines) {
+  if (!Array.isArray(lines)) return []
+  return lines.map((l) => {
+    // 已有独立翻译字段（网易云 tlyric）→ 不动
+    if (l.trans) return l
+    const raw = String(l.text || '')
+    // 找首个中日韩字符的位置
+    const m = raw.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/)
+    if (!m) return l // 纯外文，无翻译
+    const idx = m.index
+    // 中文之前必须有足够长度的外文内容（否则是纯中文歌词）
+    const head = raw.slice(0, idx).trim()
+    const tail = raw.slice(idx).trim()
+    if (head.length < 2 || !/[a-zA-Z]{2,}/.test(head)) return l
+    // 尾部必须确实有中文（排除「Hello 世界」这种只有零星汉字的）
+    if (!/[\u4e00-\u9fff]{2,}/.test(tail)) return l
+    return { time: l.time, text: head, trans: tail }
+  })
+}
