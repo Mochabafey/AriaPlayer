@@ -860,14 +860,32 @@ function onError() {
   overflow: hidden;
   user-select: none;
 }
-/* 网页全屏：铺满应用内容区 */
+/* 网页全屏：铺满应用内容区，但**保持 16:9**（避免上下留黑边、画面反而变小） */
 .bp-wrap.web-full {
   position: fixed;
   inset: 0;
   z-index: 900;
   max-height: none;
   border-radius: 0;
-  aspect-ratio: auto;
+  /*
+   * 原为 aspect-ratio: auto + 铺满窗口，容器被拉成窗口比例
+   *（实测 1280x820 = 1.561），而视频是 16:9（1.778）→ object-fit: contain
+   * 上下留黑边，画面实际显示尺寸比预期小，观感「全屏反而更小」。
+   *
+   * 这里用「宽度 100vw + 高度按 16:9 推导」并居中：
+   *   宽度取满视口，高度 = 100vw × 9/16；
+   *   若该高度超过视口高，则由 max-height:100vh 反向约束，
+   *   此时由 aspect-ratio 把宽度收回（浏览器自动满足两者）。
+   * 最终容器始终是 16:9 且尽可能大。
+   */
+  aspect-ratio: 16/9;
+  width: 100vw;
+  max-width: calc(100vh * 16 / 9);
+  max-height: 100vh;
+  height: auto;
+  margin: 0 auto;
+  top: 50%;
+  transform: translateY(-50%);
 }
 .bp-wrap.hide-cursor { cursor: none; }
 

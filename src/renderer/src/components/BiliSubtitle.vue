@@ -172,18 +172,36 @@ const hasContent = computed(() => props.lines.length > 0)
   display: flex;
   justify-content: center;
   pointer-events: none; /* 容器不挡视频点击，只有歌词行可点 */
-  padding: 0 8%;
+  padding: 0 4%;
   box-sizing: border-box;
   transition: bottom 0.22s var(--ease, ease);
+  /*
+   * 建立容器查询上下文：让内部用 cqw（容器宽度百分比）算字号。
+   * 这样字号始终与**播放器实际宽度**成比例 —— 内嵌/网页全屏两态观感一致，
+   * 而 vw 会因「容器 ≠ 视口」导致内嵌偏大、全屏偏小。
+   */
+  container-type: inline-size;
 }
 /* 控制条隐藏：歌词整体下移贴近底部 */
 .bs-wrap.down { bottom: 24px; }
 
 .bs-list {
-  --bs-font: clamp(15px, 1.5vw, 21px);
-  --bs-line-h: calc(var(--bs-font) * 2.1);
+  /*
+   * 字号缩放基准：**以播放器容器宽度为准**（容器查询单位 cqw）。
+   *
+   * 为什么不用 vw/vh：
+   *   - 内嵌播放时容器只有约 1000px 宽，而视口 1280px → 用 vw 算出的字号
+   *     相对容器偏大（实测字号/视频宽 = 2.37%，看着「太大」）
+   *   - 网页全屏时容器变宽但受 16:9 约束，用 vw 又跟不上（1.85%，看着「太小」）
+   * 用 cqw 后，字号始终与**视频实际显示宽度**成固定比例，两态观感一致。
+   *
+   * 基准 2.1cqw ≈ 内嵌 998px → 21px；网页全屏 1280px → 27px（按比例增长）。
+   * 上下限 12~36px 覆盖极端窗口尺寸。
+   */
+  --bs-font: clamp(12px, 2.1cqw, 36px);
+  --bs-line-h: calc(var(--bs-font) * 1.9);
   position: relative;
-  width: min(100%, 900px);
+  width: min(100%, 86cqw);
   /* 三行窗口：高度正好容纳 3 行 */
   height: calc(var(--bs-line-h) * 3);
   overflow-y: auto;
@@ -253,11 +271,9 @@ const hasContent = computed(() => props.lines.length > 0)
 }
 .bs-line.cur .bs-trans { color: rgba(255, 255, 255, 0.88); }
 
-/* 大窗口适度放大字号（窗口放大 → 歌词跟着变大） */
-@media (min-width: 1400px) {
-  .bs-list { --bs-font: clamp(17px, 1.35vw, 24px); }
-}
-@media (min-height: 900px) {
-  .bs-list { --bs-font: clamp(16px, 1.5vw, 23px); }
-}
+/*
+ * 不再使用 min-width / min-height 媒体查询调字号：
+ * --bs-font 已基于 min(100vw, 100vh×16/9) 连续缩放，
+ * 媒体查询会造成断点处字号跳变，反而破坏「跟随窗口平滑缩放」的观感。
+ */
 </style>
