@@ -39,30 +39,66 @@ function rmrf(p) {
   }
 }
 
-if (fs.existsSync(path.join(serverDir, 'app.js')) && !force) {
-  console.log('[vendor] server/ 已存在且包含 app.js，跳过克隆（加 --force 强制重新拉取）')
-  process.exit(0)
+/**
+ * 判断 server/ 是否「已就绪」——不只看 app.js，还要看依赖是否装上。
+ *
+ * 为什么必须检查 node_modules（CI 上踩过的坑）：
+ *   server/node_modules 被 .gitignore 排除，所以 CI checkout 后
+ *   只有源码、没有依赖。而旧版判断只看 app.js 存在就 `process.exit(0)`，
+ *   导致：
+ *     1. 依赖安装被跳过 → 打包进去的 ncm-server 没有 express 等依赖
+ *     2. 后续「应用本地补丁」的代码也被跳过（同一段脚本里）
+ *   表现为安装版启动后内置服务起不来（界面显示「服务未就绪」）。
+ *
+ * 依赖完整性的判据：node_modules 存在 + 关键包在位。
+ * 只判断目录存在不够 —— 中断的安装会留下空目录。
+ */
+const REQUIRED_DEPS = ['express', 'axios', 'crypto-js']
+function depsInstalled() {
+  const nm = path.join(serverDir, 'node_modules')
+  if (!fs.existsSync(nm)) return false
+  return REQUIRED_DEPS.every((d) => fs.existsSync(path.join(nm, d)))
 }
 
-console.log('[vendor] 克隆 api-enhanced → server/ ...')
-rmrf(serverDir)
-fs.mkdirSync(serverDir, { recursive: true })
-run(`git clone --depth 1 ${REPO} ${serverDir}`)
+const sourceReady = fs.existsSync(path.join(serverDir, 'app.js'))
+const depsReady = depsInstalled()
 
-// 移除开发相关文件，减小体积
-for (const p of ['.git', 'test', 'tests', 'examples', 'scripts', '.github', 'docs']) {
-  rmrf(path.join(serverDir, p))
-}
+if (sourceReady && depsReady && !force) {
+  console.log('[vendor] server/ 已存在（含 app.js 与依赖），跳过克隆')
+  console.log('[vendor] 仍会执行下方「应用本地补丁」步骤')
+} else {
+  if (sourceReady && !depsReady) {
+    console.log('[vendor] server/ 有源码但缺依赖（CI checkout 后即为此状态）→ 只补装依赖，不重新克隆')
+    run('npm install --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error', { cwd: serverDir })
+    for (const p of ['node_modules/.cache']) {
+      rmrf(path.join(serverDir, p))
+    }
+  } else {
+    console.log('[vendor] 克隆 api-enhanced → server/ ...')
+    rmrf(serverDir)
+    fs.mkdirSync(serverDir, { recursive: true })
+    run(`git clone --depth 1 ${REPO} ${serverDir}`)
 
-console.log('[vendor] 安装生产依赖（npm install --omit=dev --ignore-scripts）...')
-run('npm install --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error', { cwd: serverDir })
+    // 移除开发相关文件，减小体积
+    for (const p of ['.git', 'test', 'tests', 'examples', 'scripts', '.github', 'docs']) {
+      rmrf(path.join(serverDir, p))
+    }
 
-// 清理依赖缓存
-for (const p of ['node_modules/.cache']) {
-  rmrf(path.join(serverDir, p))
+    console.log('[vendor] 安装生产依赖（npm install --omit=dev --ignore-scripts）...')
+    run('npm install --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error', { cwd: serverDir })
+
+    // 清理依赖缓存
+    for (const p of ['node_modules/.cache']) {
+      rmrf(path.join(serverDir, p))
+    }
+  }
 }
 
 // 应用本地补丁（上游 api-enhanced 的 bug 修复，防止 vendor 覆盖后丢失）
+//
+// 注意：这一步**无论是否跳过克隆都要执行** —— 补丁里包含启动优化
+//（关闭 npm info 版本检查、惰性加载 jsdom），漏掉会让打包版启动慢几秒。
+// 旧版把 `process.exit(0)` 写在脚本顶层，连这里也一起跳过了。
 applyPatches(serverDir)
 
 console.log('[vendor] 完成！server/ 已就绪。')
