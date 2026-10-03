@@ -903,6 +903,21 @@ watch(
 )
 
 /**
+ * cid 变化时加载弹幕。
+ *
+ * 为什么单独监听：url watch 的 immediate 触发时，BiliView 可能还没把
+ * cid 传进来（父组件先设 playUrl 再设 current.cid）—— 那一刻 cid 为空，
+ * loadDanmaku 直接 return，之后 url 不再变化就永远不会加载。
+ */
+watch(
+  () => props.cid,
+  (cid) => {
+    if (cid && props.bvid && !dmList.value.length) loadDanmaku()
+  },
+  { immediate: true }
+)
+
+/**
  * bvid 变化（切分P/切视频）时重新匹配字幕。
  *
  * 同时清除手动锁定与关闭状态 —— 换视频是「新场景」，
@@ -1012,6 +1027,7 @@ function onError() {
       :opacity="dmOpacity"
       :font-scale="dmFontScale"
       :display-area="dmArea"
+      :playing="playing"
     />
 
     <!-- 歌词（滚动 + 三行聚焦窗口）：叠在视频上、进度条上方

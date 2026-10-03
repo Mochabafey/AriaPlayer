@@ -2,13 +2,20 @@
 /**
  * BiliDanmaku.vue — 弹幕层
  *
- * 参照 B 站网页播放器的行为：
- *   - 三种类型：滚动（mode 1/2/3/6）、顶部（5）、底部（4）
- *   - 滚动弹幕分配**轨道**（lane），避免文字重叠
- *   - 用 CSS transform 动画驱动（JS 不参与逐帧计算），几十条同时跑也不卡
+ * ## 为什么不用「每次 timeupdate 重建 + animationDelay」
  *
- * 性能：弹幕总量可能上万条，**不能全量渲染**。按当前时间二分查找，
- * 只渲染窗口内的（通常 <60 条）；每条由 CSS 动画自己跑完。
+ * 最初的实现是每次时间推进都整批重建 DOM，靠 `animationDelay` 让弹幕
+ * 「到点出现」。但 timeupdate 每 250ms 触发一次，每次都会重设 animationDelay，
+ * **CSS 动画被反复重置**——表现为弹幕一跳一跳（每 250ms 回到起点重新跑）。
+ *
+ * ## 现在的方案：一次性挂载 + CSS 动画自行推进
+ *
+ *   - 弹幕只在进入时间窗时**挂载一次**，挂载时算好 animation-delay
+ *     （负值=从动画中途开始，正值=延迟启动）
+ *   - 之后**不再修改**该元素的动画相关样式 → CSS 动画连续跑完，不重置
+ *   - 用 `key` 保证同一弹幕不会被重新创建（Vue 复用已有 DOM）
+ *
+ * 这样 JS 只在「有新弹幕进入窗口」时才动 DOM，时间推进不触发任何重排。
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 
@@ -24,133 +31,51 @@ const props = defineProps({
   /** 字号缩放 0.5~2 */
   fontScale: { type: Number, default: 1 },
   /** 显示区域占容器高度的比例（0.25~1） */
-  displayArea: { type: Number, default: 1 }
+  displayArea: { type: Number, default: 1 },
+  /** 是否正在播放（暂停时冻结动画） */
+  playing: { type: Boolean, default: true }
 })
 
 const wrapRef = ref(null)
 const containerH = ref(0)
 const containerW = ref(0)
 
-/** 轨道高度（px）—— 与字号联动，B 站约 26px 基准 */
+/** 轨道高度（px） */
 const LANE_H = 26
-/** 滚动弹幕穿过一屏的基准时长（秒）—— B 站约 8~10 秒 */
+/** 滚动弹幕穿过一屏的基准时长（秒） */
 const SCROLL_SEC = 9
-/** 顶部/底部弹幕停留时长（秒） */
+/** 顶部/底部停留时长（秒） */
 const FIXED_SEC = 5
+/** 时间窗：提前多久挂载（秒） */
+const LEAD = 1.5
+/**
+ * 时间窗：滞后多久卸载（秒）。
+ *
+ * 必须 ≥ 滚动动画时长（SCROLL_SEC），否则弹幕还没跑完就被卸载 ——
+ * 表现为弹幕刚出现就消失（实测：滞后 1s 时弹幕只显示 0.2 秒）。
+ * 这里取 SCROLL_SEC + 1 作为余量。
+ */
+const LAG = SCROLL_SEC + 1
 
-/** 可用轨道数（按显示区域高度算） */
 const laneCount = computed(() =>
   Math.max(1, Math.floor((containerH.value * props.displayArea) / LANE_H))
 )
 
-const active = ref([])
-
 /**
- * 轨道占用记录：lane → 该轨道上一条弹幕的「尾部完全进入屏幕」的时间点。
+ * 已挂载的弹幕：key → item。
  *
- * 为什么是这个时刻：滚动弹幕从右侧进入，若上一条的尾巴还没完全进来
- * 就放下一条，两条会重叠。上一条完全进入所需时间 = 文本宽 / 速度。
+ * 用 Map 而非数组：需要按 key 增量增删，且已挂载的项**不再重算**
+ * （重算会改 animationDelay，导致动画重置）。
  */
+const mounted = ref([])
+/** 已挂载项的 key 集合（快速判重） */
+let mountedKeys = new Set()
+/** 轨道占用：lane → 释放时刻（播放时间轴） */
 let laneFreeAt = []
-/** 顶部/底部占用的行：`mode-lane` → 释放时间 */
+/** 顶部/底部占用：`mode-lane` → 释放时刻 */
 let fixedFreeAt = {}
 
-/**
- * 重建活跃弹幕。
- *
- * 整批重建而非增量：seek 会跳跃式改变时间，增量逻辑在跳跃时容易残留
- * 幽灵弹幕；窗口内条目少（<60），整批重建开销可忽略。
- */
-function rebuild() {
-  if (!props.enabled || !props.list.length || !containerW.value) {
-    active.value = []
-    return
-  }
-  const t = props.time
-  // 窗口：往前 1s（让刚过去的还能跑完动画），往后 9s（提前挂载，动画延迟启动）
-  const winStart = t - 1
-  const winEnd = t + SCROLL_SEC + 1
-
-  // 二分查找窗口起点（list 按 time 升序）
-  let lo = 0
-  let hi = props.list.length - 1
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (props.list[mid].time < winStart) lo = mid + 1
-    else hi = mid
-  }
-
-  const out = []
-  laneFreeAt = []
-  fixedFreeAt = {}
-
-  for (let i = lo; i < props.list.length; i++) {
-    const d = props.list[i]
-    if (d.time > winEnd) break
-
-    const isScroll = d.mode === 1 || d.mode === 2 || d.mode === 3 || d.mode === 6
-    const isTop = d.mode === 5
-    const isBottom = d.mode === 4
-    if (!isScroll && !isTop && !isBottom) continue
-
-    // 相对当前时间的延迟（负数=已出现过，从动画中途接上）
-    const delay = d.time - t
-    if (delay < -1) continue
-
-    // 字号：以 1000px 容器为基准缩放，保证不同窗口下观感一致
-    const fontSize = Math.max(
-      12,
-      Math.round((d.size || 25) * props.fontScale * (containerW.value / 1000) * 0.62)
-    )
-    const textW = estimateWidth(d.text, fontSize)
-    // 速度按容器宽度缩放：宽容器跑得快，保持「约 9 秒穿屏」
-    const speed = (containerW.value + textW) / SCROLL_SEC
-
-    let lane = -1
-    if (isScroll) {
-      // 该弹幕实际开始进入屏幕的时刻（延迟为负时就是当前时间）
-      const enterAt = Math.max(t, d.time)
-      for (let L = 0; L < laneCount.value; L++) {
-        if ((laneFreeAt[L] ?? -Infinity) <= enterAt) {
-          // 占用到「本条完全进入屏幕」为止
-          laneFreeAt[L] = enterAt + textW / speed
-          lane = L
-          break
-        }
-      }
-      if (lane < 0) continue // 无空轨道，丢弃（避免堆叠）
-    } else {
-      // 顶部/底部：占用一行 FIXED_SEC 秒（最多 3 行）
-      const enterAt = Math.max(t, d.time)
-      for (let L = 0; L < Math.min(3, laneCount.value); L++) {
-        const k = `${d.mode}-${L}`
-        if ((fixedFreeAt[k] ?? -Infinity) <= enterAt) {
-          fixedFreeAt[k] = enterAt + FIXED_SEC
-          lane = L
-          break
-        }
-      }
-      if (lane < 0) continue
-    }
-
-    out.push({
-      key: `${d.time}-${i}`,
-      text: d.text,
-      color: d.color || '#fff',
-      fontSize,
-      textW,
-      isScroll,
-      isTop,
-      isBottom,
-      lane,
-      delay,
-      duration: (containerW.value + textW) / speed
-    })
-  }
-  active.value = out
-}
-
-/** 估算文本宽度（中文/日文/全角按 1em，其余按 0.55em） */
+/** 估算文本宽度（中日韩/全角按 1em，其余 0.55em） */
 function estimateWidth(text, fontSize) {
   let units = 0
   for (const ch of String(text)) {
@@ -160,49 +85,176 @@ function estimateWidth(text, fontSize) {
 }
 
 /**
- * 滚动动画的起止位移（px）。
+ * 增量更新：只处理「新进入窗口」与「已离开窗口」的弹幕。
  *
- * 用具体像素而非百分比：CSS 的 translateX(100%) 是相对**元素自身宽度**，
- * 而滚动弹幕需要「从容器右边缘外 → 左边缘外」，距离取决于容器宽 + 文本宽。
+ * 关键：**已挂载的项完全不动** —— 它们的 animation-delay/duration 保持原值，
+ * CSS 动画连续推进，不会因为 timeupdate 而重置。
+ */
+function update() {
+  if (!props.enabled || !props.list.length || !containerW.value) {
+    if (mounted.value.length) {
+      mounted.value = []
+      mountedKeys = new Set()
+      laneFreeAt = []
+      fixedFreeAt = {}
+    }
+    return
+  }
+  const t = props.time
+  const winStart = t - LAG
+  const winEnd = t + SCROLL_SEC + LEAD
+
+  // ---- 1. 卸载已离开窗口的 ----
+  if (mounted.value.length) {
+    const kept = []
+    for (const m of mounted.value) {
+      if (m.dmTime >= winStart && m.dmTime <= winEnd) kept.push(m)
+      else mountedKeys.delete(m.key)
+    }
+    if (kept.length !== mounted.value.length) mounted.value = kept
+  }
+
+  // ---- 2. 挂载新进入窗口的 ----
+  // 二分找窗口起点
+  let lo = 0
+  let hi = props.list.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (props.list[mid].time < winStart) lo = mid + 1
+    else hi = mid
+  }
+
+  const added = []
+  for (let i = lo; i < props.list.length; i++) {
+    const d = props.list[i]
+    if (d.time > winEnd) break
+    const key = `${d.time}-${i}`
+    if (mountedKeys.has(key)) continue
+
+    const isScroll = d.mode === 1 || d.mode === 2 || d.mode === 3 || d.mode === 6
+    const isTop = d.mode === 5
+    const isBottom = d.mode === 4
+    if (!isScroll && !isTop && !isBottom) continue
+
+    const fontSize = Math.max(
+      12,
+      Math.round((d.size || 25) * props.fontScale * (containerW.value / 1000) * 0.62)
+    )
+    const textW = estimateWidth(d.text, fontSize)
+    const speed = (containerW.value + textW) / SCROLL_SEC
+    const duration = (containerW.value + textW) / speed
+
+    /**
+     * animation-delay：
+     *   正值 = 该弹幕还没到，延迟这么久后启动（元素已在 DOM 里待命）
+     *   负值 = 该弹幕已出现过，从动画中途接上（seek 场景）
+     * 这个值**只在挂载时算一次**，之后不再改 —— 这是不跳的关键。
+     */
+    const delay = d.time - t
+
+    let lane = -1
+    if (isScroll) {
+      for (let L = 0; L < laneCount.value; L++) {
+        if ((laneFreeAt[L] ?? -Infinity) <= d.time) {
+          laneFreeAt[L] = d.time + textW / speed
+          lane = L
+          break
+        }
+      }
+      if (lane < 0) continue
+    } else {
+      for (let L = 0; L < Math.min(3, laneCount.value); L++) {
+        const k = `${d.mode}-${L}`
+        if ((fixedFreeAt[k] ?? -Infinity) <= d.time) {
+          fixedFreeAt[k] = d.time + FIXED_SEC
+          lane = L
+          break
+        }
+      }
+      if (lane < 0) continue
+    }
+
+    mountedKeys.add(key)
+    added.push({
+      key,
+      dmTime: d.time,
+      text: d.text,
+      color: d.color || '#fff',
+      fontSize,
+      textW,
+      isScroll,
+      isTop,
+      isBottom,
+      lane,
+      delay,
+      duration
+    })
+  }
+
+  if (added.length) mounted.value = [...mounted.value, ...added]
+}
+
+/**
+ * 滚动弹幕的动画样式。
+ *
+ * 只在元素首次渲染时计算（配合 :key，Vue 不会重建已有元素）。
+ * 位移用具体像素：CSS 的 translateX(100%) 相对**元素自身宽度**，
+ * 而滚动需要「容器右边缘外 → 左边缘外」，距离 = 容器宽 + 文本宽。
  */
 function scrollStyle(d) {
-  const fromX = containerW.value
-  const toX = -d.textW
   return {
-    // 用 CSS 变量把起止位置传给 keyframes（keyframes 里不能读 JS 变量）
-    '--dm-from': fromX + 'px',
-    '--dm-to': toX + 'px',
+    '--dm-from': containerW.value + 'px',
+    '--dm-to': -d.textW + 'px',
     animationDuration: d.duration + 's',
     animationDelay: d.delay + 's'
   }
 }
 
-/** 观察容器尺寸（轨道数、字号、滚动距离都依赖它） */
+/** 观察容器尺寸 */
 let ro = null
 onMounted(() => {
   const el = wrapRef.value?.parentElement || wrapRef.value
   if (!el) return
-  const update = () => {
+  const measure = () => {
     const r = el.getBoundingClientRect()
     containerW.value = Math.round(r.width)
     containerH.value = Math.round(r.height)
-    nextTick(rebuild)
   }
-  update()
+  measure()
   if (typeof ResizeObserver !== 'undefined') {
-    ro = new ResizeObserver(update)
+    ro = new ResizeObserver(() => {
+      const before = containerW.value
+      measure()
+      // 尺寸变了：已挂载弹幕的滚动距离失效，整批重建（尺寸变化很少见）
+      if (before !== containerW.value) {
+        mounted.value = []
+        mountedKeys = new Set()
+        laneFreeAt = []
+        fixedFreeAt = {}
+        nextTick(update)
+      }
+    })
     ro.observe(el)
   }
+  nextTick(update)
 })
 
 onBeforeUnmount(() => {
   try { ro?.disconnect() } catch { /* ignore */ }
 })
 
-watch(() => props.time, () => rebuild())
+// 时间推进：只做增量（已挂载项不动，故不会重置动画）
+watch(() => props.time, update)
+// 列表/开关/缩放/区域变化：整批重建
 watch(
   () => [props.list, props.enabled, props.fontScale, props.displayArea, laneCount.value],
-  () => nextTick(rebuild)
+  () => {
+    mounted.value = []
+    mountedKeys = new Set()
+    laneFreeAt = []
+    fixedFreeAt = {}
+    nextTick(update)
+  }
 )
 </script>
 
@@ -211,11 +263,13 @@ watch(
     v-if="enabled"
     ref="wrapRef"
     class="dm-wrap"
-    :style="{ opacity, '--dm-lane-h': LANE_H + 'px' }"
+    :class="{ paused: !playing }"
+    :style="{ opacity }"
   >
     <div
-      v-for="d in active"
+      v-for="d in mounted"
       :key="d.key"
+      v-memo="[d.key]"
       class="dm-item"
       :class="{ scroll: d.isScroll, top: d.isTop, bottom: d.isBottom }"
       :style="{
@@ -237,8 +291,8 @@ watch(
 
 <style scoped>
 /*
- * 弹幕层：铺满播放器，但不接收鼠标事件（否则挡住视频点击/进度条）。
- * z-index 3 —— 在视频之上、歌词（4）与控制条（5）之下。
+ * 弹幕层：铺满播放器，不接收鼠标事件（否则挡住视频点击/进度条）。
+ * z-index 3 —— 视频之上、歌词（4）与控制条（5）之下。
  */
 .dm-wrap {
   position: absolute;
@@ -249,13 +303,18 @@ watch(
   transition: opacity 0.2s var(--ease, ease);
 }
 
+/* 暂停时冻结所有弹幕动画（与 B 站行为一致） */
+.dm-wrap.paused .dm-item {
+  animation-play-state: paused;
+}
+
 .dm-item {
   position: absolute;
   left: 0;
   white-space: nowrap;
   font-weight: 600;
   line-height: 1.2;
-  /* 描边保证任何画面下可读（B 站同款做法） */
+  /* 描边保证任何画面下可读 */
   text-shadow: 1px 0 1px rgba(0, 0, 0, 0.85), 0 1px 1px rgba(0, 0, 0, 0.85),
     -1px 0 1px rgba(0, 0, 0, 0.85), 0 -1px 1px rgba(0, 0, 0, 0.85);
   will-change: transform;
@@ -277,7 +336,6 @@ watch(
 .dm-item.top,
 .dm-item.bottom {
   left: 50%;
-  margin-left: 0;
   animation-name: dm-fixed;
   animation-duration: 5s;
   animation-timing-function: linear;
