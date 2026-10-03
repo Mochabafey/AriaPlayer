@@ -27,6 +27,12 @@ export const useSettingsStore = defineStore('settings', {
       //     因为 MV 页用户更可能只想看原文或只想看译文）
       biliLyricSource: 'auto',
       biliShowTrans: true,
+      /**
+       * 歌词区域高斯模糊背景。
+       * 视频画面花哨时（动画 MV、现场演出）纯文字容易看不清，
+       * 在歌词块背后加一层背景模糊 + 轻微压暗可显著提升可读性。
+       */
+      biliLyricBlur: true,
       playMode: 'list',
       showTranslation: true,
       audioCacheLimitMB: 2048,

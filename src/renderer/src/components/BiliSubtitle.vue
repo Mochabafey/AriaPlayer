@@ -32,7 +32,12 @@ const props = defineProps({
    * 控制条隐藏时歌词整体**下移**贴近底部（与歌曲歌词页一致）——
    * 否则控制条消失后歌词会悬在半空，下方留一大片空白。
    */
-  controlsVisible: { type: Boolean, default: true }
+  controlsVisible: { type: Boolean, default: true },
+  /**
+   * 歌词区域高斯模糊背景。
+   * 模糊层与歌词块**同尺寸、同位置**，故自动跟随字号缩放与下沉。
+   */
+  blur: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['seek'])
@@ -129,31 +134,38 @@ const hasContent = computed(() => props.lines.length > 0)
 
 <template>
   <div v-if="hasContent" class="bs-wrap" :class="{ down: !controlsVisible }">
-    <div
-      ref="listRef"
-      class="bs-list"
-      @wheel.passive="onUserScroll"
-      @touchmove.passive="onUserScroll"
-    >
-      <!-- 顶部/底部留白：让首末句也能滚到中间 -->
-      <div class="bs-pad"></div>
-      <p
-        v-for="(line, i) in lines"
-        :key="i"
-        :data-idx="i"
-        class="bs-line"
-        :class="{ cur: i === activeIndex, 'has-trans': showTrans && line.trans }"
-        :title="'跳转到此句'"
-        @click="onLineClick(line)"
+    <!--
+      歌词区域高斯模糊底：与 .bs-list 同尺寸同位置（都在 .bs-inner 内），
+      故自动跟随字号缩放（cqw）与下沉（.bs-wrap 的 bottom 过渡）。
+    -->
+    <div class="bs-inner">
+      <div v-if="blur" class="bs-blur" aria-hidden="true"></div>
+      <div
+        ref="listRef"
+        class="bs-list"
+        @wheel.passive="onUserScroll"
+        @touchmove.passive="onUserScroll"
       >
-        <!--
-          排列顺序：**中文（翻译）在上，原文在下**。
-          中文是母语、阅读效率高，放上方作为主视线；原文在下作对照。
-        -->
-        <span v-if="showTrans && line.trans" class="bs-trans">{{ line.trans }}</span>
-        <span class="bs-text">{{ line.text }}</span>
-      </p>
-      <div class="bs-pad"></div>
+        <!-- 顶部/底部留白：让首末句也能滚到中间 -->
+        <div class="bs-pad"></div>
+        <p
+          v-for="(line, i) in lines"
+          :key="i"
+          :data-idx="i"
+          class="bs-line"
+          :class="{ cur: i === activeIndex, 'has-trans': showTrans && line.trans }"
+          :title="'跳转到此句'"
+          @click="onLineClick(line)"
+        >
+          <!--
+            排列顺序：**中文（翻译）在上，原文在下**。
+            中文是母语、阅读效率高，放上方作为主视线；原文在下作对照。
+          -->
+          <span v-if="showTrans && line.trans" class="bs-trans">{{ line.trans }}</span>
+          <span class="bs-text">{{ line.text }}</span>
+        </p>
+        <div class="bs-pad"></div>
+      </div>
     </div>
   </div>
 </template>
@@ -189,23 +201,88 @@ const hasContent = computed(() => props.lines.length > 0)
 /* 控制条隐藏：歌词整体下移贴近底部 */
 .bs-wrap.down { bottom: 24px; }
 
-.bs-list {
+/*
+ * 歌词块 + 模糊底的共同容器。
+ *
+ * 尺寸由内容（.bs-list）决定，模糊层用 inset:0 铺满它 ——
+ * 于是模糊区域**自动等于歌词区域**：
+ *   - 字号随 cqw 缩放 → 块变大 → 模糊跟着变大
+ *   - 控制条隐藏 → .bs-wrap 的 bottom 过渡 → 模糊跟着下沉
+ */
+.bs-inner {
+  position: relative;
+  display: flex;
+  justify-content: center;
   /*
-   * 字号缩放基准：**以播放器容器宽度为准**（容器查询单位 cqw）。
+   * 尺寸必须**收紧到内容**，否则模糊底会比歌词块宽出一大截。
    *
-   * 为什么不用 vw/vh：
-   *   - 内嵌播放时容器只有约 1000px 宽，而视口 1280px → 用 vw 算出的字号
-   *     相对容器偏大（实测字号/视频宽 = 2.37%，看着「太大」）
-   *   - 网页全屏时容器变宽但受 16:9 约束，用 vw 又跟不上（1.85%，看着「太小」）
-   * 用 cqw 后，字号始终与**视频实际显示宽度**成固定比例，两态观感一致。
+   * 坑：父级 .bs-wrap 是 flex 容器（justify-content: center），
+   * 子项默认 align-items: stretch 会让 .bs-inner 撑满整行 ——
+   * 此时 width: fit-content 也无效（stretch 优先级更高）。
+   * 故这里显式 width: fit-content 且让 .bs-list 的宽度决定它。
+   */
+  width: fit-content;
+  max-width: 100%;
+  /* 关键：不参与父级 stretch，宽度由内容（.bs-list）决定 */
+  flex: 0 0 auto;
+  /*
+   * 字号变量定义在这里（而非 .bs-list）—— 模糊层是 .bs-list 的**兄弟节点**，
+   * 若变量挂在 .bs-list 上，.bs-blur 读不到，圆角/间距就无法跟随字号缩放。
    *
-   * 基准 2.1cqw ≈ 内嵌 998px → 21px；网页全屏 1280px → 27px（按比例增长）。
-   * 上下限 12~36px 覆盖极端窗口尺寸。
+   * 缩放基准：**以播放器容器宽度为准**（容器查询单位 cqw）。
+   *   - 内嵌播放时容器约 1000px 而视口 1280px → 用 vw 算出的字号相对容器偏大
+   *   - 网页全屏时容器变宽但受 16:9 约束，用 vw 又跟不上
+   * 用 cqw 后字号始终与**视频实际显示宽度**成固定比例，两态观感一致。
+   * 基准 2.1cqw ≈ 内嵌 998px → 21px；网页全屏 1280px → 27px。
    */
   --bs-font: clamp(12px, 2.1cqw, 36px);
   --bs-line-h: calc(var(--bs-font) * 1.9);
+}
+
+/*
+ * 高斯模糊底。
+ *
+ * backdrop-filter 作用于**其背后已绘制的内容**（这里是视频画面），
+ * 所以它需要真正叠在 video 之上、歌词之下 —— 由 z-index 保证：
+ *   video(0) < .bs-blur(1) < .bs-list(2)
+ *
+ * 除模糊外加一层轻微压暗，视频再花也能看清文字。
+ * 边缘用 mask 羽化，避免出现生硬的矩形边界。
+ */
+.bs-blur {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: calc(var(--bs-font, 20px) * 0.9);
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  background: rgba(0, 0, 0, 0.22);
+  /* 四边羽化：模糊区与视频之间平滑过渡，不出现硬边 */
+  mask-image: radial-gradient(
+    ellipse 100% 100% at center,
+    #000 55%,
+    transparent 100%
+  );
+  -webkit-mask-image: radial-gradient(
+    ellipse 100% 100% at center,
+    #000 55%,
+    transparent 100%
+  );
+}
+
+.bs-list {
+  /* --bs-font / --bs-line-h 定义在 .bs-inner（模糊层也需要读到） */
   position: relative;
-  width: min(100%, 86cqw);
+  z-index: 2; /* 在模糊底之上 */
+  /*
+   * 宽度用 cqw 明确给出（不用 100%）：
+   * 父级 .bs-inner 是 fit-content，若这里写 100% 会形成循环依赖
+   *（父宽取决于子宽、子宽又取决于父宽），浏览器只能按 auto 处理，
+   * 结果模糊底与歌词块宽度不一致。
+   */
+  width: 86cqw;
+  max-width: 100%;
   /* 三行窗口：高度正好容纳 3 行 */
   height: calc(var(--bs-line-h) * 3);
   overflow-y: auto;

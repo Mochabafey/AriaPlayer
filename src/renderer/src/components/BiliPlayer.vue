@@ -370,6 +370,12 @@ function toggleTrans() {
 
 const showTrans = computed(() => settings.settings.biliShowTrans !== false)
 
+/** 歌词区域高斯模糊背景开关 */
+const showBlur = computed(() => settings.settings.biliLyricBlur !== false)
+function toggleBlur() {
+  settings.set('biliLyricBlur', !settings.settings.biliLyricBlur)
+}
+
 /** 来源变化时重新加载 */
 watch(
   () => settings.settings.biliLyricSource,
@@ -911,6 +917,7 @@ function onError() {
       :active-index="subActive"
       :show-trans="showTrans"
       :controls-visible="controlsVisible"
+      :blur="showBlur"
       @seek="seekTo"
     />
 
@@ -1006,6 +1013,14 @@ function onError() {
               :title="showTrans ? '隐藏翻译' : '显示翻译'"
               @click="toggleTrans"
             >译</button>
+
+            <!-- 歌词区域高斯模糊（画面花哨时提升可读性） -->
+            <button
+              class="bp-lyric-btn"
+              :class="{ on: showBlur }"
+              :title="showBlur ? '关闭歌词背景模糊' : '开启歌词背景模糊'"
+              @click="toggleBlur"
+            >糊</button>
 
             <!-- 对轨微调：歌词与视频错位时手动校准 -->
             <span
