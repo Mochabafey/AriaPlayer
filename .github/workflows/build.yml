@@ -1,29 +1,69 @@
 name: Build
 
+# 触发方式：
+#   - 推 tag（v*）→ 构建全部平台并创建 Release 附带产物
+#   - 手动触发（Actions 页面 Run workflow）→ 构建并上传 artifact
+#   - 推 master → 只做构建验证（不打包，省 CI 时间）
 on:
   push:
     tags: ['v*']
-    branches: [main]
-  workflow_dispatch:
+    branches: [master, main]
   pull_request:
-    branches: [main]
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '要构建的平台（逗号分隔：win,mac,linux；留空=全部）'
+        required: false
+        default: ''
+
+# 同一分支/标签的重复触发只保留最新一次，避免浪费 CI 配额
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------
+  # 构建矩阵：三个平台并行
+  #
+  # 为什么每个平台都要独立跑 vendor + fetch:ffmpeg：
+  #   1. api-enhanced / qq-music-api 是**运行时依赖**，必须打进包里
+  #   2. ffmpeg 二进制是**平台相关**的（win64 / macos64 / linux64），
+  #      不能跨平台复用
+  # ---------------------------------------------------------------
   build:
-    name: Build ${{ matrix.os }}
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # tag 推送或手动触发才真正打包；普通 push 只验证编译
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'push'
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
+            label: Windows x64
             target: --win
-            artifact: 'release/*.exe'
-            asset_name: 'Netease-Track-Resolver-windows'
+            artifact: |
+              dist/release/*.exe
+              dist/release/*.exe.blockmap
+            artifact_name: aria-player-windows
           - os: macos-latest
+            label: macOS (x64 + arm64)
             target: --mac
-            artifact: 'release/*.dmg'
-            asset_name: 'Netease-Track-Resolver-macos'
+            artifact: dist/release/*.dmg
+            artifact_name: aria-player-macos
+          - os: ubuntu-latest
+            label: Linux x64
+            target: --linux
+            artifact: |
+              dist/release/*.AppImage
+              dist/release/*.deb
+            artifact_name: aria-player-linux
+
     steps:
       - uses: actions/checkout@v4
 
@@ -32,34 +72,117 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Set Git for long paths
-        shell: bash
+      # 部分依赖路径较长（qqmusic/node_modules），Windows 需开启长路径
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: git config --global core.longpaths true
 
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      # 验证关键构建依赖可用。
+      #
+      # 为什么单独验证：npm 11.x 引入了 allow-scripts 机制，install 脚本
+      # 默认可能被跳过（日志里会出现 "packages have install scripts not yet
+      # covered by allowScripts"）。esbuild 的二进制虽由 optionalDependencies
+      # 的平台包提供、不依赖 postinstall，但若被跳过就会在 electron-vite
+      # 构建阶段才报错 —— 那时已经浪费了几分钟 CI。这里提前失败，定位更快。
+      - name: Verify build toolchain
+        shell: bash
+        run: |
+          node -e "const {build}=require('esbuild');console.log('esbuild OK')" \
+            || node -e "require('esbuild').transformSync('const a=1',{loader:'js'});console.log('esbuild OK')"
+          node -e "console.log('electron:', require('electron/package.json').version)"
+          node -e "console.log('electron-vite:', require('electron-vite/package.json').version)"
+
+      # 应用图标（从 SVG 生成各尺寸 PNG）
       - name: Generate icon
         run: python scripts/gen-icon.py
 
-      - name: Vendor api-enhanced server
+      # ---- 运行时依赖：两个内置 API 服务 ----
+      #
+      # 注意两者的仓库状态不同：
+      #   server/   —— 已入库（含 node_modules），脚本检测到 app.js 存在会**自动跳过**
+      #                （除非加 --force）。这里仍跑一次是为了：
+      #                1) 应用本地补丁（关闭 npm info 版本检查、惰性加载 jsdom 等
+      #                   启动优化），补丁逻辑在脚本内，跳过 vendor 就不会执行
+      #                2) 万一仓库里的是残缺状态，脚本能自愈
+      #   qqmusic/  —— 被 .gitignore 排除（22000+ 文件不适合入库），
+      #                CI 必须现场克隆 + npm install
+      - name: Vendor api-enhanced (网易云)
         run: node scripts/vendor-server.mjs
 
-      - name: Build renderer + main + preload
-        run: npx electron-vite build
+      - name: Vendor qq-music-api (QQ 音乐)
+        run: node scripts/vendor-qqmusic.mjs
 
-      - name: Package with electron-builder
+      # ---- ffmpeg（B 站 DASH 合流 / 转码兜底必需）----
+      # 脚本按 process.platform 自动选对应平台的静态构建
+      - name: Fetch ffmpeg
+        run: node scripts/fetch-ffmpeg.mjs
+
+      # ---- 编译三进程 ----
+      # 用 build-app.mjs 而非 electron-vite CLI：
+      # 前者会清掉 ELECTRON_RUN_AS_NODE / NODE_OPTIONS，
+      # 避免 CI 环境变量污染导致构建产物异常
+      - name: Build (main / preload / renderer)
+        run: node scripts/build-app.mjs
+
+      # ---- 打包 ----
+      - name: Package
         env:
+          # electron-builder 在 CI 上从 GitHub 拉 electron 与工具链；
+          # 国内网络可用时改镜像加速（此处保留官方源，CI runner 在境外）
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 国内 CI 加速（如需）
-          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
-          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
         run: npx electron-builder ${{ matrix.target }} --publish never
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
+          name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error
           retention-days: 14
+
+  # ---------------------------------------------------------------
+  # 打 tag 时创建 Release 并把三平台产物挂上去
+  # ---------------------------------------------------------------
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: find artifacts -type f | head -50
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Aria Player ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.dmg
+            artifacts/**/*.AppImage
+            artifacts/**/*.deb
+          body: |
+            ## 下载
+
+            | 平台 | 文件 |
+            |---|---|
+            | Windows | `Aria Player-*-setup.exe`（安装版）/ `*-portable.exe`（免安装） |
+            | macOS | `Aria Player-*.dmg` |
+            | Linux | `*.AppImage` / `*.deb` |
+
+            > 三个平台均**未签名**。首次运行可能被系统拦截：
+            > - Windows：SmartScreen 警告 → 「更多信息」→「仍要运行」
+            > - macOS：右键打开，或 `xattr -dr com.apple.quarantine "/Applications/Aria Player.app"`
+            > - Linux：`chmod +x *.AppImage`

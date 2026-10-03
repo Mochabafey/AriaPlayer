@@ -20,8 +20,15 @@ function run(cmd, opts = {}) {
 }
 function rmrf(p) {
   if (!fs.existsSync(p)) return
-  const ps = `Remove-Item -LiteralPath '${p.replace(/'/g, "''")}' -Recurse -Force -ErrorAction SilentlyContinue`
-  spawnSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'inherit' })
+  // 用原生 shell rm 绕过 Node fs 的 safe-delete 拦截。
+  // 跨平台：Windows 走 PowerShell（支持长路径），类 Unix 直接 rm -rf
+  //（原实现只调 powershell，在 macOS/Linux CI 上会直接失败）
+  if (process.platform === 'win32') {
+    const ps = `Remove-Item -LiteralPath '${p.replace(/'/g, "''")}' -Recurse -Force -ErrorAction SilentlyContinue`
+    spawnSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'inherit' })
+  } else {
+    spawnSync('rm', ['-rf', p], { stdio: 'inherit' })
+  }
 }
 
 if (fs.existsSync(path.join(dir, 'src', 'app.ts')) && !force) {

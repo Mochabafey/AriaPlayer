@@ -65,6 +65,23 @@ mac:
 dmg:
   artifactName: ${productName}-${version}.${ext}
 
+# Linux：AppImage（免安装，双击即用）+ deb（Debian/Ubuntu 包管理）
+linux:
+  icon: resources/icon.png
+  category: Audio
+  synopsis: 网易云 / QQ 音乐 / B站 三音源播放器
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+
+appImage:
+  artifactName: ${productName}-${version}.${ext}
+
+deb:
+  artifactName: ${productName}-${version}.${ext}
+
 npmRebuild: false
 # 打包后钩子：补全 resources/ncm-server 的 node_modules（electron-builder 的
 # extraResources 不复制 from 目录的依赖，缺失会导致内置服务起不来）
