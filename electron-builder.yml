@@ -66,10 +66,18 @@ dmg:
   artifactName: ${productName}-${version}.${ext}
 
 # Linux：AppImage（免安装，双击即用）+ deb（Debian/Ubuntu 包管理）
+#
+# 注意：deb 打包要求 package.json 的 author 含 email（用作 maintainer），
+# 否则报 "Please specify author 'email'"。已在 package.json 里设为对象格式。
 linux:
   icon: resources/icon.png
   category: Audio
   synopsis: 网易云 / QQ 音乐 / B站 三音源播放器
+  description: |
+    咏叹调（Aria Player）—— 三音源（网易云 + QQ 音乐 + B站）解析 / 播放 / 下载桌面客户端。
+    内置完整 API 服务与 ffmpeg，支持弹幕、歌词自动对轨、HLS 实时合流。
+  # 让桌面环境把运行中的窗口关联到 .desktop 条目
+  desktopName: aria-player.desktop
   target:
     - target: AppImage
       arch: [x64]

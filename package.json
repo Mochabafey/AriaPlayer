@@ -2,9 +2,12 @@
   "name": "aria-player",
   "productName": "Aria Player",
   "version": "0.2.4",
-  "description": "咏叹调 — 网易云音乐/QQ音乐 解析播放下载桌面工具",
+  "description": "咏叹调 — 网易云音乐/QQ音乐/B站 三音源解析播放下载桌面工具",
   "main": "./dist/out/main/index.js",
-  "author": "NTR",
+  "author": {
+    "name": "NTR",
+    "email": "ntr@aria-player.local"
+  },
   "license": "MIT",
   "private": true,
   "scripts": {
