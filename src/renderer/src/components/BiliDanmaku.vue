@@ -33,7 +33,17 @@ const props = defineProps({
   /** 显示区域占容器高度的比例（0.25~1） */
   displayArea: { type: Number, default: 1 },
   /** 是否正在播放（暂停时冻结动画） */
-  playing: { type: Boolean, default: true }
+  playing: { type: Boolean, default: true },
+  /**
+   * 弹幕合并：短时间内**内容相同**的弹幕合并为一条，显示「内容 xN」。
+   *
+   * 参考 NipaPlay-Reload 的合并弹幕设计（DanmakuContentItem.countText）。
+   * 好处：刷屏的重复弹幕（「前方高能」「awsl」）不会占满轨道，
+   * 既提升可读性也降低渲染量。
+   */
+  merge: { type: Boolean, default: true },
+  /** 合并窗口（秒）：该时间内的相同内容视为同一条 */
+  mergeWindow: { type: Number, default: 3 }
 })
 
 const wrapRef = ref(null)
@@ -46,6 +56,13 @@ const LANE_H = 26
 const SCROLL_SEC = 9
 /** 顶部/底部停留时长（秒） */
 const FIXED_SEC = 5
+/**
+ * 滚动弹幕的安全间距（占容器宽度的比例）。
+ *
+ * 同一轨道相邻两条弹幕之间留出的水平空隙，避免文字挨得过近。
+ * 参考 NipaPlay-Reload 的 `_safetyMarginRatio`（约 2%~5%）。
+ */
+const SAFETY_RATIO = 0.03
 /** 时间窗：提前多久挂载（秒） */
 const LEAD = 1.5
 /**
@@ -136,11 +153,38 @@ function update() {
     const isBottom = d.mode === 4
     if (!isScroll && !isTop && !isBottom) continue
 
+    /**
+     * 合并：窗口内**内容相同**的弹幕归为一条，显示「内容 xN」。
+     *
+     * 只在滚动弹幕上做（顶部/底部本就少，合并意义不大）。
+     * 合并后的文本会重新估宽，故轨道计算用的是合并后的宽度。
+     */
+    let text = d.text
+    let mergeCount = 1
+    if (props.merge && isScroll) {
+      const win = props.mergeWindow
+      // 向前看窗口内的相同内容（含自己）
+      let n = 1
+      for (let j = i + 1; j < props.list.length; j++) {
+        const nx = props.list[j]
+        if (nx.time - d.time > win) break
+        if (nx.text === d.text && (nx.mode === d.mode || (nx.mode <= 3 && d.mode <= 3))) {
+          n++
+          // 标记为已消费，避免后续重复渲染
+          mountedKeys.add(`${nx.time}-${j}`)
+        }
+      }
+      if (n > 1) {
+        mergeCount = n
+        text = `${d.text} x${n}`
+      }
+    }
+
     const fontSize = Math.max(
       12,
       Math.round((d.size || 25) * props.fontScale * (containerW.value / 1000) * 0.62)
     )
-    const textW = estimateWidth(d.text, fontSize)
+    const textW = estimateWidth(text, fontSize)
     const speed = (containerW.value + textW) / SCROLL_SEC
     const duration = (containerW.value + textW) / speed
 
@@ -154,9 +198,27 @@ function update() {
 
     let lane = -1
     if (isScroll) {
+      /**
+       * 滚动弹幕轨道分配：**每轨道下次可用时间**（贪心，避免逐一碰撞）。
+       *
+       * 公式参考 NipaPlay-Reload（lib/widgets/danmaku_container.dart）：
+       *
+       *     nextAvailable = time + D × (W + margin) / (S + W)
+       *
+       *   D      = 滚动总时长（本实现 SCROLL_SEC）
+       *   W      = 本条弹幕文本宽度
+       *   margin = 安全间距（屏宽的固定比例）
+       *   S      = 容器宽度
+       *
+       * 含义：本条的**尾部**完全离开右边缘（并留出安全间距）所需的时间。
+       * 原实现用 `textW / speed`（仅"完全进入屏幕"）—— 那时上一条的尾部
+       * 还贴着右边缘，两条会挨得过近甚至视觉重叠。
+       */
+      const safetyMargin = containerW.value * SAFETY_RATIO
+      const nextAvail = d.time + SCROLL_SEC * ((textW + safetyMargin) / (containerW.value + textW))
       for (let L = 0; L < laneCount.value; L++) {
         if ((laneFreeAt[L] ?? -Infinity) <= d.time) {
-          laneFreeAt[L] = d.time + textW / speed
+          laneFreeAt[L] = nextAvail
           lane = L
           break
         }
@@ -178,7 +240,8 @@ function update() {
     added.push({
       key,
       dmTime: d.time,
-      text: d.text,
+      text,
+      mergeCount,
       color: d.color || '#fff',
       fontSize,
       textW,

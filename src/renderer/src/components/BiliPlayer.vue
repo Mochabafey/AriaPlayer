@@ -118,6 +118,11 @@ const showDanmaku = computed(() => settings.settings.biliDanmaku !== false)
 const dmOpacity = computed(() => Number(settings.settings.biliDmOpacity ?? 0.9))
 const dmFontScale = computed(() => Number(settings.settings.biliDmFontScale ?? 1))
 const dmArea = computed(() => Number(settings.settings.biliDmArea ?? 1))
+const dmMerge = computed(() => settings.settings.biliDmMerge !== false)
+
+function toggleDmMerge() {
+  settings.set('biliDmMerge', !settings.settings.biliDmMerge)
+}
 
 /** 加载弹幕（按 cid 拉取，主进程解压 XML 后返回结构化数组） */
 async function loadDanmaku() {
@@ -1028,6 +1033,7 @@ function onError() {
       :font-scale="dmFontScale"
       :display-area="dmArea"
       :playing="playing"
+      :merge="dmMerge"
     />
 
     <!-- 歌词（滚动 + 三行聚焦窗口）：叠在视频上、进度条上方
@@ -1151,6 +1157,15 @@ function onError() {
               :title="showDanmaku ? `关闭弹幕（共 ${dmList.length} 条）` : `开启弹幕（共 ${dmList.length} 条）`"
               @click="toggleDanmaku"
             >弹</button>
+
+            <!-- 弹幕合并开关（重复弹幕合并为「内容 xN」） -->
+            <button
+              v-if="showDanmaku"
+              class="bp-lyric-btn"
+              :class="{ on: dmMerge }"
+              :title="dmMerge ? '关闭弹幕合并（重复弹幕将逐条显示）' : '开启弹幕合并（相同内容合并为 xN）'"
+              @click="toggleDmMerge"
+            >合</button>
 
             <!-- 对轨微调：歌词与视频错位时手动校准 -->
             <span

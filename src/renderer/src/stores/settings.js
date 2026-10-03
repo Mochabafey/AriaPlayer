@@ -44,6 +44,12 @@ export const useSettingsStore = defineStore('settings', {
       biliDmOpacity: 0.9,
       biliDmFontScale: 1,
       biliDmArea: 1,
+      /**
+       * 弹幕合并：短时间内内容相同的弹幕合并为「内容 xN」。
+       * 刷屏弹幕（「前方高能」「awsl」）不会占满轨道，既提升可读性
+       * 也降低渲染量。参考 NipaPlay-Reload 的合并弹幕设计。
+       */
+      biliDmMerge: true,
       playMode: 'list',
       showTranslation: true,
       audioCacheLimitMB: 2048,
