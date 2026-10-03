@@ -67,17 +67,18 @@ dmg:
 
 # Linux：AppImage（免安装，双击即用）+ deb（Debian/Ubuntu 包管理）
 #
-# 注意：deb 打包要求 package.json 的 author 含 email（用作 maintainer），
-# 否则报 "Please specify author 'email'"。已在 package.json 里设为对象格式。
+# 注意两个坑（都已踩过）：
+#   1. deb 打包要求 package.json 的 author 含 email（用作 maintainer），
+#      否则报 "Please specify author 'email'"。
+#   2. **不要写 desktopName** —— electron-builder 26.x 的 schema 不接受该字段，
+#      报 "configuration.linux should be one of these: null"。
+#      因为配置校验在打包前统一执行，这一个字段会让**三个平台一起失败**。
+#      （窗口关联的 app_id/WM_CLASS 由 electron-builder 按 productName 自动推导）
 linux:
   icon: resources/icon.png
   category: Audio
   synopsis: 网易云 / QQ 音乐 / B站 三音源播放器
-  description: |
-    咏叹调（Aria Player）—— 三音源（网易云 + QQ 音乐 + B站）解析 / 播放 / 下载桌面客户端。
-    内置完整 API 服务与 ffmpeg，支持弹幕、歌词自动对轨、HLS 实时合流。
-  # 让桌面环境把运行中的窗口关联到 .desktop 条目
-  desktopName: aria-player.desktop
+  description: 咏叹调（Aria Player）—— 三音源（网易云 + QQ 音乐 + B站）解析 / 播放 / 下载桌面客户端，内置完整 API 服务与 ffmpeg，支持弹幕、歌词自动对轨、HLS 实时合流。
   target:
     - target: AppImage
       arch: [x64]
