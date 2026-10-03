@@ -146,9 +146,12 @@ const hasContent = computed(() => props.lines.length > 0)
         :title="'跳转到此句'"
         @click="onLineClick(line)"
       >
-        <span class="bs-text">{{ line.text }}</span>
-        <!-- 翻译另起一行、放原文下方（字幕组惯例），当前句的翻译更突出 -->
+        <!--
+          排列顺序：**中文（翻译）在上，原文在下**。
+          中文是母语、阅读效率高，放上方作为主视线；原文在下作对照。
+        -->
         <span v-if="showTrans && line.trans" class="bs-trans">{{ line.trans }}</span>
+        <span class="bs-text">{{ line.text }}</span>
       </p>
       <div class="bs-pad"></div>
     </div>
@@ -249,9 +252,25 @@ const hasContent = computed(() => props.lines.length > 0)
 }
 
 /*
- * 原文（外语歌词）：**弱化**为配角。
- * 有翻译时原文更淡更小 —— 用户主要读翻译，原文只作参考。
+ * 排列顺序：**中文（翻译）在上，原文在下**。
+ *
+ * 视觉层级：中文是母语、阅读效率高 → 作为主视线（更大更亮）；
+ *           原文在下作对照（略小略淡）。
+ * 无翻译时原文自动成为唯一内容，恢复正常亮度。
  */
+
+/* 中文（翻译）：主视线，在上方 */
+.bs-trans {
+  font-size: calc(var(--bs-font) * 1.02);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 原文：下方对照，略小略淡 */
 .bs-text {
   font-size: var(--bs-font);
   font-weight: 500;
@@ -264,38 +283,24 @@ const hasContent = computed(() => props.lines.length > 0)
 /* 无翻译时原文就是主角，恢复正常亮度 */
 .bs-line:not(.has-trans) .bs-text { color: rgba(255, 255, 255, 0.62); }
 
-/*
- * 翻译：**主角**，放原文下方（字幕组惯例）。
- * 比原文更大、更亮、加粗，与原文形成明确的视觉层级。
- */
-.bs-trans {
-  font-size: calc(var(--bs-font) * 1.02);
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.88);
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* 非当前行：整体压暗，当前行突出 */
 .bs-line:not(.cur) .bs-text { color: rgba(255, 255, 255, 0.34); }
 .bs-line:not(.cur) .bs-trans { color: rgba(255, 255, 255, 0.5); font-weight: 500; }
 .bs-line:not(.cur):hover .bs-text { color: rgba(255, 255, 255, 0.6); }
 .bs-line:not(.cur):hover .bs-trans { color: rgba(255, 255, 255, 0.75); }
 
-/* 当前行：翻译最亮最大，原文次之 */
+/* 当前行：中文最亮最大，原文次之 */
 .bs-line.cur {
   transform: scale(1.04);
-}
-.bs-line.cur .bs-text {
-  color: rgba(255, 255, 255, 0.82);
-  font-weight: 600;
 }
 .bs-line.cur .bs-trans {
   color: #fff;
   font-weight: 700;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.95), 0 0 3px rgba(0, 0, 0, 1);
+}
+.bs-line.cur .bs-text {
+  color: rgba(255, 255, 255, 0.82);
+  font-weight: 600;
 }
 /* 无翻译的当前行：原文即主角 */
 .bs-line.cur:not(.has-trans) .bs-text {
