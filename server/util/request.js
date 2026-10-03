@@ -141,6 +141,74 @@ const XEAPI_DOMAIN = APP_CONF.xeapiDomain
 const ENCRYPT_RESPONSE = APP_CONF.encryptResponse
 const SPECIAL_STATUS_CODES = new Set([201, 302, 400, 502, 800, 801, 802, 803])
 
+/**
+ * weapi 的备用域名（自动回退，解决「域名解析到不可达 IP」的问题）
+ *
+ * ## 为什么需要
+ *
+ * `weapi` 的 URL 是 `DOMAIN + '/weapi/' + path`，而 `DOMAIN` 默认是
+ * `https://music.163.com`。实测在部分网络环境下该域名会解析到**不可达的 IP**
+ * （IPv6 `2408:874c:...` 或 IPv4 `116.153.63.82`），表现为：
+ *
+ *     所有走 weapi 的接口 → 502 read ECONNRESET
+ *     而走 eapi 的接口（interface.music.163.com）→ 正常
+ *
+ * 受影响的接口多达 200+（含每日推荐、我的歌单、登录状态、听歌排行、
+ * 相似推荐、云漫游、私人FM、歌曲详情、最近播放…），而搜索/播放/歌词走 eapi
+ * 不受影响 —— 所以症状看起来像「部分功能坏了」。
+ *
+ * ## 为什么换域名可行
+ *
+ * 实测 `/weapi/` 路径在其他网易云域名上**完全可用**（返回 200）：
+ *
+ *     music.163.com            → ❌ ECONNRESET
+ *     interface.music.163.com  → ✅ 200
+ *     interfacepc.music.163.com→ ✅ 200
+ *     interface3.music.163.com → ✅ 200
+ *     api.music.163.com        → ✅ 200
+ *
+ * 即「weapi 加密协议」并不绑定 `music.163.com` 这个域名，
+ * 只是历史配置把它写成了默认值。
+ *
+ * ## 策略
+ *
+ * 只在**网络层失败**（ECONNRESET / ETIMEDOUT / ENOTFOUND / socket hang up）
+ * 时回退，业务错误（如 401 未登录）不回退 —— 避免把正常的登录失效
+ * 变成无谓的重试。
+ */
+const WEAPI_FALLBACK_DOMAINS = [
+  'https://interface.music.163.com',
+  'https://interfacepc.music.163.com',
+  'https://interface3.music.163.com',
+]
+
+/** 判断是否为「网络层」错误（值得换域名重试） */
+const isNetworkError = (err) => {
+  const code = err?.code || ''
+  const msg = String(err?.message || '')
+  return (
+    code === 'ECONNRESET' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ENOTFOUND' ||
+    code === 'ECONNREFUSED' ||
+    code === 'EAI_AGAIN' ||
+    code === 'EPIPE' ||
+    /socket hang up|ECONNRESET|ETIMEDOUT|timeout of/i.test(msg)
+  )
+}
+
+/**
+ * 记录每个域名最近一次失败的时间，做短期熔断：
+ * 一旦某域名网络失败，接下来 5 分钟内直接跳过它，避免每次请求都白等一次超时。
+ */
+const domainCooldown = new Map()
+const COOLDOWN_MS = 5 * 60 * 1000
+const inCooldown = (d) => {
+  const t = domainCooldown.get(d)
+  return t != null && Date.now() - t < COOLDOWN_MS
+}
+const markFailed = (d) => domainCooldown.set(d, Date.now())
+
 let xeapiSessionId = ''
 let xeapiSessionKey = ''
 
@@ -431,7 +499,69 @@ const createRequest = async (uri, data, options) => {
       settings.proxy = false
     }
     // console.log(settings.headers);
-    axios(settings)
+
+    /**
+     * 发起请求，带「weapi 域名自动回退」。
+     *
+     * 为什么在这里做：weapi 的 URL 在 switch 里就拼好了（DOMAIN + '/weapi/...'），
+     * 而失败要等到 axios 抛错才知道。所以在请求层按「网络错误」判断并换域名重试，
+     * 对上层模块完全透明（200+ 个 module 无需改动）。
+     *
+     * 只对 weapi 生效：eapi/xeapi 的域名（interface*.music.163.com）实测可达，
+     * 不需要回退；且它们有会话状态（xeapiSessionId），重试语义更复杂。
+     */
+    const doRequest = async () => {
+      // 组装候选 URL 列表：weapi 时把备用域名排在原域名之后
+      let urlCandidates = [url]
+      if (crypto === 'weapi' && !options.domain) {
+        const suffix = url.slice(DOMAIN.length) // '/weapi/xxx'
+        const alts = WEAPI_FALLBACK_DOMAINS
+          .filter((d) => !inCooldown(d))
+          .map((d) => d + suffix)
+        // 原域名若处于熔断期，直接排到最后（仍会试，但优先级最低）
+        if (inCooldown(DOMAIN)) {
+          urlCandidates = [...alts, url]
+        } else {
+          urlCandidates = [url, ...alts]
+        }
+      }
+
+      let lastErr = null
+      for (let i = 0; i < urlCandidates.length; i++) {
+        const target = urlCandidates[i]
+        const domainOf = (u) => {
+          const m = /^(https?:\/\/[^/]+)/.exec(u)
+          return m ? m[1] : u
+        }
+        try {
+          const res = await axios({ ...settings, url: target })
+          // 成功：若用的是备用域名，记录一下（便于排查）
+          if (i > 0) {
+            console.log(
+              `[weapi-fallback] ${domainOf(url)} 不可达，已改用 ${domainOf(target)}`,
+            )
+          }
+          return res
+        } catch (err) {
+          lastErr = err
+          const dom = domainOf(target)
+          if (isNetworkError(err)) {
+            markFailed(dom)
+            // 还有候选就继续试；否则抛出
+            if (i < urlCandidates.length - 1) {
+              console.log(
+                `[weapi-fallback] ${dom} 网络失败(${err.code || err.message})，尝试下一个域名…`,
+              )
+              continue
+            }
+          }
+          throw err
+        }
+      }
+      throw lastErr || new Error('no url candidate')
+    }
+
+    doRequest()
       .then((res) => {
         const body = res.data
         answer.cookie = (res.headers['set-cookie'] || []).map((x) =>
