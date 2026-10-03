@@ -33,6 +33,17 @@ export const useSettingsStore = defineStore('settings', {
        * 在歌词块背后加一层背景模糊 + 轻微压暗可显著提升可读性。
        */
       biliLyricBlur: true,
+      /**
+       * 弹幕设置。
+       *   biliDanmaku:     是否显示弹幕（默认开，与 B 站网页一致）
+       *   biliDmOpacity:   不透明度
+       *   biliDmFontScale: 字号缩放
+       *   biliDmArea:      显示区域占播放器高度的比例
+       */
+      biliDanmaku: true,
+      biliDmOpacity: 0.9,
+      biliDmFontScale: 1,
+      biliDmArea: 1,
       playMode: 'list',
       showTranslation: true,
       audioCacheLimitMB: 2048,

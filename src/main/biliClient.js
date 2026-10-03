@@ -68,10 +68,13 @@ export function biliRequest(url, { headers = {}, method = 'GET', body = null } =
         const chunks = []
         res.on('data', (c) => chunks.push(c))
         res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf-8')
+          const buf = Buffer.concat(chunks)
+          const text = buf.toString('utf-8')
           let json = null
           try { json = JSON.parse(text) } catch { /* 非 JSON（如二维码图片流） */ }
-          resolve({ status: res.statusCode, headers: res.headers, text, json })
+          // buffer 也回传：弹幕接口返回 deflate 压缩的 XML，
+          // 转成 utf-8 字符串会损坏二进制数据，必须拿原始 buffer 解压
+          resolve({ status: res.statusCode, headers: res.headers, text, json, buffer: buf })
         })
       }
     )
@@ -560,6 +563,85 @@ export async function qrPoll(qrcodeKey) {
 export async function logout() {
   clearCookie()
   return { ok: true }
+}
+
+/* ---------------- 弹幕 ---------------- */
+
+/**
+ * 拉取并解析 B 站弹幕。
+ *
+ * 接口：`/x/v1/dm/list.so?oid=<cid>` 返回 **deflate 压缩的 XML**
+ *（老接口，无需 WBI 签名；protobuf 版 seg.so 需要额外签名参数，故用 XML）。
+ *
+ * XML 形如：
+ *   <d p="时间,模式,字号,颜色,时间戳,池,用户hash,行号">弹幕内容</d>
+ *   p 各字段：0=出现时间(秒) 1=模式 2=字号 3=颜色(十进制RGB) 4=发送时间戳
+ *            5=弹幕池 6=发送者hash 7=数据库行号
+ *   模式：1/2/3=滚动  4=底部  5=顶部  6=逆向  7=高级(代码弹幕，跳过)
+ *
+ * @returns {Promise<Array<{time:number,text:string,mode:number,color:string,size:number}>>}
+ */
+export async function fetchDanmaku(cid) {
+  try {
+    if (!cid) return []
+    const res = await biliRequest(`https://api.bilibili.com/x/v1/dm/list.so?oid=${cid}`)
+    let xml = res.text || ''
+    // deflate 压缩：正文不是以 '<' 开头就尝试解压
+    if (!xml.trimStart().startsWith('<') && res.buffer?.length) {
+      const zlib = await import('zlib')
+      try {
+        xml = zlib.inflateRawSync(res.buffer).toString('utf-8')
+      } catch {
+        try {
+          xml = zlib.inflateSync(res.buffer).toString('utf-8')
+        } catch {
+          try {
+            xml = zlib.gunzipSync(res.buffer).toString('utf-8')
+          } catch { /* 都失败则放弃 */ }
+        }
+      }
+    }
+    if (!xml.includes('<d ')) return []
+
+    const out = []
+    // 逐条匹配 <d p="...">文本</d>；文本里可能有 &amp; 等实体
+    const re = /<d p="([^"]+)"[^>]*>([\s\S]*?)<\/d>/g
+    let m
+    while ((m = re.exec(xml))) {
+      const p = m[1].split(',')
+      const time = Number(p[0])
+      const mode = Number(p[1])
+      const size = Number(p[2]) || 25
+      const colorNum = Number(p[3]) || 16777215
+      // 7=高级弹幕（代码弹幕），不解析
+      if (!isFinite(time) || mode === 7) continue
+      const text = decodeXmlEntities(m[2]).trim()
+      if (!text) continue
+      out.push({
+        time,
+        text,
+        mode,
+        size,
+        // 十进制 RGB → #rrggbb
+        color: '#' + colorNum.toString(16).padStart(6, '0')
+      })
+    }
+    out.sort((a, b) => a.time - b.time)
+    return out
+  } catch {
+    return []
+  }
+}
+
+/** 解码 XML 实体（弹幕文本里 &amp; &lt; &gt; &quot; &#39; 常见） */
+function decodeXmlEntities(s) {
+  return String(s)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_m, d) => String.fromCharCode(Number(d)))
+    .replace(/&amp;/g, '&')
 }
 
 /* ---------------- 观看记录上报 ---------------- */

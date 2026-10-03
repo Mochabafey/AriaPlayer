@@ -112,6 +112,8 @@ export const bili = {
   searchSong: (keyword, limit = 10) => bridge.invoke('bili:search-song', { keyword, limit }),
   /** 按歌曲 id 取歌词（手动选定后加载） */
   songLyric: (id) => bridge.invoke('bili:song-lyric', { id }),
+  /** 拉取弹幕（结构化数组，轨道分配在渲染层做） */
+  danmaku: (cid) => bridge.invoke('bili:danmaku', { cid }),
   /** 上报观看进度到 B 站（历史记录） */
   reportProgress: (p) => bridge.invoke('bili:report-progress', p),
   /** 标记已看完 */

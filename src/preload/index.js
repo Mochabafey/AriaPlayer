@@ -86,6 +86,8 @@ const INVOKE_ALLOWLIST = new Set([
   'bili:auto-lyric',
   'bili:search-song',
   'bili:song-lyric',
+  // B站弹幕
+  'bili:danmaku',
   // B站观看记录上报
   'bili:report-progress',
   'bili:report-finished',

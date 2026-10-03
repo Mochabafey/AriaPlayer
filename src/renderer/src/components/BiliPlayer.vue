@@ -20,6 +20,7 @@ import { computeOffset } from '../utils/lrcSync'
 import { tick, maybeScrobble, tickBili, maybeReportBili, reportBiliFinished, resetBiliReport } from '../utils/scrobble'
 import { bili } from '../api'
 import BiliSubtitle from './BiliSubtitle.vue'
+import BiliDanmaku from './BiliDanmaku.vue'
 
 const props = defineProps({
   /** 可播地址（ncm-audio:// 或本地 file） */
@@ -106,6 +107,36 @@ const subManual = ref(false)
  * 直到用户主动打开或换视频。
  */
 const subDisabled = ref(false)
+
+/* ---------------- 弹幕 ---------------- */
+
+/** 弹幕列表（按时间升序，主进程已排好） */
+const dmList = ref([])
+const dmLoading = ref(false)
+
+const showDanmaku = computed(() => settings.settings.biliDanmaku !== false)
+const dmOpacity = computed(() => Number(settings.settings.biliDmOpacity ?? 0.9))
+const dmFontScale = computed(() => Number(settings.settings.biliDmFontScale ?? 1))
+const dmArea = computed(() => Number(settings.settings.biliDmArea ?? 1))
+
+/** 加载弹幕（按 cid 拉取，主进程解压 XML 后返回结构化数组） */
+async function loadDanmaku() {
+  if (!props.cid) return
+  dmList.value = []
+  dmLoading.value = true
+  try {
+    const r = await bili.danmaku(props.cid)
+    dmList.value = r?.list || []
+  } catch {
+    dmList.value = []
+  } finally {
+    dmLoading.value = false
+  }
+}
+
+function toggleDanmaku() {
+  settings.set('biliDanmaku', !settings.settings.biliDanmaku)
+}
 
 /* ---------------- 自动对轨 ---------------- */
 
@@ -865,6 +896,8 @@ watch(
      * 手动指定时置 subManual = true，直到换视频（bvid 变化）才清除。
      */
     if (props.bvid && !subManual.value) loadSubtitle()
+    // 弹幕：换源时若还没加载过则加载（避免切画质重复请求）
+    if (props.bvid && props.cid && !dmList.value.length) loadDanmaku()
   },
   { immediate: true }
 )
@@ -882,7 +915,12 @@ watch(
     subDisabled.value = false
     // 换视频：重置上报状态（避免把上一个视频的播放时长算到新视频上）
     resetBiliReport()
-    if (props.bvid && props.url) loadSubtitle()
+    // 换视频：清空弹幕并重新拉取
+    dmList.value = []
+    if (props.bvid && props.url) {
+      loadSubtitle()
+      loadDanmaku()
+    }
   }
 )
 
@@ -964,6 +1002,17 @@ function onError() {
         </div>
       </div>
     </div>
+
+    <!-- 弹幕层：在视频之上、歌词与控制条之下（z-index 3） -->
+    <BiliDanmaku
+      v-if="!merging && dmList.length"
+      :list="dmList"
+      :time="currentTime"
+      :enabled="showDanmaku"
+      :opacity="dmOpacity"
+      :font-scale="dmFontScale"
+      :display-area="dmArea"
+    />
 
     <!-- 歌词（滚动 + 三行聚焦窗口）：叠在视频上、进度条上方
          控制条隐藏时整体下移贴近底部（见 controlsVisible） -->
@@ -1078,6 +1127,14 @@ function onError() {
               :title="showBlur ? '关闭歌词背景模糊' : '开启歌词背景模糊'"
               @click="toggleBlur"
             >糊</button>
+
+            <!-- 弹幕开关 -->
+            <button
+              class="bp-lyric-btn"
+              :class="{ on: showDanmaku }"
+              :title="showDanmaku ? `关闭弹幕（共 ${dmList.length} 条）` : `开启弹幕（共 ${dmList.length} 条）`"
+              @click="toggleDanmaku"
+            >弹</button>
 
             <!-- 对轨微调：歌词与视频错位时手动校准 -->
             <span

@@ -14,7 +14,8 @@ import {
   fetchSubtitle,
   cleanTitle,
   reportProgress,
-  reportFinished
+  reportFinished,
+  fetchDanmaku
 } from '../biliClient.js'
 import {
   mergeToCache,
@@ -387,6 +388,17 @@ export function registerBiliIpc(getNcmServer) {
     const tlyric = lyric?.tlyric?.lyric || ''
     if (!lrc) return { ok: false, reason: 'no-lyric' }
     return { ok: true, lyrics: lrc, tlyric }
+  })
+
+  // ---- 弹幕 ----
+
+  /**
+   * 拉取弹幕（deflate 压缩的 XML，主进程解压后返回结构化数组）。
+   * 弹幕量大（热门视频可达数万条），故在渲染层做轨道分配与可见性裁剪。
+   */
+  ipcMain.handle('bili:danmaku', async (_e, { cid }) => {
+    const list = await fetchDanmaku(cid)
+    return { ok: true, list }
   })
 
   // ---- 观看记录上报 ----
