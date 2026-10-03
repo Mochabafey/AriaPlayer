@@ -662,13 +662,15 @@ function onError() {
       </div>
     </div>
 
-    <!-- 歌词（滚动 + 三行聚焦窗口）：叠在视频上、进度条上方 -->
+    <!-- 歌词（滚动 + 三行聚焦窗口）：叠在视频上、进度条上方
+         控制条隐藏时整体下移贴近底部（见 controlsVisible） -->
     <BiliSubtitle
       v-if="!merging && subLines.length"
       :lines="subLines"
       :time="currentTime"
       :active-index="subActive"
       :show-trans="true"
+      :controls-visible="controlsVisible"
       @seek="seekTo"
     />
 
@@ -708,51 +710,6 @@ function onError() {
           </div>
         </div>
 
-        <!--
-          歌词搜索行：进度条下方单独一行。
-          左侧显示当前歌词来源（集成原来的提示标签，不再单独浮一行），
-          右侧是搜索框 —— 输入即搜，点结果直接换歌词。
-        -->
-        <div v-if="bvid" class="bp-subrow">
-          <div class="bp-src" :class="{ warn: subWarn }" :title="subLabel">
-            <span v-if="subLoading" class="bp-src-dot loading"></span>
-            <span v-else class="bp-src-dot" :class="{ ok: subLines.length }"></span>
-            <span class="bp-src-text">{{ subSourceText }}</span>
-          </div>
-          <div class="bp-sbox">
-            <input
-              v-model="subKeyword"
-              class="bp-sinput"
-              placeholder="搜索歌词：歌名 / 歌手"
-              @keyup.enter="doSubSearch"
-              @focus="subSearchOpen = true"
-            />
-            <button class="bp-sgo" :disabled="subSearching" @click="doSubSearch">
-              {{ subSearching ? '…' : '搜索' }}
-            </button>
-            <button
-              v-if="subLines.length"
-              class="bp-sclear"
-              title="关闭歌词"
-              @click="clearSubtitle()"
-            >✕</button>
-          </div>
-
-          <!-- 搜索结果：向上弹出，不遮进度条 -->
-          <div v-if="subSearchOpen && (subResults.length || subSearching)" class="bp-sres">
-            <button
-              v-for="s in subResults"
-              :key="s.id"
-              class="bp-sres-item"
-              @click="pickSubtitle(s)"
-            >
-              <span class="bp-sres-name">{{ s.name }}</span>
-              <span class="bp-sres-artist">{{ s.artist }}</span>
-            </button>
-            <div v-if="subSearching" class="bp-sres-loading">搜索中…</div>
-          </div>
-        </div>
-
         <div class="bp-btn-row">
           <!-- 播放/暂停 -->
           <button class="bp-btn bp-play" :title="playing ? '暂停 (空格)' : '播放 (空格)'" @click="togglePlay">
@@ -762,6 +719,55 @@ function onError() {
 
           <!-- 时间 -->
           <div class="bp-time">{{ currentLabel }} / {{ durationLabel }}</div>
+
+          <!--
+            歌词搜索（紧邻时间数字右侧）：
+            来源状态点 + 输入框 + 搜索/关闭按钮。输入即搜，点结果换歌词。
+            放在按钮行而非单独一行，让歌词能更贴近进度条。
+          -->
+          <div v-if="bvid" class="bp-subrow">
+            <span
+              class="bp-src"
+              :class="{ warn: subWarn }"
+              :title="subLabel"
+            >
+              <span v-if="subLoading" class="bp-src-dot loading"></span>
+              <span v-else class="bp-src-dot" :class="{ ok: subLines.length }"></span>
+              <span class="bp-src-text">{{ subSourceText }}</span>
+            </span>
+            <div class="bp-sbox">
+              <input
+                v-model="subKeyword"
+                class="bp-sinput"
+                placeholder="搜索歌词"
+                @keyup.enter="doSubSearch"
+                @focus="subSearchOpen = true"
+              />
+              <button class="bp-sgo" :disabled="subSearching" @click="doSubSearch">
+                {{ subSearching ? '…' : '搜索' }}
+              </button>
+              <button
+                v-if="subLines.length"
+                class="bp-sclear"
+                title="关闭歌词"
+                @click="clearSubtitle()"
+              >✕</button>
+            </div>
+
+            <!-- 搜索结果：向上弹出，不遮进度条 -->
+            <div v-if="subSearchOpen && (subResults.length || subSearching)" class="bp-sres">
+              <button
+                v-for="s in subResults"
+                :key="s.id"
+                class="bp-sres-item"
+                @click="pickSubtitle(s)"
+              >
+                <span class="bp-sres-name">{{ s.name }}</span>
+                <span class="bp-sres-artist">{{ s.artist }}</span>
+              </button>
+              <div v-if="subSearching" class="bp-sres-loading">搜索中…</div>
+            </div>
+          </div>
 
           <div class="bp-spacer"></div>
 
@@ -1087,13 +1093,18 @@ function onError() {
   z-index: 6;
 }
 
-/* ---- 歌词搜索行（进度条下方单独一行）---- */
+/* ---- 歌词搜索（内联在按钮行，紧邻时间数字）----
+ * 布局策略：搜索行整体可收缩（flex-shrink），右侧按钮组不受影响。
+ * 窗口变窄时优先压缩来源文字与输入框，而非挤掉播放控制。
+ */
 .bp-subrow {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 2px 0 6px;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 6px;
   font-size: 12px;
 }
 
@@ -1101,11 +1112,11 @@ function onError() {
 .bp-src {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   flex: 0 1 auto;
-  max-width: 46%;
-  color: rgba(255, 255, 255, 0.72);
+  max-width: 210px;
+  color: rgba(255, 255, 255, 0.62);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 .bp-src-dot {
@@ -1126,21 +1137,20 @@ function onError() {
   text-overflow: ellipsis;
 }
 
-/* 右侧：搜索框 */
+/* 搜索框 */
 .bp-sbox {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  flex: 0 1 420px;
+  gap: 5px;
+  flex: 0 1 300px;
   min-width: 0;
 }
 .bp-sinput {
   flex: 1;
   min-width: 0;
-  height: 26px;
+  height: 24px;
   padding: 0 10px;
-  border-radius: 13px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.12);
   border: 1px solid rgba(255, 255, 255, 0.16);
   color: #fff;
@@ -1155,9 +1165,9 @@ function onError() {
 }
 .bp-sgo {
   flex: none;
-  height: 26px;
-  padding: 0 12px;
-  border-radius: 13px;
+  height: 24px;
+  padding: 0 11px;
+  border-radius: 12px;
   background: var(--accent, #fb7299);
   color: #fff;
   font-size: 12px;
@@ -1168,8 +1178,8 @@ function onError() {
 .bp-sgo:disabled { opacity: 0.55; cursor: default; }
 .bp-sclear {
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.75);
@@ -1181,9 +1191,9 @@ function onError() {
 /* 搜索结果：向上弹出，不遮进度条 */
 .bp-sres {
   position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
-  width: min(420px, 60vw);
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: min(360px, 46vw);
   max-height: 230px;
   overflow-y: auto;
   background: rgba(24, 24, 26, 0.97);
@@ -1194,6 +1204,7 @@ function onError() {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  z-index: 3;
 }
 .bp-sres-item {
   display: flex;

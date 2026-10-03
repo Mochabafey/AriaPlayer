@@ -26,7 +26,13 @@ const props = defineProps({
   /** 是否显示翻译 */
   showTrans: { type: Boolean, default: true },
   /** 当前行索引（由父组件算好传入） */
-  activeIndex: { type: Number, default: -1 }
+  activeIndex: { type: Number, default: -1 },
+  /**
+   * 控制条是否可见。
+   * 控制条隐藏时歌词整体**下移**贴近底部（与歌曲歌词页一致）——
+   * 否则控制条消失后歌词会悬在半空，下方留一大片空白。
+   */
+  controlsVisible: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['seek'])
@@ -122,7 +128,7 @@ const hasContent = computed(() => props.lines.length > 0)
 </script>
 
 <template>
-  <div v-if="hasContent" class="bs-wrap">
+  <div v-if="hasContent" class="bs-wrap" :class="{ down: !controlsVisible }">
     <div
       ref="listRef"
       class="bs-list"
@@ -152,8 +158,10 @@ const hasContent = computed(() => props.lines.length > 0)
 /*
  * 三行高的窄窗口：
  *   --bs-font 随窗口自适应，行高由字号推导 → 窗口放大时歌词跟着变大
- * 位置在控制条上方。控制条现在含三部分：进度条 + 搜索行 + 按钮行，
- * 总高约 96px（原为 62px，加搜索行后需相应上移）。
+ *
+ * 位置随控制条显隐变化（与歌曲歌词页一致的「下沉」行为）：
+ *   控制条可见 → bottom 96px（避让进度条 + 按钮行）
+ *   控制条隐藏 → bottom 24px（贴近底部，不留悬空）
  */
 .bs-wrap {
   position: absolute;
@@ -166,7 +174,10 @@ const hasContent = computed(() => props.lines.length > 0)
   pointer-events: none; /* 容器不挡视频点击，只有歌词行可点 */
   padding: 0 8%;
   box-sizing: border-box;
+  transition: bottom 0.22s var(--ease, ease);
 }
+/* 控制条隐藏：歌词整体下移贴近底部 */
+.bs-wrap.down { bottom: 24px; }
 
 .bs-list {
   --bs-font: clamp(15px, 1.5vw, 21px);
