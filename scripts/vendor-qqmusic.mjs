@@ -31,23 +31,47 @@ function rmrf(p) {
   }
 }
 
-if (fs.existsSync(path.join(dir, 'src', 'app.ts')) && !force) {
-  console.log('[vendor-qqmusic] qqmusic/ 已存在且含 src/app.ts，跳过克隆（加 --force 强制重拉）')
-  process.exit(0)
+/**
+ * 判断 qqmusic/ 是否已就绪（源码 + 依赖）。
+ *
+ * ⚠️ 这里**不能再用 `process.exit(0)` 提前退出**（原实现如此，是个坑）：
+ * 脚本末尾还有「应用本地补丁」和「esbuild 预编译」两步，提前退出会把它们
+ * 一起跳过 —— 表现为「vendor 跑完了，但预编译产物不存在，启动退回
+ * ts-node 实时编译（慢 15 倍）」，且不报错、只静默降级。
+ * （vendor-server.mjs 踩过同样的坑，见那里的注释。）
+ *
+ * 依赖判据同 vendor-server：只判断目录存在不够 —— 中断的安装会留下空目录。
+ */
+const REQUIRED_DEPS = ['koa', 'axios', 'koa-router']
+function depsInstalled() {
+  const nm = path.join(dir, 'node_modules')
+  if (!fs.existsSync(nm)) return false
+  return REQUIRED_DEPS.every((d) => fs.existsSync(path.join(nm, d)))
 }
 
-console.log('[vendor-qqmusic] 克隆 Rain120/qq-music-api → qqmusic/ ...')
-rmrf(dir)
-fs.mkdirSync(dir, { recursive: true })
-run(`git clone --depth 1 ${REPO} ${dir}`)
+const sourceReady = fs.existsSync(path.join(dir, 'src', 'app.ts'))
+const depsReady = depsInstalled()
 
-// 移除开发/冗余内容，减小体积
-for (const p of ['.git', 'tests', 'screenshot', '.github', 'docs', '.agents', '.claude', '.codebuddy', '.continue', '.iflow', '.kiro', '.skills', '.trae', 'skills']) {
-  rmrf(path.join(dir, p))
+if (sourceReady && depsReady && !force) {
+  console.log('[vendor-qqmusic] qqmusic/ 已就绪（源码 + 依赖），跳过克隆')
+  console.log('[vendor-qqmusic] 仍会执行下方「应用补丁」与「预编译」步骤')
+} else if (sourceReady && !depsReady) {
+  console.log('[vendor-qqmusic] 有源码但缺依赖（CI checkout 后即为此状态）→ 只补装依赖')
+  run('npm install --ignore-scripts --no-audit --no-fund --loglevel=error', { cwd: dir })
+} else {
+  console.log('[vendor-qqmusic] 克隆 Rain120/qq-music-api → qqmusic/ ...')
+  rmrf(dir)
+  fs.mkdirSync(dir, { recursive: true })
+  run(`git clone --depth 1 ${REPO} ${dir}`)
+
+  // 移除开发/冗余内容，减小体积
+  for (const p of ['.git', 'tests', 'screenshot', '.github', 'docs', '.agents', '.claude', '.codebuddy', '.continue', '.iflow', '.kiro', '.skills', '.trae', 'skills']) {
+    rmrf(path.join(dir, p))
+  }
+
+  console.log('[vendor-qqmusic] 安装依赖（ts-node 在 devDeps，官方 start 依赖它跑 TS）...')
+  run('npm install --ignore-scripts --no-audit --no-fund --loglevel=error', { cwd: dir })
 }
-
-console.log('[vendor-qqmusic] 安装依赖（ts-node 在 devDeps，官方 start 依赖它跑 TS）...')
-run('npm install --ignore-scripts --no-audit --no-fund --loglevel=error', { cwd: dir })
 
 // 本地补丁：default.ts 的 cookie 改为从环境变量读取（宿主应用注入 QQ_MUSIC_COOKIE）
 const cfgPath = path.join(dir, 'src', 'config', 'default.ts')

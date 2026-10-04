@@ -151,6 +151,22 @@ jobs:
       - name: Vendor qq-music-api (QQ 音乐)
         run: node scripts/vendor-qqmusic.mjs
 
+      # 验证 QQ 音乐预编译产物已生成。
+      #
+      # vendor-qqmusic.mjs 末尾会自动跑 build-qqmusic.mjs（esbuild 预编译），
+      # 但它失败时只 warn 不中断（bridge 会回退 ts-node 实时编译，仍能跑）。
+      # 那样打包出来的版本「能用但首次用 QQ 音源要等 5 秒」—— 属于静默降级。
+      # 这里显式检查，让 CI 明确失败而不是悄悄退化。
+      - name: Verify qqmusic prebuilt bundle
+        shell: bash
+        run: |
+          if [ ! -f qqmusic/dist/app.cjs ]; then
+            echo "::error::qqmusic/dist/app.cjs 未生成，QQ 音乐将回退 ts-node 实时编译（启动慢 15 倍）"
+            exit 1
+          fi
+          ls -la qqmusic/dist/app.cjs
+          echo "预编译产物已就绪"
+
       # ---- ffmpeg（B 站 DASH 合流 / 转码兜底必需）----
       # 脚本按 process.platform 自动选对应平台的静态构建
       - name: Fetch ffmpeg
