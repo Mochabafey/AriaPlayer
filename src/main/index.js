@@ -172,7 +172,13 @@ function registerTrayIpc() {
   })
 }
 
-/** 启动时把设置里的自启状态同步到系统（用户可能在别处改过注册表） */
+/**
+ * 启动时把设置里的自启状态同步到系统（用户可能在别处改过注册表）。
+ *
+ * 开发模式也照常同步 —— 见 tray.js 的 applyAutoLaunch 注释：
+ * 静默跳过会让 UI 永远显示「不一致」且开关无效，用户只会认为功能坏了。
+ * 现在改为「照常读写 + UI 明确提示开发模式」。
+ */
 function syncAutoLaunchOnBoot() {
   try {
     const want = settingsRepo.get('autoLaunch') === true
@@ -181,7 +187,6 @@ function syncAutoLaunchOnBoot() {
       return v === undefined ? true : v === true
     })()
     const sys = getAutoLaunchState()
-    if (sys.devMode) return
     if (want !== sys.enabled) {
       console.log(`[auto-launch] 系统状态(${sys.enabled})与设置(${want})不一致，同步为 ${want}`)
       applyAutoLaunch(want, sm)

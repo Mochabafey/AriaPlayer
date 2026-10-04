@@ -133,17 +133,26 @@ export function markQuitting() {
 /**
  * 同步开机自启设置到系统。
  *
+ * ## 开发模式的处理（踩过的坑）
+ *
+ * 原实现在 `!app.isPackaged` 时**直接 return，什么都不做**。这导致：
+ *   - 用户（或开发者）在开发版里开关自启，系统毫无变化
+ *   - `getAutoLaunchState()` 同样直接返回 `enabled:false`，
+ *     UI 永远显示「与系统实际状态不一致」，**反复开关也修不好**
+ *   - 更糟的是：安装版写过注册表项后，开发版读不到它，
+ *     用户会以为功能坏了
+ *
+ * 现在的做法：**照常读写**（Electron 的 setLoginItemSettings 在开发模式
+ * 下也能工作 —— 它写的是 electron.exe + 项目路径），同时返回 `devMode:true`
+ * 让 UI 明确提示「当前是开发模式，自启项指向开发环境」。
+ *
+ * 为什么不干脆禁用：用户无法区分「功能没生效」与「开发模式不写」，
+ * 只会认为坏了。明确读写 + 明确提示，行为可预期。
+ *
  * @param {boolean} enabled 是否开机自启
  * @param {boolean} startMinimized 自启时是否最小化（作为启动参数传给自身）
  */
 export function applyAutoLaunch(enabled, startMinimized = true) {
-  // 开发模式下不写系统启动项：那会写入带 electron.exe + 项目路径的条目，
-  // 卸载/换目录后变成僵尸启动项，且对用户没有实际意义。
-  if (!app.isPackaged) {
-    console.log(`[auto-launch] 开发模式，跳过系统写入（enabled=${enabled}, minimized=${startMinimized}）`)
-    return { applied: false, reason: 'dev-mode' }
-  }
-
   try {
     app.setLoginItemSettings({
       openAtLogin: !!enabled,
@@ -152,22 +161,97 @@ export function applyAutoLaunch(enabled, startMinimized = true) {
       // macOS 专用：登录时隐藏（不弹 Dock）
       openAsHidden: enabled && startMinimized
     })
-    console.log(`[auto-launch] 已${enabled ? '开启' : '关闭'}开机自启（minimized=${startMinimized}）`)
-    return { applied: true }
+    const dev = !app.isPackaged
+    console.log(
+      `[auto-launch] 已${enabled ? '开启' : '关闭'}开机自启` +
+      `（minimized=${startMinimized}${dev ? '，开发模式' : ''}）`
+    )
+    return { applied: true, devMode: dev }
   } catch (e) {
     console.error('[auto-launch] 设置失败', e)
     return { applied: false, reason: e.message }
   }
 }
 
-/** 读取系统当前的自启状态（可能与设置库不一致，以系统为准显示） */
+/**
+ * 读取系统当前的自启状态（以系统为准，而非设置库）。
+ *
+ * ## 为什么不能只用 app.getLoginItemSettings()（踩过的坑）
+ *
+ * 实测（Electron 43 / Windows）：
+ *
+ *     开发模式:
+ *       setLoginItemSettings 写入的项名是 "electron.app.Electron"
+ *       但 getLoginItemSettings().openAtLogin 恒为 **false**
+ *       —— 它按可执行文件路径匹配，而开发模式下 execPath 是 electron.exe，
+ *          与注册表里的项对不上。只有 launchItems 数组里能看到真实项。
+ *
+ *     安装版:
+ *       项名是 "electron.app.<productName>"，openAtLogin 正常。
+ *
+ * 后果：开发版 UI 永远显示「与系统实际状态不一致」，反复开关也修不好 ——
+ * 用户只会认为功能坏了。
+ *
+ * ## 现在的做法
+ *
+ * 优先读 Electron 的 `launchItems`（它列的是真实注册表项，开发/打包都能看到），
+ * 并额外用 `executableWillLaunchAtLogin` 交叉验证。
+ * Windows 上还可直接查注册表兜底（见 readAutoLaunchFromRegistry）。
+ */
 export function getAutoLaunchState() {
+  const devMode = !app.isPackaged
   try {
-    if (!app.isPackaged) return { enabled: false, devMode: true }
     const s = app.getLoginItemSettings()
-    return { enabled: !!s.openAtLogin, devMode: false }
+    /**
+     * 判定「是否已开启」的优先级：
+     *   1. openAtLogin —— 打包版的权威值
+     *   2. launchItems 里是否存在指向本应用可执行文件的启用项 ——
+     *      开发版唯一可靠的来源（openAtLogin 在开发版恒 false）
+     *   3. Windows 注册表直查 —— 前两者都拿不到时的兜底
+     */
+    let enabled = !!s.openAtLogin
+    if (!enabled && Array.isArray(s.launchItems)) {
+      const exePath = app.getPath('exe')
+      const exeName = path.basename(exePath).toLowerCase()
+      enabled = s.launchItems.some((it) => {
+        if (!it || it.enabled === false) return false
+        const p = String(it.path || '').toLowerCase()
+        // 匹配「同一个可执行文件」：完整路径相同，或文件名相同
+        //（开发版注册表里存的是 electron.exe 全路径，与 execPath 一致）
+        return p === exePath.toLowerCase() || path.basename(p) === exeName
+      })
+    }
+    if (!enabled && process.platform === 'win32') {
+      enabled = readAutoLaunchFromRegistry() != null
+    }
+    return { enabled, devMode }
+  } catch (e) {
+    console.error('[auto-launch] 读取失败', e)
+    return { enabled: false, devMode }
+  }
+}
+
+/**
+ * 直接从 Windows 注册表读自启项（开发版下 Electron 的 API 不可靠时的兜底）。
+ *
+ * 项名规则：`electron.app.<app.getName()>`。
+ * 返回命令行字符串（含参数），未找到返回 null。
+ */
+function readAutoLaunchFromRegistry() {
+  if (process.platform !== 'win32') return null
+  try {
+    const { execFileSync } = require('child_process')
+    const keyName = `electron.app.${app.getName()}`
+    const out = execFileSync(
+      'reg',
+      ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', keyName],
+      { encoding: 'utf-8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+    const m = out.match(/REG_SZ\s+(.+)/)
+    return m ? m[1].trim() : null
   } catch {
-    return { enabled: false, devMode: false }
+    // reg query 在项不存在时以非 0 退出
+    return null
   }
 }
 

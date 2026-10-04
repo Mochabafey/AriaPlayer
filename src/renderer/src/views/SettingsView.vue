@@ -185,7 +185,7 @@ async function restartServer() {
           <div>开机自启动</div>
           <div class="hint">
             登录系统后自动启动咏叹调
-            <span v-if="tray.devMode" class="warn">（开发模式下不写入系统启动项）</span>
+            <span v-if="tray.devMode" class="warn">（当前为开发模式，自启项指向开发环境而非安装版）</span>
             <span v-else-if="tray.autoLaunch !== tray.systemAutoLaunch" class="warn">（与系统实际状态不一致，重新开关一次可同步）</span>
           </div>
         </div>
