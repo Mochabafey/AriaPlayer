@@ -491,6 +491,30 @@ QQ 先启动、网易云后启动:   6537ms   ← 慢 10 倍（抢 CPU/磁盘）
 - **`close` 事件**必须用 `isQuitting()` 区分「用户点关闭」与「真退出」，否则退不掉；
   `window-all-closed` 在托盘模式下也不能退出。
 
+#### ⚠️ 托盘图标必须显式加进 extraResources（实测踩过）
+
+`directories.buildResources: resources` 里的 `icon.png` **只用于生成 exe 图标**，
+**不会**被复制进 `resources/` 目录。而托盘图标是运行时从
+`process.resourcesPath` 读的 —— 漏了配置就会拿到空 `nativeImage`，
+**托盘区看不到图标也点不到**。
+
+配合「以最小化的形式启动」（窗口启动即隐藏），用户会**完全找不到程序入口**，
+以为程序没启动。所以：
+
+```yaml
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
+```
+
+同时 `tray.js` 做了**运行时兜底**：找不到图片时按 PNG 规范生成一个
+16×16 的品牌色圆形图标（`IHDR + IDAT(zlib) + IEND`，CRC32 自算），
+并打印 warning 提示检查配置 —— 不再静默失败。
+
+> 注：最初本娘内联了一段 base64 PNG 作兜底，但实测它**结构不完整**
+> （`nativeImage.createFromBuffer` 拒绝、图片查看器报 malformed）。
+> 手写 base64 极易出错且难校验，改为运行时编码。
+
 #### 开机自启的两个坑（都实测踩过）
 
 **① `getLoginItemSettings()` 必须传与写入时相同的 `args`**
