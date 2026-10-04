@@ -114,3 +114,25 @@ if (fs.existsSync(appTsPath)) {
     console.log('[vendor-qqmusic] 已应用 app.ts 补丁（关闭启动版本检查）')
   }
 }
+
+/**
+ * 预编译 TypeScript → dist/app.cjs。
+ *
+ * **必须在所有源码补丁之后执行** —— 补丁改的是 src/*.ts，编译要在改完后跑，
+ * 否则产物里是未打补丁的代码（cookie 不注入、版本检查没关）。
+ *
+ * 这一步把 QQ 音乐冷启动从 ~4900ms（ts-node 实时编译 92 个 TS 文件）
+ * 降到 ~380ms。见 scripts/build-qqmusic.mjs 的说明。
+ */
+console.log('[vendor-qqmusic] 预编译 TypeScript → dist/app.cjs ...')
+const buildScript = path.join(root, 'scripts', 'build-qqmusic.mjs')
+if (fs.existsSync(buildScript)) {
+  const r = spawnSync(process.execPath, [buildScript, '--force'], { stdio: 'inherit', cwd: root })
+  if (r.status !== 0) {
+    console.warn('[vendor-qqmusic] ⚠️ 预编译失败，将回退 ts-node 运行时编译（启动较慢）')
+  }
+} else {
+  console.warn('[vendor-qqmusic] ⚠️ 未找到 build-qqmusic.mjs，跳过预编译')
+}
+
+console.log('[vendor-qqmusic] 完成！qqmusic/ 已就绪。')
