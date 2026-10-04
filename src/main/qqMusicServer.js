@@ -11,6 +11,12 @@ const RESTART_MAX = 3
 const RESTART_DELAY = 5000
 
 /**
+ * 子进程「已就绪」的信号标记（由 qqmusic/bridge.cjs 在 listen 回调里打印）。
+ * 与 NcmServer 用同一套机制 —— 见那里的说明（为什么用 stdout 而非 process.send）。
+ */
+const READY_MARKER = '###NTR_READY###'
+
+/**
  * qq-music-api 子进程生命周期管理。
  * 以 Electron 自身可执行文件 + ELECTRON_RUN_AS_NODE=1 模式 spawn 为 Node 子进程，
  * 入口是 src/main/qqmusic/bridge.cjs：拦截 listen → 命名管道，零 TCP 端口占用。
@@ -36,6 +42,8 @@ export class QqMusicServer {
     this.restarts = 0
     this.stopping = false
     this.onStatusChange = null
+    /** 就绪信号回调（waitReady 注册，收到子进程标记时触发） */
+    this._readySignalHandler = null
   }
 
   qqmusicDir() {
@@ -126,7 +134,12 @@ export class QqMusicServer {
     const safeWrite = (stream, s) => {
       try { stream.write(s) } catch (e) { /* pipe closed */ }
     }
-    this.child.stdout.on('data', (d) => safeWrite(process.stdout, `[qqmusic] ${d}`))
+    this.child.stdout.on('data', (d) => {
+      // 就绪信号：bridge 在 listen 回调里打的固定标记（见 qqmusic/bridge.cjs）
+      const s = d.toString()
+      if (s.includes(READY_MARKER)) this.markReadyBySignal()
+      safeWrite(process.stdout, `[qqmusic] ${d}`)
+    })
     this.child.stderr.on('data', (d) => safeWrite(process.stderr, `[qqmusic] ${d}`))
 
     this.child.on('error', (err) => {
@@ -164,27 +177,67 @@ export class QqMusicServer {
     }
   }
 
+  /**
+   * 等待服务就绪（**事件驱动 + 轮询兜底**，与 NcmServer 同一套机制）。
+   *
+   * 子进程在 listen 回调里打 `###NTR_READY###`（见 qqmusic/bridge.cjs），
+   * 主进程收到即立即 resolve，省掉轮询的平均 ~150-200ms 等待。
+   * 保留 500ms 兜底轮询以防信号丢失。
+   */
   waitReady() {
-    const tryOnce = () => new Promise((resolve) => {
-      const s = net.connect({ path: this.socketPath }, () => {
-        s.destroy()
-        resolve(true)
-      })
-      s.on('error', () => resolve(false))
-      s.setTimeout(800, () => {
-        s.destroy()
-        resolve(false)
-      })
-    })
-    return new Promise(async (resolve) => {
+    return new Promise((resolve) => {
       const deadline = Date.now() + START_TIMEOUT
-      while (Date.now() < deadline) {
-        if (this.stopping || !this.child || this.child.exitCode !== null) return resolve(false)
-        if (await tryOnce()) return resolve(true)
-        await new Promise((r) => setTimeout(r, 300))
+
+      const onSignal = () => {
+        cleanup()
+        resolve(true)
       }
-      resolve(false)
+      this._readySignalHandler = onSignal
+
+      const cleanup = () => {
+        if (this._readySignalHandler === onSignal) this._readySignalHandler = null
+        clearTimeout(pollTimer)
+      }
+
+      const tryOnce = () => new Promise((res) => {
+        const s = net.connect({ path: this.socketPath }, () => {
+          s.destroy()
+          res(true)
+        })
+        s.on('error', () => res(false))
+        s.setTimeout(800, () => {
+          s.destroy()
+          res(false)
+        })
+      })
+
+      let pollTimer = null
+      const poll = async () => {
+        if (this.stopping || !this.child || this.child.exitCode !== null) {
+          cleanup()
+          return resolve(false)
+        }
+        if (Date.now() > deadline) {
+          cleanup()
+          return resolve(false)
+        }
+        if (await tryOnce()) {
+          cleanup()
+          return resolve(true)
+        }
+        pollTimer = setTimeout(poll, 500)
+      }
+      pollTimer = setTimeout(poll, 500)
     })
+  }
+
+  /** 收到子进程就绪信号时调用（由 stdout 监听触发） */
+  markReadyBySignal() {
+    if (this._readySignalHandler) {
+      const h = this._readySignalHandler
+      this._readySignalHandler = null
+      h()
+    }
   }
 
   /**

@@ -12,6 +12,16 @@ const RESTART_MAX = 3
 const RESTART_DELAY = 5000
 
 /**
+ * 子进程「已就绪」的信号标记（由 ncm/bridge.cjs 在 listen 回调里打印）。
+ *
+ * 为什么用 stdout 标记而非 process.send：
+ *   spawn 的 stdio 不含 'ipc'（保持 ['ignore','pipe','pipe']），此时
+ *   `process.send` 是 undefined（已实测）。走 stdout 无需改 spawn 配置，
+ *   且现有代码本就转发子进程 stdout 到主进程日志，复用它改动面最小。
+ */
+const READY_MARKER = '###NTR_READY###'
+
+/**
  * api-enhanced 子进程生命周期管理。
  * 以 Electron 自身可执行文件 + ELECTRON_RUN_AS_NODE=1 模式 spawn 为 Node 子进程，
  * 入口是 ncm/bridge.cjs：vendored 服务不监听 TCP 端口，而是挂在
@@ -28,6 +38,8 @@ export class NcmServer {
     this.onStatusChange = null
     this.fileWatcher = null
     this.watchedMtimes = null
+    /** 就绪信号回调（waitReady 注册，收到子进程标记时触发） */
+    this._readySignalHandler = null
   }
 
   serverDir() {
@@ -129,7 +141,14 @@ export class NcmServer {
     const safeWrite = (stream, s) => {
       try { stream.write(s) } catch (e) { /* pipe closed */ }
     }
-    this.child.stdout.on('data', (d) => safeWrite(process.stdout, `[ncm-server] ${d}`))
+    this.child.stdout.on('data', (d) => {
+      // 就绪信号：bridge 在 listen 回调里打的固定标记（见 ncm/bridge.cjs）。
+      // 事件驱动取代原先的 300ms 轮询探测 —— 收到即可立即置 ready，
+      // 省掉平均 150ms / 最坏 300ms 的等待，也少一次白建的 socket 连接。
+      const s = d.toString()
+      if (s.includes(READY_MARKER)) this.markReadyBySignal()
+      safeWrite(process.stdout, `[ncm-server] ${d}`)
+    })
     this.child.stderr.on('data', (d) => safeWrite(process.stderr, `[ncm-server] ${d}`))
 
     this.child.on('error', (err) => {
@@ -206,28 +225,77 @@ export class NcmServer {
     }
   }
 
-  /** 就绪探测：直连私有 socket，连上即 Express 已挂载 */
+  /**
+   * 等待服务就绪。
+   *
+   * ## 事件驱动 + 轮询兜底（原实现纯轮询）
+   *
+   * 原实现每 300ms 连一次 socket，连上即就绪 —— 平均多等 150ms、最坏 300ms，
+   * 且每次探测都白建一个连接。
+   *
+   * 现在子进程在 listen 回调里打 `###NTR_READY###` 标记（见 ncm/bridge.cjs），
+   * 主进程收到即立即 resolve，**零额外等待**。
+   *
+   * 保留轮询的原因：信号可能丢失/延迟（如 stdout 背压、桥接层异常），
+   * 纯靠事件会让启动卡死。轮询间隔放宽到 500ms（信号正常情况下根本不会用到），
+   * 只在信号没来时兜底。
+   */
   waitReady() {
-    const tryOnce = () => new Promise((resolve) => {
-      const s = net.connect({ path: this.socketPath }, () => {
-        s.destroy()
-        resolve(true)
-      })
-      s.on('error', () => resolve(false))
-      s.setTimeout(800, () => {
-        s.destroy()
-        resolve(false)
-      })
-    })
-    return new Promise(async (resolve) => {
+    return new Promise((resolve) => {
       const deadline = Date.now() + START_TIMEOUT
-      while (Date.now() < deadline) {
-        if (this.stopping || !this.child || this.child.exitCode !== null) return resolve(false)
-        if (await tryOnce()) return resolve(true)
-        await new Promise((r) => setTimeout(r, 300))
+
+      /** 信号通道：bridge 打标记时调用 */
+      const onSignal = () => {
+        cleanup()
+        resolve(true)
       }
-      resolve(false)
+      this._readySignalHandler = onSignal
+
+      const cleanup = () => {
+        if (this._readySignalHandler === onSignal) this._readySignalHandler = null
+        clearTimeout(pollTimer)
+      }
+
+      // 兜底轮询（信号丢失时仍能起来）
+      const tryOnce = () => new Promise((res) => {
+        const s = net.connect({ path: this.socketPath }, () => {
+          s.destroy()
+          res(true)
+        })
+        s.on('error', () => res(false))
+        s.setTimeout(800, () => {
+          s.destroy()
+          res(false)
+        })
+      })
+
+      let pollTimer = null
+      const poll = async () => {
+        if (this.stopping || !this.child || this.child.exitCode !== null) {
+          cleanup()
+          return resolve(false)
+        }
+        if (Date.now() > deadline) {
+          cleanup()
+          return resolve(false)
+        }
+        if (await tryOnce()) {
+          cleanup()
+          return resolve(true)
+        }
+        pollTimer = setTimeout(poll, 500)
+      }
+      pollTimer = setTimeout(poll, 500)
     })
+  }
+
+  /** 收到子进程就绪信号时调用（由 stdout 监听触发） */
+  markReadyBySignal() {
+    if (this._readySignalHandler) {
+      const h = this._readySignalHandler
+      this._readySignalHandler = null
+      h()
+    }
   }
 
   /**

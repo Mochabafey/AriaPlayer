@@ -39,6 +39,23 @@ net.Server.prototype.listen = function (...args) {
   }
   return origListen.call(this, SOCKET_PATH, () => {
     console.log('[bridge] private socket ready:', SOCKET_PATH)
+    /**
+     * 就绪信号（事件驱动，取代主进程的 300ms 轮询探测）。
+     *
+     * 主进程原先靠「每 300ms 连一次 socket，连上即就绪」判断 ——
+     * 平均多等 150ms、最坏 300ms，且每次都白建一次连接。
+     * 这里在 listen 回调里主动发信号，主进程收到即可立即置 ready。
+     *
+     * 双通道发送（哪个能用用哪个）：
+     *   process.send  —— 需要 spawn 时 stdio 含 'ipc'；消息通道干净，
+     *                    不会被日志文本干扰（首选）
+     *   stdout 标记   —— 兜底：ipc 不可用时（如某些 Electron 版本）
+     *                    打一行固定前缀，主进程从日志流里识别
+     */
+    try {
+      if (typeof process.send === 'function') process.send({ type: 'ready' })
+    } catch { /* ipc 不可用，走 stdout 兜底 */ }
+    console.log('###NTR_READY###')
     cb && cb()
   })
 }

@@ -36,6 +36,12 @@ net.Server.prototype.listen = function (...args) {
   }
   return origListen.call(this, SOCKET_PATH, () => {
     console.log('[qqmusic-bridge] private socket ready:', SOCKET_PATH)
+    /**
+     * 就绪信号（事件驱动，取代主进程的 300ms 轮询探测）。
+     * 与 ncm/bridge.cjs 同一套机制 —— 主进程监听 stdout 里的固定标记。
+     * 用 stdout 而非 process.send：stdio 不含 'ipc' 时 process.send 是 undefined。
+     */
+    console.log('###NTR_READY###')
     cb && cb()
   })
 }
