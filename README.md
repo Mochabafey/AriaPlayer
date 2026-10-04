@@ -422,14 +422,15 @@ bs-blur         1   歌词模糊底
 |---|---|---|
 | 初版 | 4.97s | — |
 | 第一轮 | 2.08s | 两服务并行启动 / 关闭 `npm info` 版本检查 / 惰性模块加载（jsdom 占 812ms） |
-| **当前** | **0.7s** | **QQ 音乐改懒启动**（见下） |
+| 第二轮 | **0.7s** | QQ 音乐改**懒启动**（见下） |
+| 第三轮 | 0.7s | QQ 音乐 **esbuild 预编译**（首次用 QQ 音源 4.9s → 0.33s） |
 
-**QQ 音乐懒加载**是当前最大收益项。实测各服务冷启动耗时：
+**QQ 音乐**是两轮优化的主角。实测各服务冷启动：
 
 | 服务 | 耗时 | 原因 |
 |---|---|---|
 | 网易云（api-enhanced） | 0.6s | 纯 JS |
-| **QQ 音乐（qq-music-api）** | **4.9s** | 用 `ts-node` 实时编译 93 个 TS 文件（typescript 包 22.5 MB） |
+| QQ 音乐（qq-music-api） | **4.9s** | 用 `ts-node` 实时编译 92 个 TS 文件 |
 
 它还会**拖慢其他一切** —— 对照实验（同一台机器）：
 
@@ -439,12 +440,20 @@ bs-blur         1   歌词模糊底
 QQ 先启动、网易云后启动:   6537ms   ← 慢 10 倍（抢 CPU/磁盘）
 ```
 
-而 QQ 音乐是**可选音源**，多数用户开机后只用网易云。故改为
-**首次真正用到时才启动**（`ipc/qqmusic.js` 的 `requireReadyServer()` 收口）：
+**两项措施**：
 
-- `QqMusicServer` 初始状态是 **`idle`**（不是 `down`）——「还没启动」是
-  正常状态，用 `down` 会让前端显示成错误态
-- 常用 QQ 音源的用户可在设置里开启「启动时预加载 QQ 音乐」
+1. **懒启动** —— QQ 是可选音源，多数用户开机只用网易云。改为首次真正用到才启动
+   （`ipc/qqmusic.js` 的 `requireReadyServer()` 收口）。首屏不再受它影响。
+   - `QqMusicServer` 初始状态是 **`idle`**（不是 `down`）——「还没启动」是
+     正常状态，用 `down` 会让前端显示成错误态
+   - 常用 QQ 音源的用户可在设置里开启「启动时预加载 QQ 音乐」
+
+2. **esbuild 预编译** —— `scripts/build-qqmusic.mjs` 把 TS 编成单个 92 KB 的 CJS。
+   `bridge.cjs` 优先用预编译产物，缺失时回退 ts-node（慢但能跑）。
+   - 产物输出到 `qqmusic/dist/` 是**刻意的**：源码里
+     `path.join(__dirname, '../public')` 在 `dist/` 下语义自动一致，无需 hack
+   - `vendor-qqmusic.mjs` 末尾自动预编译；CI 有独立步骤校验产物存在，
+     避免静默降级到慢速路径
 
 启动竞态兜底：`waitUntilReady(12000)` —— 避免「启动瞬间按播放」报 `NCM_SERVER_NOT_READY`。
 
