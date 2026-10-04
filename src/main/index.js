@@ -83,20 +83,50 @@ function trayEnabled() {
 }
 
 /**
- * 初始化托盘（若设置开启）。
+ * 托盘实例。
+ * 声明位置提到使用之前（`let` 有 TDZ，写在后面虽然实际不会触发，
+ * 但容易在重构时踩坑）。
+ */
+let trayInstance = null
+
+/** 启动时是否最小化到托盘（**独立开关**，不依赖托盘模式） */
+function startMinimizedEnabled() {
+  try { return settingsRepo.get('startMinimized') === true } catch { return false }
+}
+
+/**
+ * 本次启动是否应该直接最小化到托盘。
  *
- * 托盘在应用启动时就创建（而非等用户点关闭时）—— 这样用户随时能看到
- * 托盘图标；且窗口 close 事件里要用它判断是否拦截。
+ * 三个来源任一满足即可（对齐 VRCX 的「以最小化的形式启动」独立开关）：
+ *   1. 设置里的「启动时最小化」开关 —— 用户显式开启，手动启动也生效
+ *   2. 命令行带 `--start-minimized` —— 开机自启项里写入的参数
+ *
+ * 注意：**不再要求托盘模式开启**。
+ * 原实现写成 `isStartMinimized() && trayEnabled()`，导致「最小化启动」
+ * 依赖「最小化到托盘」—— 用户只开前者时完全不生效，且看不出原因。
+ * 两者语义本就不同：
+ *   - 启动时最小化：控制**启动那一刻**的窗口可见性
+ *   - 最小化到托盘：控制**点关闭按钮时**的行为
+ * 现在独立判断；若启动时最小化但托盘未开，仍会建一个临时托盘图标
+ * （否则窗口藏起来后用户没有任何入口把它叫回来）。
+ */
+function shouldStartMinimized() {
+  return startMinimizedEnabled() || isStartMinimized()
+}
+
+/**
+ * 初始化托盘（若需要）。
+ *
+ * 创建时机：
+ *   - 用户开了「最小化到托盘」→ 启动即建（点关闭时要用）
+ *   - 本次要最小化启动 → 也要建（否则窗口藏起来后没有入口唤回）
  */
 function initTrayIfEnabled() {
-  if (!trayEnabled()) return
-  createTray({
+  if (!trayEnabled() && !shouldStartMinimized()) return
+  if (trayInstance) return // 已创建
+  trayInstance = createTray({
     getWindow: () => mainWindow,
-    isPlaying: () => {
-      // 渲染层维护播放态；主进程通过 audio 元素的 playing 状态判断不便，
-      // 这里用一个由渲染层同步过来的标志（见 win:set-playing IPC）
-      return playingFlag
-    },
+    isPlaying: () => playingFlag,
     onTogglePlay: () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('player:toggle-play')
@@ -128,12 +158,7 @@ function registerTrayIpc() {
       autoLaunch: (() => {
         try { return settingsRepo.get('autoLaunch') === true } catch { return false }
       })(),
-      startMinimized: (() => {
-        try {
-          const v = settingsRepo.get('startMinimized')
-          return v === undefined ? true : v === true
-        } catch { return true }
-      })(),
+      startMinimized: startMinimizedEnabled(),
       // 系统实际状态（可能与设置库不一致，供 UI 提示）
       systemAutoLaunch: sys.enabled,
       devMode: sys.devMode
@@ -144,23 +169,25 @@ function registerTrayIpc() {
   ipcMain.handle('win:set-tray-settings', (_e, patch = {}) => {
     if (typeof patch.minimizeToTray === 'boolean') {
       settingsRepo.set('minimizeToTray', patch.minimizeToTray)
-      if (patch.minimizeToTray) initTrayIfEnabled()
-      else destroyTray()
+      if (patch.minimizeToTray) {
+        initTrayIfEnabled()
+      } else if (!startMinimizedEnabled()) {
+        // 关掉托盘模式：仅当「启动时最小化」也关着时才销毁托盘
+        //（否则下次最小化启动就没有唤回入口了）
+        destroyTray()
+        trayInstance = null
+      }
     }
     if (typeof patch.startMinimized === 'boolean') {
       settingsRepo.set('startMinimized', patch.startMinimized)
+      // 开了「启动时最小化」也要保证托盘存在（窗口藏起来后需要入口唤回）
+      if (patch.startMinimized) initTrayIfEnabled()
     }
     if (typeof patch.autoLaunch === 'boolean') {
       settingsRepo.set('autoLaunch', patch.autoLaunch)
-      const sm = (() => {
-        try {
-          const v = settingsRepo.get('startMinimized')
-          return v === undefined ? true : v === true
-        } catch { return true }
-      })()
-      applyAutoLaunch(patch.autoLaunch, sm)
+      applyAutoLaunch(patch.autoLaunch, startMinimizedEnabled())
     }
-    // 自启状态变化时，若已开启自启也需同步 startMinimized（参数变了）
+    // 「启动时最小化」变化时，若自启已开启需重写注册表参数（args 变了）
     if (typeof patch.startMinimized === 'boolean') {
       try {
         if (settingsRepo.get('autoLaunch') === true) {
@@ -173,6 +200,31 @@ function registerTrayIpc() {
 }
 
 /**
+ * 一次性迁移：`startMinimized` 语义变更（v0.3.5 → 当前）。
+ *
+ * 旧语义：「**自启时**最小化到托盘」，默认值 **true**（只在开机自启时生效）。
+ * 新语义：「**启动时**最小化到托盘」独立开关，默认值 **false**
+ *        （对齐 VRCX 的「以最小化的形式启动」）。
+ *
+ * 问题：旧版本从未写过这个键（只是 DEFAULTS 里给了 true），所以
+ * `settingsRepo.has('startMinimized')` 为 false 时说明是旧数据，
+ * 此时若沿用旧默认值 true，全新/升级用户双击后窗口直接消失，
+ * 会以为程序没启动。
+ *
+ * 处理：从未显式设置过 → 显式写入 false（新默认值）；
+ *       用户自己设过 → 保留其选择。
+ */
+function migrateStartMinimized() {
+  try {
+    if (settingsRepo.has('startMinimized')) return
+    settingsRepo.set('startMinimized', false)
+    console.log('[settings] startMinimized 迁移为新默认值 false（独立开关语义）')
+  } catch (e) {
+    console.error('[settings] startMinimized 迁移失败', e)
+  }
+}
+
+/**
  * 启动时把设置里的自启状态同步到系统（用户可能在别处改过注册表）。
  *
  * 开发模式也照常同步 —— 见 tray.js 的 applyAutoLaunch 注释：
@@ -182,14 +234,10 @@ function registerTrayIpc() {
 function syncAutoLaunchOnBoot() {
   try {
     const want = settingsRepo.get('autoLaunch') === true
-    const sm = (() => {
-      const v = settingsRepo.get('startMinimized')
-      return v === undefined ? true : v === true
-    })()
     const sys = getAutoLaunchState()
     if (want !== sys.enabled) {
       console.log(`[auto-launch] 系统状态(${sys.enabled})与设置(${want})不一致，同步为 ${want}`)
-      applyAutoLaunch(want, sm)
+      applyAutoLaunch(want, startMinimizedEnabled())
     }
   } catch (e) {
     console.error('[auto-launch] 启动同步失败', e)
@@ -242,11 +290,19 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     /**
-     * 开机自启 + 「启动时最小化」：不弹窗，直接进托盘。
-     * 场景：用户把应用设为开机自启并希望它安静驻留后台（随时可用但不打扰）。
+     * 最小化启动：不弹窗，直接进托盘。
+     *
+     * 触发条件（见 shouldStartMinimized）：
+     *   - 设置里开了「启动时最小化」→ 手动双击启动也生效
+     *   - 命令行带 `--start-minimized` → 开机自启项写入的参数
+     *
+     * 两者独立于「最小化到托盘」—— 那是控制点关闭按钮的行为，
+     * 语义不同（原实现错误地把两者绑在一起）。
      */
-    if (isStartMinimized() && trayEnabled()) {
-      console.log('[window] 自启最小化模式：窗口不显示，驻留托盘')
+    if (shouldStartMinimized()) {
+      console.log('[window] 最小化启动：窗口不显示，驻留托盘')
+      // 确保有托盘图标，否则用户没有入口唤回窗口
+      initTrayIfEnabled()
       return
     }
     mainWindow.show()
@@ -271,7 +327,16 @@ function createWindow() {
 
   // 兜底：若 ready-to-show 因渲染卡住/加载慢未触发，5s 后强制显示窗口并居中
   setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+    /**
+     * 超时兜底：ready-to-show 未触发时强制显示窗口（防白屏卡死无窗口可用）。
+     *
+     * ⚠️ 但**最小化启动时必须跳过** —— 否则用户选了「静默驻留托盘」，
+     * 5 秒后窗口自己弹出来，与设置相悖。
+     * 这种情况下托盘图标已建好，用户随时能唤回，不存在「无窗口可用」的问题。
+     */
+    if (shouldStartMinimized()) {
+      console.log('[window] 最小化启动模式，跳过超时强制显示')
+    } else if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
       mainWindow.center()
       mainWindow.show()
       console.log('[window] 超时兜底强制显示窗口')
@@ -379,7 +444,8 @@ async function bootstrap() {
   // 传入 ncm server：B 站字幕/歌词功能需要经私有通道搜网易云
   registerBiliIpc(() => server)
 
-  // 托盘 + 开机自启：先同步系统自启状态，再按设置决定是否建托盘
+  // 托盘 + 开机自启：先做设置迁移，再同步系统自启状态，最后按需建托盘
+  migrateStartMinimized()
   syncAutoLaunchOnBoot()
   registerTrayIpc()
   initTrayIfEnabled()

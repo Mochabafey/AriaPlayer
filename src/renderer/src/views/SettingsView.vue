@@ -199,21 +199,23 @@ async function restartServer() {
       </div>
       <div class="row">
         <div class="label">
-          <div>自启时最小化到托盘</div>
-          <div class="hint">开机自启时不弹出窗口，静默驻留托盘（需先开启开机自启）</div>
+          <div>以最小化的形式启动</div>
+          <div class="hint">
+            启动时不弹出窗口，直接驻留托盘（手动启动与开机自启都生效）。
+            托盘图标单击可唤回窗口
+          </div>
         </div>
         <div class="value">
           <button
             class="switch"
             :class="{ on: tray.startMinimized }"
-            :disabled="!tray.autoLaunch"
             @click="setTray({ startMinimized: !tray.startMinimized })"
           ></button>
         </div>
       </div>
       <div class="row">
         <div class="label">
-          <div>关闭时最小化到托盘</div>
+          <div>最小化到系统托盘</div>
           <div class="hint">点关闭按钮不退出程序，后台继续播放；从托盘菜单可真正退出</div>
         </div>
         <div class="value">
