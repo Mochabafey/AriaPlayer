@@ -2,38 +2,35 @@ name: Build
 
 # 触发方式
 #
-#   push 到 master/main   → 只验证编译（约 1-2 分钟），**不打包、不上传 artifact**
-#   push tag v*           → 完整打包三平台 + 创建 Release
-#   release: published    → 同上（网页 Release 页面创建时走这条）
-#   workflow_dispatch     → 手动触发
+#   push tag v*        → 完整打包三平台 + 创建 Release
+#   release: published → 同上（网页 Release 页面创建时走这条）
+#   workflow_dispatch  → 手动触发（Actions 页面 Run workflow）
 #
-# ## ⚠️ 为什么不再监听 `create`（实测踩过大坑）
+# ## ⚠️ 为什么不监听 push 到 master（实测踩过）
 #
-# 早期为了「网页单独打 tag 也能触发」加了 `create` 事件。但实测发现：
-# 创建 tag 会**同时触发 push 与 create 两个事件**，而 `concurrency` 的
-# group 带了 event_name（为了让两者不互相取消），于是**两个 run 都跑完整构建**。
+# 原先 push 到 master 会触发「只编译不打包」的验证。但私有仓库的
+# **Actions 存储免费额度只有 500 MB**，而本项目单次三平台产物约 1 GB ——
+# 历史上累计 51 个 artifact / 17.5 GB，直接把配额吃爆，导致
+# **所有 job 在 3 秒内失败（steps 为空，job 根本没启动）**。
 #
-# 叠加「推 master」那一次，**每次发版 = 3 次完整三平台构建**：
+# 叠加当时的重复触发问题（一次发版跑 3 次构建，见下），消耗更快。
 #
-#     git push origin master    → push(master)   → 构建 ①
-#     git push origin v0.3.7    → push(v0.3.7)   → 构建 ②
-#                               → create(v0.3.7) → 构建 ③
+# 现在改为**只对 tag 与手动触发响应**：
+#   - 日常提交不消耗任何 Actions 额度
+#   - 需要构建时：打 tag（走 Release）或 Actions 页面手动触发
+#   - 本地打包仍是首选（见 README，本机有完整依赖、比 CI 可靠）
 #
-# 每次产出 3 个平台包（约 1 GB），3 次就是 3 GB。实测累计 17.5 GB / 51 个
-# artifact，直接把 Actions 存储配额吃满。
+# ## 为什么也不监听 create
 #
-# 现在改为**只监听 push**：
-#   - 命令行推 tag        → push 事件（覆盖）
-#   - 网页建 tag          → 实测**同样会触发 push 事件**（用 git/refs API 验证过）
-#   - 网页建 Release      → release 事件（保留，因为这条确实不触发 push）
+# 早期为了「网页单独打 tag 也能触发」加了 `create`。但实测：
+# 创建 tag 会**同时触发 push 与 create**，而 concurrency 的 group 带了
+# event_name（避免互相取消），于是两个 run 都跑完整构建。
+# 叠加「推 master」那次，**每次发版 = 3 次完整构建 = 3 GB**。
 #
-# 即 push 已经覆盖了「网页建 tag」这个场景，create 是冗余的。
+# 而实测确认「网页建 tag 同样会触发 push 事件」，所以 create 完全冗余。
 on:
   push:
     tags: ['v*']
-    branches: [master, main]
-  pull_request:
-    branches: [master, main]
   # 网页创建 Release（Draft a new release）时触发。
   # 这条**不会**触发 push 事件，故必须保留。
   release:
@@ -69,15 +66,14 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-    # 「是否需要打包」的统一判断，供下面各 step 复用。
+    # 现在**只有三种发布入口**会触发本 workflow，所以这里总是打包。
+    #（不再有「push 到 master 只编译」的情况 —— 那种触发已移除，
+    #  因为它会消耗 Actions 额度而收益很低，本地编译更快。）
     #
-    # 三个条件对应三种发布入口：
-    #   1. tag 推送/网页建 tag → ref 形如 refs/tags/v0.3.0
-    #      （两种操作都会触发 push 事件，已实测）
-    #   2. 网页创建 Release    → release 事件（ref 同样是 refs/tags/...）
-    #   3. Actions 页面手动触发 → workflow_dispatch
-    #
-    # 普通 push / PR 不满足任一条件 → 只编译不打包（省 CI 额度与存储）
+    # 三种入口：
+    #   1. tag 推送 / 网页建 tag → ref 形如 refs/tags/v0.3.0（都走 push 事件）
+    #   2. 网页创建 Release      → release 事件
+    #   3. Actions 页面手动触发   → workflow_dispatch
     env:
       SHOULD_PACKAGE: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
     strategy:
