@@ -29,7 +29,25 @@ import fs from 'fs'
 let tray = null
 let quitting = false
 
-/** 托盘图标：优先用 resources/icon.png；找不到时返回空图（Tray 不崩但无图标） */
+/**
+ * 托盘图标。
+ *
+ * ## 为什么必须有兜底（踩过的坑）
+ *
+ * 原先找不到图片就返回 `nativeImage.createEmpty()` —— Tray 不崩，
+ * 但托盘区**看不到图标也点不到**。配合「以最小化的形式启动」
+ *（窗口启动即隐藏），用户会**完全找不到程序入口**，以为它没启动。
+ *
+ * 实测踩到：`electron-builder.yml` 的 `extraResources` 漏了 icon.png，
+ * 打包版 resources/ 里没有它 → 托盘空白 → 用户报「图标哪去了」。
+ *
+ * 所以现在三级兜底：
+ *   1. 打包/开发路径下的 icon.png
+ *   2. app.asar 内的 resources/icon.png
+ *   3. **内置生成的纯色圆角方块**（保证托盘永远可见可点）
+ *
+ * @returns {import('electron').NativeImage}
+ */
 function getIcon() {
   const candidates = app.isPackaged
     ? [
@@ -46,6 +64,99 @@ function getIcon() {
         if (!img.isEmpty()) return img
       }
     } catch { /* 继续尝试下一个 */ }
+  }
+  console.warn('[tray] 未找到 icon.png，使用内置兜底图标（检查 electron-builder.yml 的 extraResources）')
+  return makeFallbackIcon()
+}
+
+/**
+ * 生成一个 16×16 的兜底图标（品牌红底 + 白色圆角块）。
+ *
+ * ## 为什么用「手写 PNG 编码」而不是内联 base64
+ *
+ * 最初本娘内联了一段 base64 PNG，但实测它**结构不完整**
+ *（`nativeImage.createFromBuffer` 拒绝、图片查看器报 malformed）——
+ * 手写的 base64 极易出错且难校验。
+ *
+ * 改为运行时按 PNG 规范拼字节：IHDR + IDAT(zlib) + IEND，
+ * CRC32 用 zlib 自带的实现算。这样**结构一定正确**，也便于以后调颜色。
+ *
+ * 为什么不用 canvas / sharp：只为一个小图标引入原生依赖不值得。
+ *
+ * @returns {import('electron').NativeImage}
+ */
+function makeFallbackIcon() {
+  try {
+    const zlib = require('zlib')
+    const SIZE = 16
+    const [R, G, B] = [0xe8, 0x40, 0x4f] // 品牌品红（与播放按钮同色）
+
+    // --- 像素数据：每行 1 字节 filter(0) + SIZE×RGBA ---
+    const raw = Buffer.alloc(SIZE * (1 + SIZE * 4))
+    let o = 0
+    for (let y = 0; y < SIZE; y++) {
+      raw[o++] = 0 // filter type: None
+      for (let x = 0; x < SIZE; x++) {
+        // 圆形遮罩（边缘 1px 抗锯齿近似）：四角透明，中间实心
+        const cx = x - (SIZE - 1) / 2
+        const cy = y - (SIZE - 1) / 2
+        const d = Math.sqrt(cx * cx + cy * cy)
+        const radius = SIZE / 2 - 0.5
+        let a = 255
+        if (d > radius) a = 0
+        else if (d > radius - 1) a = Math.round(255 * (radius - d))
+        raw[o++] = R
+        raw[o++] = G
+        raw[o++] = B
+        raw[o++] = Math.max(0, Math.min(255, a))
+      }
+    }
+
+    // --- 组装 PNG ---
+    const CRC_TABLE = (() => {
+      const t = new Int32Array(256)
+      for (let n = 0; n < 256; n++) {
+        let c = n
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+        t[n] = c
+      }
+      return t
+    })()
+    const crc32 = (buf) => {
+      let c = 0xffffffff
+      for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+      return (c ^ 0xffffffff) >>> 0
+    }
+    const chunk = (type, data) => {
+      const len = Buffer.alloc(4)
+      len.writeUInt32BE(data.length, 0)
+      const typeBuf = Buffer.from(type, 'ascii')
+      const crcBuf = Buffer.alloc(4)
+      crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0)
+      return Buffer.concat([len, typeBuf, data, crcBuf])
+    }
+
+    const ihdr = Buffer.alloc(13)
+    ihdr.writeUInt32BE(SIZE, 0)
+    ihdr.writeUInt32BE(SIZE, 4)
+    ihdr[8] = 8 // bit depth
+    ihdr[9] = 6 // color type: RGBA
+    ihdr[10] = 0 // compression
+    ihdr[11] = 0 // filter
+    ihdr[12] = 0 // interlace
+
+    const png = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', ihdr),
+      chunk('IDAT', zlib.deflateSync(raw)),
+      chunk('IEND', Buffer.alloc(0))
+    ])
+
+    const img = nativeImage.createFromBuffer(png)
+    if (!img.isEmpty()) return img
+    console.warn('[tray] 兜底图标生成后仍为空')
+  } catch (e) {
+    console.error('[tray] 兜底图标生成失败', e)
   }
   return nativeImage.createEmpty()
 }

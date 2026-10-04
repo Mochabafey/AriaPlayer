@@ -34,6 +34,12 @@ extraResources:
   # ffmpeg 二进制（scripts/fetch-ffmpeg.mjs 下载；未下载时打包需先 npm run fetch:ffmpeg）
   - from: resources/ffmpeg
     to: ffmpeg
+  # 应用图标：**托盘图标运行时需要**（src/main/tray.js 从 process.resourcesPath 读它）。
+  # buildResources 里的 icon.png 只用于生成 exe 图标，**不会**进 resources/ ——
+  # 缺了它托盘会拿到空 nativeImage，表现为「窗口藏进托盘后找不到入口」
+  #（用户以为程序没启动）。
+  - from: resources/icon.png
+    to: icon.png
 
 asar: true
 
