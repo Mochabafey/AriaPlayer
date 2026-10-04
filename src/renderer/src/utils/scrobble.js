@@ -67,6 +67,18 @@ const MIN_PLAY_SEC = 30
 const HALF_RATIO = 0.5
 /** 单次上报的时长上限（秒）：超过一首歌的长度没有意义，防止异常值 */
 const MAX_REPORT_SEC = 3600
+/**
+ * 「确实听完了」的判定容差。
+ *
+ * `ended` 事件触发时，只有实际累计播放时长 ≥ 曲长 × 该比例，才认为真的听完，
+ * 按整曲时长上报；否则按真实播放时长报。
+ *
+ * 取 0.9 的理由：
+ *   - `listenedSec` 按墙上时间累加，遇卡顿/暂停会略小于曲长（少几秒），
+ *     需要容差才不会把听完的歌少报
+ *   - 又要挡住「只听一小段就 ended」的虚增（实测踩过：听 15 秒报 210 秒）
+ */
+const FINISH_TOLERANCE = 0.9
 
 /** 本次播放是否已达上报门槛（达门槛后不再变化） */
 let qualified = false
@@ -111,14 +123,24 @@ export function listenedSeconds() {
 /**
  * 向网易云上报**一次播放片段**（双接口）。
  *
- * 官方语义（见文件头注释）：一次播放 = 一条日志，`time` 是该次真实播放秒数。
- * 所以本函数在**每次播放结束时**（切歌 / 播完）调用一次，不周期调用。
+ * ## ⚠️ 两个接口都会计入听歌时长 —— 只让一个带 time（实测踩过）
  *
- * 两个接口都发：
- *   - `scrobble`    → 写「播放记录」（weblog: startplay + play）
- *   - `scrobble_v1` → 写「听歌时长」（NCBL clientlog: PLV + PLD）
+ * 服务端 `server/module/scrobble.js` 的 `play` 日志：
  *
- * 两者独立发起，任一成功即视为成功（避免单边失败反复重试导致重复计入）。
+ *     { action: 'play', json: { ..., time: query.time, ... } }
+ *
+ * 即旧版 `scrobble` 接口**也把 time 写进日志**。而 `scrobble_v1` 的 PLD
+ * 同样带 time。若两边都传，服务端很可能**双重计入时长**。
+ *
+ * 实测症状：用户用秒表计时 10 分钟，网易云「听歌时长」涨了 36 分钟，
+ * 而歌曲数只增加 3 首（约 10 分钟的量）—— 涨幅是实际的 3 倍以上。
+ *
+ * 现在改为：
+ *   - `scrobble_v1`  → 带 time（**唯一**负责累计时长的接口）
+ *   - `scrobble`     → **不带 time**（只负责把歌写进「最近播放」）
+ *
+ * `scrobble` 不传 time 时，服务端 `query.time` 为 undefined，
+ * JSON.stringify 会把它丢掉，日志里就没有 time 字段。
  *
  * @param {object} song  歌曲对象
  * @param {number} sec   本次片段实际播放时长（秒）
@@ -126,6 +148,7 @@ export function listenedSeconds() {
  */
 async function reportToNetease(song, sec, total) {
   const results = await Promise.allSettled([
+    // 唯一负责「听歌时长」的接口
     api('scrobble_v1', {
       id: song.id,
       sourceid: song.id,
@@ -135,10 +158,10 @@ async function reportToNetease(song, sec, total) {
       artist: song.artist || '',
       source: 'list'
     }),
+    // 只负责写「最近播放」，**不传 time**（避免与上面双重计入）
     api('scrobble', {
       id: song.id,
       sourceid: song.id,
-      time: sec,
       source: 'list'
     })
   ])
@@ -186,12 +209,26 @@ export function maybeScrobble(song, position, duration) {
  * 调用时机：`player.js` 的 startCurrent（切歌）与 ended（播完）里，
  * **在 resetScrobble() 之前**调用。
  *
+ * ## ⚠️ 播完时不能无条件报整曲时长（实测踩过）
+ *
+ * 原实现：`finished === true` 就直接取 `total`（整曲时长）。
+ * 但 `ended` 事件**不一定意味着真的听完了** —— 流被截断、seek 到结尾、
+ * 音频元数据时长有误，都会触发 `ended`。
+ *
+ * 实测：只听 15 秒就触发 ended → 上报 210 秒（**虚增 14 倍**）。
+ *
+ * 现在加**完整度校验**：只有实际播放时长达到曲长的 `FINISH_TOLERANCE`
+ * 才按整曲上报，否则按真实播放时长报。
+ *
+ * 为什么保留「报整曲」这个分支：`listenedSec` 按墙上时间累加，
+ * 遇卡顿/暂停会略小于曲长（例如 4:20 的歌累计 4:17），
+ * 不加容差会把听完的歌少报几秒。容差取 90% 既能吸收这种误差，
+ * 又能挡住「只听一小段就 ended」的虚增。
+ *
  * @param {object} song 当前歌曲
  * @param {number} position 当前播放位置（秒）
  * @param {number} duration 总时长（秒）
- * @param {boolean} finished 是否「整曲播完」。播完时以 duration 为准上报 ——
- *   listenedSec 按墙上时间累加，遇卡顿/暂停会略小于曲长，
- *   照它上报会少几秒（例如 4:20 的歌报成 4:17）。
+ * @param {boolean} finished 是否由 `ended` 事件触发
  * @returns {Promise<boolean>} 是否发起了上报
  */
 export async function flushScrobble(song, position, duration, finished = false) {
@@ -199,14 +236,18 @@ export async function flushScrobble(song, position, duration, finished = false) 
   if (!/^\d+$/.test(String(song.id ?? ''))) return false
 
   const total = duration || song.duration || 0
+  /** 实际累计播放时长（墙上时间，暂停/卡顿不计） */
+  const actualPlayed = listenedSec
+
   /**
    * 上报时长：
-   *   播完 → 取整曲时长（真实听完）
-   *   切歌 → 取 min(累计播放, 当前播放位置)，不虚报未听到的部分
+   *   ended 且确实听满（≥90% 曲长）→ 取整曲时长（吸收卡顿导致的少算）
+   *   其余情况 → 取 min(累计播放, 当前播放位置)，不虚报
    */
-  const played = finished && total > 0
+  const trulyFinished = finished && total > 0 && actualPlayed >= total * FINISH_TOLERANCE
+  const played = trulyFinished
     ? total
-    : Math.max(0, Math.min(listenedSec, position || 0))
+    : Math.max(0, Math.min(actualPlayed, position || 0))
 
   // 未达门槛（听太短）→ 不上报。与官方「听一半也计入」一致：
   // 门槛只有 30s 或过半，正常收听都会满足。
