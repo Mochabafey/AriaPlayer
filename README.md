@@ -424,6 +424,7 @@ bs-blur         1   歌词模糊底
 | 第一轮 | 2.08s | 两服务并行启动 / 关闭 `npm info` 版本检查 / 惰性模块加载（jsdom 占 812ms） |
 | 第二轮 | **0.7s** | QQ 音乐改**懒启动**（见下） |
 | 第三轮 | 0.7s | QQ 音乐 **esbuild 预编译**（首次用 QQ 音源 4.9s → 0.33s） |
+| 第四轮 | 0.7s | 就绪判定改**事件驱动**（服务就绪提前 ~200ms） |
 
 **QQ 音乐**是两轮优化的主角。实测各服务冷启动：
 
@@ -455,15 +456,67 @@ QQ 先启动、网易云后启动:   6537ms   ← 慢 10 倍（抢 CPU/磁盘）
    - `vendor-qqmusic.mjs` 末尾自动预编译；CI 有独立步骤校验产物存在，
      避免静默降级到慢速路径
 
+3. **就绪判定事件驱动** —— 子进程在 `listen` 回调里打 `###NTR_READY###` 标记，
+   主进程从 stdout 识别即置 ready，取代原先「每 300ms 连一次 socket 探测」：
+
+   ```
+   轮询: 平均 622ms（首次探测在 300ms 处发起，信号 ~420ms 到达时正好错过窗口）
+   事件: 平均 428ms
+   ```
+
+   保留 500ms 兜底轮询（纯靠事件会在信号丢失时卡死启动）。
+   用 stdout 而非 `process.send`：spawn 的 stdio 不含 `'ipc'` 时后者是 undefined。
+
 启动竞态兜底：`waitUntilReady(12000)` —— 避免「启动瞬间按播放」报 `NCM_SERVER_NOT_READY`。
 
 ### 托盘与开机自启
 
-- **开机自启**：`app.setLoginItemSettings`（不自己写注册表）。可配「自启时最小化到托盘」。
-  **开发模式下不写系统启动项** —— 否则会留下带 electron.exe + 项目路径的僵尸条目。
-- **托盘后台**：关闭窗口可选「最小化到托盘继续播放」。
-  关键点：`close` 事件里必须用 `isQuitting()` 区分「用户点关闭」与「真退出」，
-  否则会退不掉；`window-all-closed` 在托盘模式下也不能退出。
+三个**互相独立**的开关（布局参照 VRCX）：
+
+| 开关 | 控制什么 | 默认 |
+|---|---|---|
+| 开机自启动 | 登录系统后自动启动 | 关 |
+| **以最小化的形式启动** | **启动那一刻**窗口是否显示（手动启动也生效） | 关 |
+| 最小化到系统托盘 | **点关闭按钮时**是否驻留后台 | 关 |
+
+后两者语义不同，**不可互相依赖** —— 早期实现错误地把「最小化启动」写成
+`isStartMinimized() && trayEnabled()`，导致只开前者时完全不生效且看不出原因。
+
+**实现要点**：
+
+- **托盘创建时机**：托盘模式开启 **或** 本次要最小化启动。
+  否则窗口藏起来后用户**没有任何入口唤回**。
+- **跳过超时兜底**：原有「5 秒后强制显示窗口」会破坏最小化启动
+  （用户选了静默驻留，5 秒后窗口自己弹出来）。
+- **`close` 事件**必须用 `isQuitting()` 区分「用户点关闭」与「真退出」，否则退不掉；
+  `window-all-closed` 在托盘模式下也不能退出。
+
+#### 开机自启的两个坑（都实测踩过）
+
+**① `getLoginItemSettings()` 必须传与写入时相同的 `args`**
+
+官方文档：
+
+> If you provided `path` and `args` options to `app.setLoginItemSettings`,
+> then you need to pass the same arguments here for `openAtLogin` to be set correctly.
+
+本项目写入时带 `args: ['--start-minimized']`，读取时若用默认（空数组）就匹配不上：
+
+    getLoginItemSettings({args:['--start-minimized']}).openAtLogin  → true   ✅
+    getLoginItemSettings().openAtLogin                             → false  ❌
+
+→ 读取时把两种 args 组合都试一遍。
+
+**② 注册表兜底必须校验「项属于本进程」**
+
+`app.getName()` 在开发模式（`electron .`）下取的是 package.json 的
+**productName**，不是 `"Electron"` —— 所以**开发版与安装版共用同一个注册表项名**。
+
+若兜底只判断「项是否存在」，开发版会**把安装版的自启项误认成自己的**
+（表现为「关掉自启仍显示已开启」）。必须同时校验项里的 exe 路径等于
+本进程的 `process.execPath`。
+
+> 排查用环境变量：`NTR_DEBUG_AUTOLAUNCH=1` 会打印命中了哪一级判据。
 
 > **踩坑**：新增的 IPC 通道必须同时加进 `src/preload/index.js` 的
 > `INVOKE_ALLOWLIST` / `EVENT_ALLOWLIST`，否则调用被拒且**返回 undefined
