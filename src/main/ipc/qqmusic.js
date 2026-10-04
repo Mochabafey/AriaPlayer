@@ -42,17 +42,48 @@ function socketRequest(srv, urlPath) {
 
 export function registerQqMusicIpc(getServer) {
   /**
-   * 取就绪的 QQ 音乐服务实例。
-   * 启动窗口期兜底：窗口 ready-to-show 不等子服务就绪就显示出来，用户立刻
-   * 点 QQ 音乐的歌时 status 还是 starting。此处短暂等待而非立刻抛错，否则
-   * 前端会把 NOT_READY 当成「这首歌放不了」弹给用户
-   *（表现为"启动时按播放报错一下，再按一次就好了"）。
+   * 取就绪的 QQ 音乐服务实例（**首次调用时懒启动**）。
+   *
+   * ## 为什么要懒启动
+   *
+   * QQ 音乐服务用 ts-node 实时编译 TypeScript，实测冷启动 **4.9 秒**
+   * （网易云服务只要 0.6 秒）。而它是**可选音源** —— 大部分用户开机后
+   * 直接用网易云，根本用不到 QQ 音乐。
+   *
+   * 原先在 bootstrap 里与网易云并行启动，虽然并行不叠加耗时，但：
+   *   1. 抢占 CPU/磁盘（开机时其他自启程序也在抢）→ 拖慢网易云的就绪
+   *   2. 白占一个 215MB 的 Electron 子进程
+   *
+   * 改为「首次真正用到 QQ 音源时才启动」，首屏不再受它影响。
+   *
+   * ## 为什么放在 IPC 层
+   *
+   * 所有 QQ 音乐功能（搜索/取流/歌词/登录）都经这里的 `requireReadyServer()`
+   * 进入，是唯一的收口点。启动窗口期本来就有「等就绪」的兜底逻辑
+   *（见下方 waitUntilReady），懒启动正好复用同一段等待。
    */
+  let qqStartPromise = null
   async function requireReadyServer() {
     const srv = getServer()
     if (!srv) throw new Error('QQMUSIC_SERVER_NOT_READY')
+
+    // 已就绪：直接返回（绝大多数情况，零开销）
+    if (srv.status === 'ready') return srv
+
+    // 首次使用：触发启动（并发调用共享同一个 Promise，避免重复 start）
+    if (srv.status === 'idle' || srv.status === 'missing') {
+      if (!qqStartPromise) {
+        console.log('[qqmusic] 首次使用，懒启动 QQ 音乐服务…')
+        qqStartPromise = srv.start().finally(() => {
+          // 启动结束（成功或失败）后清空，失败时下次调用可重试
+          qqStartPromise = null
+        })
+      }
+      await qqStartPromise
+    }
+
     if (srv.status !== 'ready') {
-      const ready = await srv.waitUntilReady(12000)
+      const ready = await srv.waitUntilReady(20000)
       if (!ready) throw new Error('QQMUSIC_SERVER_NOT_READY')
     }
     return srv

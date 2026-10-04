@@ -54,7 +54,14 @@ export const useSettingsStore = defineStore('settings', {
       showTranslation: true,
       audioCacheLimitMB: 2048,
       lastConvertPath: '',
-      musicSource: 'netease' // 默认音源: 'netease' | 'qq'
+      musicSource: 'netease', // 默认音源: 'netease' | 'qq'
+      /**
+       * 启动时预加载 QQ 音乐服务。
+       * 默认 false —— QQ 音乐用 ts-node 实时编译，冷启动约 4.9 秒（网易云仅 0.6 秒），
+       * 而它是可选音源。关闭时改为「首次使用才启动」，首屏不受它影响。
+       * 常用 QQ 音源的用户可开启。
+       */
+      qqPreload: false
     },
     loaded: false
   }),

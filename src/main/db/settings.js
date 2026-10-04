@@ -7,7 +7,15 @@ const DEFAULTS = {
   enableUnblock: true,
   enableFlac: true,
   volume: 0.8,
-  playMode: 'list'
+  playMode: 'list',
+  // 启动时预加载 QQ 音乐服务（默认关闭：它冷启动约 4.9s，改为首次使用才拉起）
+  qqPreload: false,
+  // 关闭窗口时最小化到托盘而非退出
+  minimizeToTray: false,
+  // 开机自启
+  autoLaunch: false,
+  // 开机自启时最小化到托盘
+  startMinimized: true
 }
 
 export const settingsRepo = {

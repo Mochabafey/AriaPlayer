@@ -168,12 +168,32 @@ export const ncm = {
   // 系统
   openFolder: (p) => bridge.invoke('ncm:open-folder', p),
   saveDialog: (opts) => bridge.invoke('ncm:save-dialog', opts),
-
   // NCM 转换
   convertPickFile: () => bridge.invoke('ncm:convert-pick-file'),
   convertPickDir: () => bridge.invoke('ncm:convert-pick-dir'),
   convertBatch: (opts) => bridge.invoke('ncm:convert-batch', opts),
   onConvertProgress: (cb) => bridge.on('ncm:convert-progress', cb)
+}
+
+/**
+ * 窗口 / 托盘 / 开机自启。
+ *
+ * 与 ncm 分开：这些是「应用外壳」能力（窗口行为、系统集成），
+ * 不属于音乐服务；且主进程侧注册在 index.js 而非 ipc/ 下。
+ */
+export const win = {
+  minimize: () => bridge.invoke('win:minimize'),
+  toggleMaximize: () => bridge.invoke('win:toggle-maximize'),
+  close: () => bridge.invoke('win:close'),
+  isMaximized: () => bridge.invoke('win:is-maximized'),
+  setFullscreen: () => bridge.invoke('win:set-fullscreen'),
+  isFullscreen: () => bridge.invoke('win:is-fullscreen'),
+  /** 同步播放态给托盘菜单（显示「播放/暂停」） */
+  setPlaying: (playing) => bridge.invoke('win:set-playing', playing),
+  /** 读取托盘/自启设置（含系统实际状态） */
+  getTraySettings: () => bridge.invoke('win:get-tray-settings'),
+  /** 修改托盘/自启设置（同时同步系统） */
+  setTraySettings: (patch) => bridge.invoke('win:set-tray-settings', patch)
 }
 
 /** 网易云链接 → {type, id} */

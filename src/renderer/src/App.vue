@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PlayerBar from './components/PlayerBar.vue'
 import LyricPanel from './components/LyricPanel.vue'
@@ -124,11 +124,20 @@ onMounted(async () => {
   // 窗口最大化状态（初始查询 + 订阅变化）
   window.ncm.invoke('win:is-maximized').then((m) => (winMaximized.value = !!m))
   offMaxListener = window.ncm.on('win:maximized', (m) => (winMaximized.value = !!m))
+  // 托盘菜单「播放/暂停」→ 执行切换
+  offTrayPlay = window.ncm.on('player:toggle-play', () => player.toggle())
+  // 播放态同步给托盘（菜单文案显示「播放」还是「暂停」）
+  watch(
+    () => player.playing,
+    (p) => { window.ncm.invoke('win:set-playing', !!p).catch(() => {}) },
+    { immediate: true }
+  )
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
   offMaxListener?.()
+  offTrayPlay?.()
 })
 
 function onSidebarSearch() {
@@ -150,6 +159,7 @@ const win = {
   close: () => window.ncm.invoke('win:close')
 }
 let offMaxListener = null
+let offTrayPlay = null
 </script>
 
 <template>

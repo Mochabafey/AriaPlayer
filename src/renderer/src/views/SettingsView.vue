@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useSettingsStore } from '../stores/settings'
-import { ncm, qqmusic } from '../api'
+import { ncm, qqmusic, win } from '../api'
 import { toast } from '../utils/toast'
 
 // QQ 音乐 Cookie（设置页配置，主进程存 SQLite + 注入 qqmusic 子进程）
@@ -29,9 +29,50 @@ const restarting = ref(false)
 const cache = ref({ count: 0, bytes: 0, limitMB: 2048 })
 const clearing = ref(false)
 
+/**
+ * 托盘 / 开机自启状态。
+ *
+ * 为什么单独维护而不放 settings store：这几项需要**双向同步系统状态**
+ *（自启写注册表、托盘需主进程建/销毁），不是纯前端偏好。
+ * 统一走 win:get/set-tray-settings IPC。
+ */
+const tray = ref({
+  minimizeToTray: false,
+  autoLaunch: false,
+  startMinimized: true,
+  systemAutoLaunch: false,
+  devMode: false
+})
+
+async function loadTray() {
+  try {
+    tray.value = await win.getTraySettings()
+  } catch { /* 忽略：主进程未就绪时用默认值 */ }
+}
+
+async function setTray(patch) {
+  // 乐观更新（开关手感跟手），失败再回滚
+  const prev = { ...tray.value }
+  tray.value = { ...tray.value, ...patch }
+  try {
+    await win.setTraySettings(patch)
+    // 重新读回系统实际状态（自启是否真的写成功）
+    await loadTray()
+    const label =
+      patch.autoLaunch !== undefined ? (patch.autoLaunch ? '已开启开机自启' : '已关闭开机自启')
+      : patch.minimizeToTray !== undefined ? (patch.minimizeToTray ? '关闭窗口将最小化到托盘' : '关闭窗口将直接退出')
+      : '设置已保存'
+    toast(label)
+  } catch (e) {
+    tray.value = prev
+    toast('设置失败：' + (e.message || '未知错误'), 'error')
+  }
+}
+
 onMounted(() => {
   settings.load()
   refreshCache()
+  loadTray()
 })
 
 async function refreshCache() {
@@ -133,6 +174,70 @@ async function restartServer() {
           <button class="btn small ghost" :disabled="clearing || !cache.count" @click="clearCache">
             {{ clearing ? '清理中…' : '清空缓存' }}
           </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>启动与后台</h2>
+      <div class="row">
+        <div class="label">
+          <div>开机自启动</div>
+          <div class="hint">
+            登录系统后自动启动咏叹调
+            <span v-if="tray.devMode" class="warn">（开发模式下不写入系统启动项）</span>
+            <span v-else-if="tray.autoLaunch !== tray.systemAutoLaunch" class="warn">（与系统实际状态不一致，重新开关一次可同步）</span>
+          </div>
+        </div>
+        <div class="value">
+          <button
+            class="switch"
+            :class="{ on: tray.autoLaunch }"
+            @click="setTray({ autoLaunch: !tray.autoLaunch })"
+          ></button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <div>自启时最小化到托盘</div>
+          <div class="hint">开机自启时不弹出窗口，静默驻留托盘（需先开启开机自启）</div>
+        </div>
+        <div class="value">
+          <button
+            class="switch"
+            :class="{ on: tray.startMinimized }"
+            :disabled="!tray.autoLaunch"
+            @click="setTray({ startMinimized: !tray.startMinimized })"
+          ></button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <div>关闭时最小化到托盘</div>
+          <div class="hint">点关闭按钮不退出程序，后台继续播放；从托盘菜单可真正退出</div>
+        </div>
+        <div class="value">
+          <button
+            class="switch"
+            :class="{ on: tray.minimizeToTray }"
+            @click="setTray({ minimizeToTray: !tray.minimizeToTray })"
+          ></button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <div>启动时预加载 QQ 音乐</div>
+          <div class="hint">
+            默认关闭：QQ 音乐服务首次使用才启动（它编译较慢，约 4.9 秒）。
+            若你常用 QQ 音源，可开启提前加载
+          </div>
+        </div>
+        <div class="value">
+          <button
+            class="switch"
+            :class="{ on: settings.settings.qqPreload }"
+            @click="settings.set('qqPreload', !settings.settings.qqPreload)"
+          ></button>
         </div>
       </div>
     </section>
@@ -251,6 +356,10 @@ async function restartServer() {
   letter-spacing: -0.5px;
   margin-bottom: 22px;
 }
+/* 提示文案里的警告态（如「开发模式下不写入系统启动项」） */
+.warn {
+  color: #e8a33d;
+}
 .sec {
   max-width: 640px;
   margin-bottom: 32px;
@@ -297,6 +406,7 @@ async function restartServer() {
   text-overflow: ellipsis;
 }
 .switch {
+
   width: 46px;
   height: 26px;
   border-radius: 13px;

@@ -20,7 +20,19 @@ export class QqMusicServer {
   constructor() {
     this.child = null
     this.socketPath = null
-    this.status = 'down' // down | starting | ready | missing
+    /**
+     * 生命周期状态：
+     *   idle     —— 尚未启动（**懒启动的初始态**，见 ipc/qqmusic.js）
+     *   starting —— 正在启动
+     *   ready    —— 就绪可用
+     *   down     —— 启动失败 / 已退出
+     *   missing  —— 服务文件缺失（永久态）
+     *
+     * 为什么初始是 idle 而不是 down：QQ 音乐改为懒启动后，「还没启动」
+     * 是**正常状态**而非故障。用 down 会让前端把它显示成「服务未就绪」的
+     * 错误态（用户看到红字会以为坏了）。
+     */
+    this.status = 'idle'
     this.restarts = 0
     this.stopping = false
     this.onStatusChange = null

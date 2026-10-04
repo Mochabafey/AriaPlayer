@@ -12,8 +12,19 @@ import { registerNcmConvertIpc } from './ipc/ncmConvert.js'
 import { registerQqMusicIpc } from './ipc/qqmusic.js'
 import { registerBiliIpc } from './ipc/bilibili.js'
 import { initDb, closeDb } from './db/index.js'
+import { settingsRepo } from './db/settings.js'
 import { initAudioCache } from './audioCache.js'
 import { initBiliCache } from './biliStream.js'
+import {
+  createTray,
+  destroyTray,
+  showWindow,
+  markQuitting,
+  isQuitting,
+  applyAutoLaunch,
+  getAutoLaunchState,
+  isStartMinimized
+} from './tray.js'
 
 // 自定义协议需在 app ready 前注册特权。
 // standard+secure：让 Chromium 按标准协议（类似 http）处理 ncm-audio://，
@@ -66,6 +77,120 @@ const server = new NcmServer()
 const qqMusicServer = new QqMusicServer()
 let downloadManager = null
 
+/** 托盘模式是否开启（关闭窗口时驻留后台而非退出） */
+function trayEnabled() {
+  try { return settingsRepo.get('minimizeToTray') === true } catch { return false }
+}
+
+/**
+ * 初始化托盘（若设置开启）。
+ *
+ * 托盘在应用启动时就创建（而非等用户点关闭时）—— 这样用户随时能看到
+ * 托盘图标；且窗口 close 事件里要用它判断是否拦截。
+ */
+function initTrayIfEnabled() {
+  if (!trayEnabled()) return
+  createTray({
+    getWindow: () => mainWindow,
+    isPlaying: () => {
+      // 渲染层维护播放态；主进程通过 audio 元素的 playing 状态判断不便，
+      // 这里用一个由渲染层同步过来的标志（见 win:set-playing IPC）
+      return playingFlag
+    },
+    onTogglePlay: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('player:toggle-play')
+      }
+    },
+    onQuit: () => {
+      markQuitting()
+      app.quit()
+    }
+  })
+}
+
+/** 播放态标志（渲染层经 IPC 同步，供托盘菜单文案使用） */
+let playingFlag = false
+
+/** 应用托盘相关 IPC 与设置应用 */
+function registerTrayIpc() {
+  // 渲染层同步播放态 → 托盘菜单显示「播放/暂停」
+  ipcMain.handle('win:set-playing', (_e, playing) => {
+    playingFlag = !!playing
+    return true
+  })
+
+  // 查询/设置托盘模式
+  ipcMain.handle('win:get-tray-settings', () => {
+    const sys = getAutoLaunchState()
+    return {
+      minimizeToTray: trayEnabled(),
+      autoLaunch: (() => {
+        try { return settingsRepo.get('autoLaunch') === true } catch { return false }
+      })(),
+      startMinimized: (() => {
+        try {
+          const v = settingsRepo.get('startMinimized')
+          return v === undefined ? true : v === true
+        } catch { return true }
+      })(),
+      // 系统实际状态（可能与设置库不一致，供 UI 提示）
+      systemAutoLaunch: sys.enabled,
+      devMode: sys.devMode
+    }
+  })
+
+  // 修改设置（同时同步到系统）
+  ipcMain.handle('win:set-tray-settings', (_e, patch = {}) => {
+    if (typeof patch.minimizeToTray === 'boolean') {
+      settingsRepo.set('minimizeToTray', patch.minimizeToTray)
+      if (patch.minimizeToTray) initTrayIfEnabled()
+      else destroyTray()
+    }
+    if (typeof patch.startMinimized === 'boolean') {
+      settingsRepo.set('startMinimized', patch.startMinimized)
+    }
+    if (typeof patch.autoLaunch === 'boolean') {
+      settingsRepo.set('autoLaunch', patch.autoLaunch)
+      const sm = (() => {
+        try {
+          const v = settingsRepo.get('startMinimized')
+          return v === undefined ? true : v === true
+        } catch { return true }
+      })()
+      applyAutoLaunch(patch.autoLaunch, sm)
+    }
+    // 自启状态变化时，若已开启自启也需同步 startMinimized（参数变了）
+    if (typeof patch.startMinimized === 'boolean') {
+      try {
+        if (settingsRepo.get('autoLaunch') === true) {
+          applyAutoLaunch(true, patch.startMinimized)
+        }
+      } catch { /* ignore */ }
+    }
+    return { ok: true }
+  })
+}
+
+/** 启动时把设置里的自启状态同步到系统（用户可能在别处改过注册表） */
+function syncAutoLaunchOnBoot() {
+  try {
+    const want = settingsRepo.get('autoLaunch') === true
+    const sm = (() => {
+      const v = settingsRepo.get('startMinimized')
+      return v === undefined ? true : v === true
+    })()
+    const sys = getAutoLaunchState()
+    if (sys.devMode) return
+    if (want !== sys.enabled) {
+      console.log(`[auto-launch] 系统状态(${sys.enabled})与设置(${want})不一致，同步为 ${want}`)
+      applyAutoLaunch(want, sm)
+    }
+  } catch (e) {
+    console.error('[auto-launch] 启动同步失败', e)
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -110,7 +235,34 @@ function createWindow() {
   mainWindow.on('maximize', sendMaxState)
   mainWindow.on('unmaximize', sendMaxState)
 
-  mainWindow.once('ready-to-show', () => mainWindow.show())
+  mainWindow.once('ready-to-show', () => {
+    /**
+     * 开机自启 + 「启动时最小化」：不弹窗，直接进托盘。
+     * 场景：用户把应用设为开机自启并希望它安静驻留后台（随时可用但不打扰）。
+     */
+    if (isStartMinimized() && trayEnabled()) {
+      console.log('[window] 自启最小化模式：窗口不显示，驻留托盘')
+      return
+    }
+    mainWindow.show()
+  })
+
+  /**
+   * 关闭窗口 → 最小化到托盘（可配置）。
+   *
+   * 音乐播放器的常见预期：点关闭 ≠ 退出，后台继续放歌。
+   * 仅在「托盘模式开启」时拦截；否则维持原行为（直接退出）。
+   *
+   * 注意必须用 isQuitting() 区分「用户点关闭」与「真的退出」
+   *（托盘菜单的退出 / app.quit()），否则会退不掉。
+   */
+  mainWindow.on('close', (e) => {
+    if (isQuitting()) return // 真退出，放行
+    if (!trayEnabled()) return // 未开托盘模式，维持原行为（退出）
+    e.preventDefault()
+    mainWindow.hide()
+    console.log('[window] 已最小化到托盘（后台继续运行）')
+  })
 
   // 兜底：若 ready-to-show 因渲染卡住/加载慢未触发，5s 后强制显示窗口并居中
   setTimeout(() => {
@@ -222,26 +374,47 @@ async function bootstrap() {
   // 传入 ncm server：B 站字幕/歌词功能需要经私有通道搜网易云
   registerBiliIpc(() => server)
 
+  // 托盘 + 开机自启：先同步系统自启状态，再按设置决定是否建托盘
+  syncAutoLaunchOnBoot()
+  registerTrayIpc()
+  initTrayIfEnabled()
+
   createWindow()
 
-  // 两个内置服务并行启动：两者互不依赖（各自独立子进程 + 独立私有通道），
-  // 串行 await 会让启动耗时叠加（实测 ncm 1.47s + qq 0.88s），并行后只等较慢者。
-  // 各自 catch 兜底：QQ音乐是可选音源，它失败不该中断网易云，反之亦然。
-  const [ok, qqOk] = await Promise.all([
-    server.start().catch((e) => {
-      console.error('[bootstrap] ncm-server start threw', e)
-      return false
-    }),
+  /**
+   * 内置服务启动策略：**网易云立即启动，QQ 音乐懒启动**。
+   *
+   * QQ 音乐用 ts-node 实时编译 TS，实测冷启动 4.9s（网易云仅 0.6s），
+   * 而它是可选音源 —— 多数用户开机后只用网易云。原先与网易云并行启动，
+   * 虽不叠加耗时，但会抢 CPU/磁盘（开机时其他自启程序也在抢），
+   * 间接拖慢网易云就绪；还白占一个 215MB 子进程。
+   *
+   * 改为懒启动后，首屏只等服务更快的网易云。
+   * QQ 音乐在首次用到时由 ipc/qqmusic.js 的 requireReadyServer() 拉起。
+   *
+   * 若用户开了「启动时预加载 QQ 音乐」（settings.qqPreload），则仍并行启动 ——
+   * 给常用 QQ 音源的用户的折中选项。
+   */
+  const qqPreload = (() => {
+    try { return settingsRepo.get('qqPreload') === 'true' } catch { return false }
+  })()
+
+  const ok = await server.start().catch((e) => {
+    console.error('[bootstrap] ncm-server start threw', e)
+    return false
+  })
+  if (!ok) {
+    console.error('[bootstrap] ncm-server failed to start')
+  }
+
+  if (qqPreload) {
+    // 用户显式要求预加载：并行启动，不阻塞网易云就绪
     qqMusicServer.start().catch((e) => {
       console.error('[bootstrap] qqmusic-server start threw', e)
       return false
     })
-  ])
-  if (!ok) {
-    console.error('[bootstrap] ncm-server failed to start')
-  }
-  if (!qqOk) {
-    console.log('[bootstrap] qqmusic-server not available (optional)')
+  } else {
+    console.log('[bootstrap] QQ 音乐服务懒启动（首次使用时拉起）')
   }
 
   // 烟测模式：服务就绪 + 窗口就绪后打印成功日志并退出（用于 CI/本地验证）
@@ -363,10 +536,14 @@ if (!gotLock) {
   })
 
   app.on('window-all-closed', () => {
+    // 托盘模式下窗口关闭只是隐藏，不该退出应用（否则后台播放无从谈起）
+    if (trayEnabled() && !isQuitting()) return
     if (process.platform !== 'darwin') app.quit()
   })
 
   app.on('before-quit', async () => {
+    markQuitting() // 标记真退出：让窗口 close 拦截器放行
+    destroyTray()
     await server.stop()
     await qqMusicServer.stop()
     closeDb()

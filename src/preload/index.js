@@ -14,6 +14,10 @@ const INVOKE_ALLOWLIST = new Set([
   'win:is-maximized',
   'win:set-fullscreen',
   'win:is-fullscreen',
+  // 托盘 / 开机自启 / 播放态同步
+  'win:set-playing',
+  'win:get-tray-settings',
+  'win:set-tray-settings',
   // 通用 API / 设置 / 系统对话框
   'ncm:api',
   'ncm:resolve-link',
@@ -97,6 +101,8 @@ const INVOKE_ALLOWLIST = new Set([
 
 const EVENT_ALLOWLIST = new Set([
   'win:maximized',
+  // 托盘菜单「播放/暂停」→ 渲染层执行切换
+  'player:toggle-play',
   'ncm:server-status',
   'ncm:library-updated',
   'ncm:convert-progress',
