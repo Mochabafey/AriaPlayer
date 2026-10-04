@@ -176,55 +176,78 @@ export function applyAutoLaunch(enabled, startMinimized = true) {
 /**
  * 读取系统当前的自启状态（以系统为准，而非设置库）。
  *
- * ## 为什么不能只用 app.getLoginItemSettings()（踩过的坑）
+ * ## 关键坑 1：读的时候必须传与写的时候相同的 args（官方文档明确要求）
  *
- * 实测（Electron 43 / Windows）：
+ * Electron 文档 `app.getLoginItemSettings([options])`：
  *
- *     开发模式:
- *       setLoginItemSettings 写入的项名是 "electron.app.Electron"
- *       但 getLoginItemSettings().openAtLogin 恒为 **false**
- *       —— 它按可执行文件路径匹配，而开发模式下 execPath 是 electron.exe，
- *          与注册表里的项对不上。只有 launchItems 数组里能看到真实项。
+ *   > options.args _Windows_ - The command-line arguments to compare against.
+ *   >   Defaults to an empty array.
+ *   > **If you provided `path` and `args` options to `app.setLoginItemSettings`,
+ *   > then you need to pass the same arguments here for `openAtLogin` to be
+ *   > set correctly.**
  *
- *     安装版:
- *       项名是 "electron.app.<productName>"，openAtLogin 正常。
+ * 本项目写入时带了 `args: ['--start-minimized']`，而读取时若用默认
+ *（空数组）就**匹配不上** → `openAtLogin` 恒为 false →
+ * UI 永远显示「与系统实际状态不一致」，且反复开关都修不好。
  *
- * 后果：开发版 UI 永远显示「与系统实际状态不一致」，反复开关也修不好 ——
- * 用户只会认为功能坏了。
+ * ## 关键坑 2：兜底匹配必须锁定「本进程自己的注册表项」
  *
- * ## 现在的做法
+ * 注册表项名是 `electron.app.<app.getName()>`：
+ *   开发版   → electron.app.**Electron**      （exe = ...\electron.exe）
+ *   安装版   → electron.app.**Aria Player**   （exe = ...\Aria Player.exe）
  *
- * 优先读 Electron 的 `launchItems`（它列的是真实注册表项，开发/打包都能看到），
- * 并额外用 `executableWillLaunchAtLogin` 交叉验证。
- * Windows 上还可直接查注册表兜底（见 readAutoLaunchFromRegistry）。
+ * 两者**是不同的项**。若兜底逻辑只按「exe 文件名」宽松匹配，
+ * 开发版会误把安装版那条当成自己的 → 关了自启仍显示「已开启」。
+ * 所以兜底必须用**完整 exe 路径**精确比较（开发版的 execPath 是
+ * electron.exe 的全路径，与注册表项里的 path 完全一致）。
+ *
+ * ## 取值顺序
+ *
+ *   1. openAtLogin（带 args / 不带 args 都试）—— 打包版权威值
+ *   2. launchItems 里 **exe 路径完全等于** 本进程 execPath 的启用项
+ *   3. Windows 注册表直查本进程的项名 —— 最后兜底
  */
 export function getAutoLaunchState() {
   const devMode = !app.isPackaged
   try {
+    // ---- 1. openAtLogin（必须把 args 组合都试一遍）----
+    for (const args of [[], ['--start-minimized']]) {
+      try {
+        const s = app.getLoginItemSettings({ args })
+        if (s.openAtLogin) {
+          if (process.env.NTR_DEBUG_AUTOLAUNCH) console.log(`[auto-launch:debug] 命中第1级 openAtLogin args=${JSON.stringify(args)}`)
+          return { enabled: true, devMode }
+        }
+      } catch { /* 该组合不可用时继续 */ }
+    }
+
+    // ---- 2. launchItems：必须 exe 路径完全一致（不能用文件名宽松匹配）----
     const s = app.getLoginItemSettings()
-    /**
-     * 判定「是否已开启」的优先级：
-     *   1. openAtLogin —— 打包版的权威值
-     *   2. launchItems 里是否存在指向本应用可执行文件的启用项 ——
-     *      开发版唯一可靠的来源（openAtLogin 在开发版恒 false）
-     *   3. Windows 注册表直查 —— 前两者都拿不到时的兜底
-     */
-    let enabled = !!s.openAtLogin
-    if (!enabled && Array.isArray(s.launchItems)) {
-      const exePath = app.getPath('exe')
-      const exeName = path.basename(exePath).toLowerCase()
-      enabled = s.launchItems.some((it) => {
+    if (Array.isArray(s.launchItems)) {
+      const exePath = app.getPath('exe').toLowerCase()
+      const hit = s.launchItems.some((it) => {
         if (!it || it.enabled === false) return false
-        const p = String(it.path || '').toLowerCase()
-        // 匹配「同一个可执行文件」：完整路径相同，或文件名相同
-        //（开发版注册表里存的是 electron.exe 全路径，与 execPath 一致）
-        return p === exePath.toLowerCase() || path.basename(p) === exeName
+        return String(it.path || '').toLowerCase() === exePath
       })
+      if (hit) {
+        if (process.env.NTR_DEBUG_AUTOLAUNCH) {
+          console.log(`[auto-launch:debug] 命中第2级 launchItems（exePath=${exePath}）`)
+          console.log('[auto-launch:debug] launchItems=', JSON.stringify(s.launchItems))
+        }
+        return { enabled: true, devMode }
+      }
     }
-    if (!enabled && process.platform === 'win32') {
-      enabled = readAutoLaunchFromRegistry() != null
+
+    // ---- 3. 注册表直查（只查本进程的项名）----
+    if (process.platform === 'win32') {
+      const reg = readAutoLaunchFromRegistry()
+      if (process.env.NTR_DEBUG_AUTOLAUNCH) {
+        console.log(`[auto-launch:debug] 第3级注册表直查 → ${reg === null ? 'null' : JSON.stringify(reg)}`)
+      }
+      if (reg != null) return { enabled: true, devMode }
     }
-    return { enabled, devMode }
+
+    return { enabled: false, devMode }
   } catch (e) {
     console.error('[auto-launch] 读取失败', e)
     return { enabled: false, devMode }
@@ -232,10 +255,25 @@ export function getAutoLaunchState() {
 }
 
 /**
- * 直接从 Windows 注册表读自启项（开发版下 Electron 的 API 不可靠时的兜底）。
+ * 直接从 Windows 注册表读自启项（Electron API 不可靠时的兜底）。
  *
- * 项名规则：`electron.app.<app.getName()>`。
- * 返回命令行字符串（含参数），未找到返回 null。
+ * ## 关键：项名必须与「写入时 Electron 用的项名」完全一致
+ *
+ * 写入时 Electron 用的项名是 `electron.app.<app.getName()>`。
+ * 但 `app.getName()` 在开发模式（用 `electron .` 启动）下会取
+ * package.json 的 **productName**（即 "Aria Player"），
+ * 而不是 "Electron" —— 所以开发版与安装版**用的是同一个注册表项名**！
+ *
+ * 实测教训：本娘先前以为开发版项名是 `electron.app.Electron`，
+ * 于是按 `app.getName()` 拼出的项名去查，结果在开发版下查到了
+ * **安装版那条项**（因为两者同名），导致「明明关掉了自启却显示已开启」。
+ *
+ * ## 因此：兜底判据必须同时校验「路径指向本进程的可执行文件」
+ *
+ * 不能只看「项存在」，还要看项里的 exe 路径是不是当前进程的 execPath。
+ * 否则开发版会误认安装版的自启项是自己的。
+ *
+ * @returns {string|null} 命令行字符串；未找到或不属于本进程时返回 null
  */
 function readAutoLaunchFromRegistry() {
   if (process.platform !== 'win32') return null
@@ -248,7 +286,31 @@ function readAutoLaunchFromRegistry() {
       { encoding: 'utf-8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
     )
     const m = out.match(/REG_SZ\s+(.+)/)
-    return m ? m[1].trim() : null
+    if (!m) return null
+    const cmdline = m[1].trim()
+
+    /**
+     * 校验这条项是否指向**当前进程的可执行文件**。
+     *
+     * 为什么必须校验：开发版（`electron .`）与安装版可能共用同一个
+     * 注册表项名（都取 productName），若不校验路径，开发版会把安装版的
+     * 自启项当成自己的 → 关掉后仍显示「已开启」。
+     *
+     * 比较方式：把项里的可执行文件路径（去掉引号与参数）与
+     * `process.execPath` 规范化后比较。开发版是 electron.exe 的绝对路径，
+     * 安装版是 Aria Player.exe 的绝对路径，两者天然不同。
+     */
+    const exeInReg = cmdline.replace(/^"/, '').replace(/".*$/, '').trim().toLowerCase()
+    const selfExe = process.execPath.toLowerCase()
+    if (exeInReg !== selfExe) {
+      if (process.env.NTR_DEBUG_AUTOLAUNCH) {
+        console.log(`[auto-launch:debug] 注册表项存在但不属于本进程：`)
+        console.log(`  项内 exe: ${exeInReg}`)
+        console.log(`  本进程:   ${selfExe}`)
+      }
+      return null
+    }
+    return cmdline
   } catch {
     // reg query 在项不存在时以非 0 退出
     return null
