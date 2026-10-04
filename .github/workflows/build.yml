@@ -1,34 +1,43 @@
 name: Build
 
-# 触发方式（覆盖命令行与网页两种操作习惯）：
+# 触发方式
 #
-#   push 到 master/main   → 只验证编译（约 1-2 分钟），不打包
+#   push 到 master/main   → 只验证编译（约 1-2 分钟），**不打包、不上传 artifact**
 #   push tag v*           → 完整打包三平台 + 创建 Release
-#   release: published    → 同上（**网页 Release 页面创建 tag/release 走这条**）
-#   create（仅 tag）      → 同上（**网页单独建 tag、不建 Release 走这条**）
-#   workflow_dispatch     → 手动触发（Actions 页面 Run workflow）
+#   release: published    → 同上（网页 Release 页面创建时走这条）
+#   workflow_dispatch     → 手动触发
 #
-# 为什么要额外监听 release / create：
-#   GitHub 网页界面创建 tag 时**不会触发 push 事件**（官方行为）。
-#   只监听 push.tags 的话，在网页上打 tag 会「什么都没发生」。
+# ## ⚠️ 为什么不再监听 `create`（实测踩过大坑）
 #
-#   三个入口的分工：
-#     - 命令行 git push origin v0.4.0        → push 事件
-#     - 网页 Releases 页「Draft a new release」→ release 事件（会自动建 tag）
-#     - 网页 Tags 页单独建 tag                → create 事件
+# 早期为了「网页单独打 tag 也能触发」加了 `create` 事件。但实测发现：
+# 创建 tag 会**同时触发 push 与 create 两个事件**，而 `concurrency` 的
+# group 带了 event_name（为了让两者不互相取消），于是**两个 run 都跑完整构建**。
+#
+# 叠加「推 master」那一次，**每次发版 = 3 次完整三平台构建**：
+#
+#     git push origin master    → push(master)   → 构建 ①
+#     git push origin v0.3.7    → push(v0.3.7)   → 构建 ②
+#                               → create(v0.3.7) → 构建 ③
+#
+# 每次产出 3 个平台包（约 1 GB），3 次就是 3 GB。实测累计 17.5 GB / 51 个
+# artifact，直接把 Actions 存储配额吃满。
+#
+# 现在改为**只监听 push**：
+#   - 命令行推 tag        → push 事件（覆盖）
+#   - 网页建 tag          → 实测**同样会触发 push 事件**（用 git/refs API 验证过）
+#   - 网页建 Release      → release 事件（保留，因为这条确实不触发 push）
+#
+# 即 push 已经覆盖了「网页建 tag」这个场景，create 是冗余的。
 on:
   push:
     tags: ['v*']
     branches: [master, main]
   pull_request:
     branches: [master, main]
-  # 网页创建 Release（或先建 tag 再建 release）时触发
+  # 网页创建 Release（Draft a new release）时触发。
+  # 这条**不会**触发 push 事件，故必须保留。
   release:
     types: [published, created]
-  # 网页单独创建 tag（不建 Release）时触发。
-  # 注意：create 事件对「新建分支」同样会触发，故 job 内用
-  # github.ref_type == 'tag' 过滤，避免建分支时白跑 CI。
-  create:
   workflow_dispatch:
     inputs:
       platforms:
@@ -36,17 +45,14 @@ on:
         required: false
         default: ''
 
-# 同一 ref 的重复触发只保留最新一次，避免浪费 CI 配额。
+# 同一 ref 的重复触发只保留最新一次。
 #
-# ⚠️ group 必须带上 `github.event_name`（实测踩过）：
-#   创建 tag 会**同时触发 push 与 create 两个事件**（API 与网页均如此，
-#   已用 `git/refs` API 实测确认）。若 group 只含 ref，两个 run 会落到
-#   同一组，`cancel-in-progress` 让后者取消前者 —— 每次打 tag 都白跑一个
-#   完整构建（3 job × 6 min ≈ 18 分钟配额），顺序反过来时还可能取消掉
-#   本该成功的那次。
+# group 带 event_name 的理由（保留自早期修复）：push 与 release 可能
+# 因同一次操作先后触发，不带 event_name 会让后到的取消先到的 ——
+# 而先到的可能才是带产物的那次。带上后各自独立成组。
 #
-#   带上 event_name 后，push / create / release / workflow_dispatch 各自
-#   独立成组，互不干扰；同一事件的真·重复触发（如连推两次）仍会被合并。
+# 注：`create` 事件已移除，所以现在同一次发版最多 2 个 run
+#（push + release，且只有网页建 Release 时才会同时出现）。
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
@@ -65,16 +71,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     # 「是否需要打包」的统一判断，供下面各 step 复用。
     #
-    # 四个条件对应四种发布入口：
-    #   1. 命令行推 tag        → push 事件，ref 形如 refs/tags/v0.3.0
+    # 三个条件对应三种发布入口：
+    #   1. tag 推送/网页建 tag → ref 形如 refs/tags/v0.3.0
+    #      （两种操作都会触发 push 事件，已实测）
     #   2. 网页创建 Release    → release 事件（ref 同样是 refs/tags/...）
-    #   3. 网页单独建 tag      → create 事件（需 github.ref_type == 'tag' 过滤，
-    #                            因为建分支也会触发 create）
-    #   4. Actions 页面手动触发 → workflow_dispatch
+    #   3. Actions 页面手动触发 → workflow_dispatch
     #
-    # 普通 push / PR 不满足任一条件 → 只编译不打包（省 CI 额度）
+    # 普通 push / PR 不满足任一条件 → 只编译不打包（省 CI 额度与存储）
     env:
-      SHOULD_PACKAGE: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || (github.event_name == 'create' && github.ref_type == 'tag') || github.event_name == 'workflow_dispatch' }}
+      SHOULD_PACKAGE: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -193,6 +198,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder ${{ matrix.target }} --publish never
 
+      # ---- 上传 artifact ----
+      #
+      # ⚠️ 保留期从 14 天缩短到 **3 天**（实测教训）。
+      #
+      # 完整三平台产物约 1 GB/次。之前每次发版因事件重叠会跑 3 次构建，
+      # 加上 14 天保留期，累计 **51 个 artifact / 17.5 GB**，
+      # 直接把 Actions 存储配额（私有仓库 500 MB 免费）吃爆。
+      #
+      # 3 天的理由：产物真正需要长期保存的地方是 **Release**（永久），
+      # artifact 只是「构建过程中的临时下载点」。Release 已经挂了三平台包，
+      # artifact 过期不影响发布。
       - name: Upload artifact
         if: env.SHOULD_PACKAGE == 'true'
         uses: actions/upload-artifact@v4
@@ -200,25 +216,22 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
+          # 同名 artifact 覆盖而非新增（同一 tag 重跑时不堆积）
+          overwrite: true
 
   # ---------------------------------------------------------------
   # 发布：把三平台产物挂到 Release
   #
-  # 只在**不会重复**的入口执行（关键：避免并发写同一个 Release）：
+  # 只监听 push(tag) 与 release 两个入口。
+  # `create` 事件已从 on: 里移除（它会造成重复构建，见文件头说明）。
   #
-  #   1. push tag（命令行 `git push origin v0.4.0`）→ 创建 Release 并上传
-  #   2. release 事件（网页 Releases 页建 Release）→ Release 已存在，追加资产
-  #
-  # **刻意排除 create 事件**：创建 tag 会同时触发 push + create 两个事件
-  #（已用 git/refs API 实测确认）。若两者都跑本 job，就会有两个 run 并发
-  # 写同一个 Release —— softprops/action-gh-release 在这种并发下存在竞态
-  #（见 upstream issue #705），可能出现「Release 建了但资产只传了一半」
-  # 或报错。所以只让 push 事件负责建 Release；create 事件仍会构建并上传
-  # artifact（供 Actions 页面下载），只是不发 Release。
-  #
-  # 注：命令行推 tag 与网页建 tag 两种操作都会触发 push 事件，
-  # 所以「只靠 push 发 Release」能覆盖全部正常发布路径。
+  # 两者不会同时出现：
+  #   - 命令行推 tag        → 只有 push
+  #   - 网页建 Release      → 只有 release
+  #   - 网页单独建 tag      → 实测会触发 push（用 git/refs API 验证过）
+  # 所以不存在「两个 run 并发写同一个 Release」的竞态
+  #（softprops/action-gh-release 的 upstream issue #705）。
   # ---------------------------------------------------------------
   release:
     name: Publish Release
