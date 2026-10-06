@@ -588,11 +588,39 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
+  /**
+   * 第二个实例被启动时（用户双击快捷方式 / 再次运行 exe）→ 唤回已有窗口。
+   *
+   * ## ⚠️ 必须显式 show()（实测踩过）
+   *
+   * 原实现只做了 `restore()` + `focus()`，但**窗口被隐藏到托盘时
+   * `hide()` 之后 `isMinimized()` 是 false** —— restore 不生效，
+   * 而 `focus()` 对隐藏窗口**不会让它显示**。
+   *
+   * 症状：用户开了「以最小化的形式启动」或点了关闭按钮驻留托盘后，
+   * 再双击快捷方式完全没反应，看起来像程序坏了。
+   *
+   * 正确顺序：restore（处理最小化）→ show（处理隐藏）→ focus（置前）。
+   * 用 showWindow() 统一处理，它内部已包含这三步。
+   */
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+    console.log('[second-instance] 检测到第二个实例，唤回窗口')
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      // 窗口已被销毁（理论上不会，因为托盘模式下不退出）→ 重建
+      console.log('[second-instance] 窗口不存在，重建')
+      createWindow()
+      return
     }
+    const before = {
+      visible: mainWindow.isVisible(),
+      minimized: mainWindow.isMinimized()
+    }
+    console.log('[second-instance] 唤回前:', JSON.stringify(before))
+    showWindow(() => mainWindow)
+    console.log('[second-instance] 唤回后:', JSON.stringify({
+      visible: mainWindow.isVisible(),
+      minimized: mainWindow.isMinimized()
+    }))
   })
 
   app.whenReady().then(() => {
