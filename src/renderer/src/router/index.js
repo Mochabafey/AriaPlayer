@@ -8,6 +8,7 @@ const routes = [
   { path: '/library', name: 'library', component: () => import('../views/LibraryView.vue'), meta: { title: '曲库' } },
   { path: '/resolver', name: 'resolver', component: () => import('../views/ResolverView.vue'), meta: { title: '解析' } },
   { path: '/bili', name: 'bili', component: () => import('../views/BiliView.vue'), meta: { title: 'B站MV' } },
+  { path: '/bili/profile', name: 'bili-profile', component: () => import('../views/BiliProfileView.vue'), meta: { title: 'B站个人中心' } },
   { path: '/search', name: 'search', component: () => import('../views/SearchView.vue'), meta: { title: '搜索' } },
   { path: '/profile', name: 'profile', component: () => import('../views/ProfileView.vue'), meta: { title: '我的' } },
   { path: '/downloads', name: 'downloads', component: () => import('../views/DownloadsView.vue'), meta: { title: '下载' } },

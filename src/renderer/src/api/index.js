@@ -120,7 +120,37 @@ export const bili = {
   reportFinished: (p) => bridge.invoke('bili:report-finished', p),
   /** 合流缓存管理 */
   cacheStats: () => bridge.invoke('bili:cache-stats'),
-  cacheClear: () => bridge.invoke('bili:cache-clear')
+  cacheClear: () => bridge.invoke('bili:cache-clear'),
+
+  /* ---- 个人主页 / 收藏夹 / 历史 / 关注 ---- */
+
+  /** 用户空间信息（不传 mid = 当前登录账号） */
+  spaceInfo: (mid) => bridge.invoke('bili:space-info', { mid }),
+  /** 收藏夹列表 */
+  favFolders: (mid) => bridge.invoke('bili:fav-folders', { mid }),
+  /** 收藏夹内容（分页） */
+  favItems: (mediaId, page = 1, pageSize = 20) =>
+    bridge.invoke('bili:fav-items', { mediaId, page, pageSize }),
+  /** 观看历史（游标分页，cursor 传上一页返回的值） */
+  history: (cursor, pageSize = 20) => bridge.invoke('bili:history', { cursor, pageSize }),
+  /** 关注列表 */
+  followings: (mid, page = 1, pageSize = 20) =>
+    bridge.invoke('bili:followings', { mid, page, pageSize }),
+  /** 稍后再看 */
+  toview: () => bridge.invoke('bili:toview'),
+  /** 追番 / 追剧（type: 1番剧 2电影 3纪录片 4国创 5电视剧） */
+  bangumi: (mid, type = 1, page = 1, pageSize = 20, followStatus = 0) =>
+    bridge.invoke('bili:bangumi', { mid, type, page, pageSize, followStatus }),
+  /** 点赞过的视频 */
+  likes: (mid, page = 1, pageSize = 20) => bridge.invoke('bili:likes', { mid, page, pageSize }),
+  /** 投币过的视频 */
+  coins: (mid, page = 1, pageSize = 20) => bridge.invoke('bili:coins', { mid, page, pageSize }),
+  /** 我关注的收藏夹 */
+  collectedFolders: (mid, page = 1, pageSize = 20) =>
+    bridge.invoke('bili:collected-folders', { mid, page, pageSize }),
+  /** 某个 up 主的投稿 */
+  userVideos: (mid, page = 1, pageSize = 20, keyword = '') =>
+    bridge.invoke('bili:user-videos', { mid, page, pageSize, keyword })
 }
 
 export const ncm = {

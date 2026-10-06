@@ -24,6 +24,8 @@ const icons = {
   library: 'M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-13ZM9 4v16M9 12h11',
   resolver: 'M13.5 3.5 6 13h4.5L10.5 20.5 18 11h-4.5l3-7.5Z',
   video: 'M3 6.5A2.5 2.5 0 0 1 5.5 4h9A2.5 2.5 0 0 1 17 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 3 17.5v-11Zm14 3.2 4-2.3v9.2l-4-2.3v-4.6Z',
+  // B站个人中心：星形收藏图标
+  biliProfile: 'M12 3.6l2.5 5.1 5.6.8-4.1 4 1 5.6-5-2.7-5 2.7 1-5.6-4.1-4 5.6-.8L12 3.6Z',
   search: 'M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm9.8 15.3-4.3-4.3',
   profile: 'M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm-7 15.2C5.9 16 8.7 14.5 12 14.5s6.1 1.5 7 4.7',
   downloads: 'M12 4v9m0 0 4-4m-4 4-4-4M5 19h14',
@@ -38,7 +40,8 @@ const navGroups = [
       { to: '/discover', icon: 'discover', label: '推荐' },
       { to: '/search', icon: 'search', label: '搜索' },
       { to: '/resolver', icon: 'resolver', label: '解析' },
-      { to: '/bili', icon: 'video', label: 'B站MV' }
+      { to: '/bili', icon: 'video', label: 'B站MV' },
+      { to: '/bili/profile', icon: 'biliProfile', label: 'B站个人中心' }
     ]
   },
   {
@@ -147,8 +150,31 @@ function onSidebarSearch() {
   sidebarQuery.value = ''
 }
 
+/**
+ * 判断某个导航项是否处于激活态。
+ *
+ * ## ⚠️ 必须取「最长匹配」（实测踩过）
+ *
+ * 朴素实现 `path === to || path.startsWith(to + '/')` 在前缀重叠时
+ * 会让**多个菜单项同时高亮**：
+ *
+ *     /bili/profile  →  isActive('/bili')          = true  ❌
+ *                       isActive('/bili/profile')  = true  ✅
+ *
+ * 于是「B站MV」与「B站个人中心」会一起亮。改为：只有当**没有更长的
+ * 导航路径也匹配**时，才认为当前项激活。
+ */
+const allNavPaths = navGroups.flatMap((g) => g.items.map((i) => i.to))
+
 function isActive(to) {
-  return route.path === to || route.path.startsWith(to + '/')
+  const path = route.path
+  const hit = path === to || path.startsWith(to + '/')
+  if (!hit) return false
+  // 存在更长的匹配项 → 本项让位
+  const longer = allNavPaths.some(
+    (p) => p !== to && p.length > to.length && (path === p || path.startsWith(p + '/'))
+  )
+  return !longer
 }
 
 /* ================= 自定义标题栏：窗口控制 ================= */

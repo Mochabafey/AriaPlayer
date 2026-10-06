@@ -844,3 +844,359 @@ export function cleanTitle(rawTitle) {
   const keyword = [songName, artist].filter(Boolean).join(' ').trim() || t
   return { keyword, songName, artist }
 }
+
+/* ---------------- 个人主页 / 收藏夹 / 历史 / 关注 ---------------- */
+
+/**
+ * 统一把各接口返回的视频条目归一化成同一种形状。
+ *
+ * 为什么需要它：这些接口的字段名**互不相同**（实测记录）——
+ *   - 收藏夹 `medias[]`  → `bv_id` / `cover` / `upper.name` / `cnt_info.play`
+ *   - 历史   `list[]`    → `history.bvid` / `cover` / `author_name` / 无播放量
+ *   - 点赞   `list[]`    → `bvid` / `pic` / `owner.name` / `stat.view`
+ *   - 稍后再看 `list[]`  → `bvid` / `pic` / `owner.name` / `stat.view`
+ *
+ * 渲染层只认一种形状，否则每个 Tab 都要写一套字段映射（易漏易错）。
+ */
+function normVideoItem(v) {
+  if (!v) return null
+  const bvid = v.bvid || v.bv_id || v.history?.bvid || ''
+  const aid = v.aid || v.id || v.history?.oid || 0
+  if (!bvid && !aid) return null
+  return {
+    bvid,
+    aid,
+    cid: v.cid || v.history?.cid || v.ugc?.first_cid || 0,
+    title: String(v.title || '').replace(/<[^>]+>/g, ''),
+    cover: normPic(v.cover || v.pic),
+    // 作者：收藏夹用 upper，点赞/稍后再看用 owner，历史用 author_name
+    author: v.upper?.name || v.owner?.name || v.author_name || '',
+    mid: v.upper?.mid || v.owner?.mid || v.author_mid || 0,
+    duration: typeof v.duration === 'number' ? v.duration : parseDuration(v.duration),
+    // 播放量：收藏夹在 cnt_info，点赞/稍后再看在 stat
+    play: v.cnt_info?.play ?? v.stat?.view ?? v.play ?? 0,
+    danmaku: v.cnt_info?.danmaku ?? v.stat?.danmaku ?? 0,
+    pubdate: v.pubtime || v.pubdate || v.ctime || 0,
+    // 历史专属：观看进度与时间
+    progress: v.progress ?? 0,
+    viewAt: v.view_at ?? 0,
+    // 收藏夹专属：收藏时间
+    favTime: v.fav_time ?? 0
+  }
+}
+
+/**
+ * 取用户空间信息（个人主页头部）。
+ * 需要 WBI 签名（实测未签名返回 -403）。
+ *
+ * ## ⚠️ 关注数/粉丝数不在这个接口里（实测）
+ *
+ * `space/wbi/acc/info` 的 data **没有 `following` / `follower` 字段**
+ *（实测两者都是 `undefined`，直接读会显示成 0）。
+ * 必须额外请求 `x/relation/stat`。
+ *
+ * 两个请求并行发出（互不依赖），失败时降级为 0 而不是整体报错 ——
+ * 关注数拿不到不该让整个个人主页打不开。
+ */
+export async function spaceInfo(mid) {
+  const qs = await signParams({ mid })
+  const [infoRes, statRes] = await Promise.all([
+    biliRequest(`https://api.bilibili.com/x/space/wbi/acc/info?${qs}`),
+    // 关系数接口无需签名
+    biliRequest(`https://api.bilibili.com/x/relation/stat?vmid=${mid}`).catch(() => null)
+  ])
+  absorbCookies(infoRes)
+  const j = infoRes.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取用户信息失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data
+  const stat = statRes?.json?.data || {}
+  return {
+    mid: d.mid,
+    name: d.name,
+    face: normPic(d.face),
+    sign: d.sign || '',
+    level: d.level ?? 0,
+    sex: d.sex || '',
+    birthday: d.birthday || '',
+    coins: d.coins ?? 0,
+    // 来自 relation/stat（acc/info 没有这两个字段）
+    following: stat.following ?? d.following ?? 0,
+    follower: stat.follower ?? d.follower ?? 0,
+    vip: d.vip?.status === 1,
+    vipLabel: d.vip?.label?.text || '',
+    official: d.official?.desc || '',
+    // 头像挂件/装扮可后续扩展
+    banner: normPic(d.top_photo || '')
+  }
+}
+
+/**
+ * 收藏夹列表（用户自己创建的）。
+ * 返回 `[{ id, fid, title, mediaCount, attr }]`
+ */
+export async function favFolders(mid) {
+  const res = await biliRequest(
+    `https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${mid}`
+  )
+  absorbCookies(res)
+  const j = res.json
+  // code=0 且 list 为 null 表示该用户没有收藏夹（不是错误）
+  if (!j || j.code !== 0) {
+    throw new Error(`获取收藏夹失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  return (j.data?.list || []).map((f) => ({
+    id: f.id,
+    fid: f.fid,
+    title: f.title,
+    mediaCount: f.media_count ?? 0,
+    // attr=1 表示「默认收藏夹」（不可删除）
+    isDefault: f.attr === 1
+  }))
+}
+
+/**
+ * 收藏夹内容（分页）。
+ *
+ * ⚠️ 必须带 `platform=web`：不带时返回的字段是**移动端形状**
+ *（`cover` 为竖版、无 `cnt_info`），实测归一化后会丢播放量。
+ */
+export async function favItems(mediaId, page = 1, pageSize = 20) {
+  const res = await biliRequest(
+    `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${mediaId}` +
+    `&ps=${pageSize}&pn=${page}&platform=web`
+  )
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取收藏内容失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data || {}
+  return {
+    items: (d.medias || []).map(normVideoItem).filter(Boolean),
+    total: d.info?.media_count ?? 0,
+    title: d.info?.title || '',
+    hasMore: d.has_more ?? false
+  }
+}
+
+/**
+ * 观看历史（游标分页）。
+ *
+ * 与其它接口不同，历史用 **cursor** 而非页码：首次不传，之后把返回的
+ * `cursor` 原样回传。`cursor.max` / `view_at` / `business` 三个字段都要带。
+ */
+export async function historyList(cursor = null, pageSize = 20) {
+  let url = `https://api.bilibili.com/x/web-interface/history/cursor?ps=${pageSize}`
+  if (cursor) {
+    url +=
+      `&max=${cursor.max ?? 0}` +
+      `&view_at=${cursor.view_at ?? 0}` +
+      `&business=${encodeURIComponent(cursor.business || '')}`
+  }
+  const res = await biliRequest(url)
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取历史失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data || {}
+  return {
+    items: (d.list || []).map(normVideoItem).filter(Boolean),
+    cursor: d.cursor || null
+  }
+}
+
+/**
+ * 关注列表（分页）。
+ * 注意：这是**用户**列表，不是视频列表 —— 归一化成 up 主形状。
+ */
+export async function followings(mid, page = 1, pageSize = 20) {
+  const res = await biliRequest(
+    `https://api.bilibili.com/x/relation/followings?vmid=${mid}&ps=${pageSize}&pn=${page}`
+  )
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取关注列表失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data || {}
+  return {
+    items: (d.list || []).map((u) => ({
+      mid: u.mid,
+      name: u.uname,
+      face: normPic(u.face),
+      sign: u.sign || '',
+      official: u.official_verify?.desc || '',
+      vip: u.vip?.vipStatus === 1,
+      // attribute: 0=未关注 2=已关注 6=互关 128=拉黑
+      attribute: u.attribute ?? 0
+    })),
+    total: d.total ?? 0
+  }
+}
+
+/** 稍后再看 */
+export async function toviewList() {
+  const res = await biliRequest('https://api.bilibili.com/x/v2/history/toview')
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取稍后再看失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  return (j.data?.list || []).map(normVideoItem).filter(Boolean)
+}
+
+/**
+ * 追番 / 追剧列表。
+ * @param {number} type 1=番剧 2=电影 3=纪录片 4=国创 5=电视剧
+ * @param {number} followStatus 0=全部 1=想看 2=在看 3=看过
+ */
+export async function bangumiList(mid, type = 1, page = 1, pageSize = 20, followStatus = 0) {
+  const res = await biliRequest(
+    `https://api.bilibili.com/x/space/bangumi/follow/list?type=${type}` +
+    `&follow_status=${followStatus}&vmid=${mid}&ps=${pageSize}&pn=${page}`
+  )
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取追番列表失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data || {}
+  return {
+    items: (d.list || []).map((b) => ({
+      seasonId: b.season_id,
+      mediaId: b.media_id,
+      title: b.title,
+      cover: normPic(b.cover),
+      // 用 ep/ss 链接跳转（番剧不是 bvid 体系）
+      url: b.season_id ? `https://www.bilibili.com/bangumi/play/ss${b.season_id}` : '',
+      total: b.total_count ?? 0,
+      isFinish: b.is_finish === 1,
+      progress: b.new_ep?.index_show || '',
+      badge: b.badge || '',
+      typeName: b.season_type_name || '',
+      follow: b.stat?.follow ?? 0,
+      view: b.stat?.view ?? 0
+    })),
+    total: d.total ?? 0
+  }
+}
+
+/**
+ * 点赞过的视频。
+ * 需要 WBI 签名（实测未签名返回 -403）。
+ *
+ * ⚠️ 返回结构特殊（实测）：`data` 只有 `{ list }`，**没有 `count`/`page`**。
+ * 所以 total 用 list 长度兜底（无法得知总数，前端只做「是否还有更多」判断）。
+ */
+export async function likedVideos(mid, page = 1, pageSize = 20) {
+  const qs = await signParams({ vmid: mid, ps: pageSize, pn: page })
+  const res = await biliRequest(`https://api.bilibili.com/x/space/like/video?${qs}`)
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    // code=-400 常见于「未公开点赞列表」→ 给出可读提示而非原始错误码
+    if (j?.code === -400) return { items: [], total: 0, hidden: true }
+    throw new Error(`获取点赞列表失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const list = (j.data?.list || []).map(normVideoItem).filter(Boolean)
+  return {
+    items: list,
+    // 无 count 字段：用本页条数估计（满页即可能还有更多）
+    total: j.data?.count ?? list.length,
+    hasMore: list.length >= pageSize,
+    hidden: false
+  }
+}
+
+/**
+ * 投币过的视频。
+ * 需要 WBI 签名。
+ *
+ * ⚠️ 返回结构特殊（实测）：`data` 是一个**数组**（不是 `{ list }` 对象）——
+ * 直接 `data.list` 会拿到 undefined，导致列表恒为空。
+ * 判断依据：`Array.isArray(data)`。
+ */
+export async function coinVideos(mid, page = 1, pageSize = 20) {
+  const qs = await signParams({ vmid: mid, ps: pageSize, pn: page })
+  const res = await biliRequest(`https://api.bilibili.com/x/space/coin/video?${qs}`)
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    if (j?.code === -400) return { items: [], total: 0, hidden: true }
+    throw new Error(`获取投币列表失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  // data 可能是数组（实测）或对象（字段变动时兼容）
+  const raw = Array.isArray(j.data) ? j.data : (j.data?.list || [])
+  const list = raw.map(normVideoItem).filter(Boolean)
+  return {
+    items: list,
+    total: Array.isArray(j.data) ? list.length : (j.data?.count ?? list.length),
+    hasMore: list.length >= pageSize,
+    hidden: false
+  }
+}
+
+/**
+ * 我关注的收藏夹（别人创建的、我收藏了的）。
+ */
+export async function collectedFolders(mid, page = 1, pageSize = 20) {
+  const res = await biliRequest(
+    `https://api.bilibili.com/x/v3/fav/folder/collected/list?up_mid=${mid}` +
+    `&ps=${pageSize}&pn=${page}&platform=web`
+  )
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取关注收藏夹失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data || {}
+  return {
+    items: (d.list || []).map((f) => ({
+      id: f.id,
+      title: f.title,
+      mediaCount: f.media_count ?? 0,
+      // 收藏夹归属的 up 主
+      owner: f.upper?.name || '',
+      ownerMid: f.upper?.mid || 0
+    })),
+    total: d.count ?? 0
+  }
+}
+
+/**
+ * 搜索 up 主发布的视频（用于点进某个 up 主的主页看他的投稿）。
+ *
+ * 用 `space/arc/search`（带 WBI 签名）而非 `search/type` ——
+ * 后者是「全站搜索」，会把别人的视频也混进来。
+ */
+export async function userVideos(mid, page = 1, pageSize = 20, keyword = '') {
+  const params = { mid, ps: pageSize, pn: page, order: 'pubdate' }
+  if (keyword) params.keyword = keyword
+  const qs = await signParams(params)
+  const res = await biliRequest(`https://api.bilibili.com/x/space/wbi/arc/search?${qs}`)
+  absorbCookies(res)
+  const j = res.json
+  if (!j || j.code !== 0) {
+    throw new Error(`获取投稿失败：${j?.message || '未知错误'}（code=${j?.code}）`)
+  }
+  const d = j.data || {}
+  return {
+    items: (d.list?.vlist || []).map((v) => ({
+      bvid: v.bvid,
+      aid: v.aid,
+      title: String(v.title || '').replace(/<[^>]+>/g, ''),
+      cover: normPic(v.pic),
+      author: v.author || '',
+      mid: v.mid || 0,
+      duration: parseDuration(v.length),
+      play: v.play ?? 0,
+      danmaku: v.video_review ?? 0,
+      pubdate: v.created ?? 0,
+      description: v.description || ''
+    })),
+    total: d.page?.count ?? 0
+  }
+}

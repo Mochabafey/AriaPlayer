@@ -15,7 +15,19 @@ import {
   cleanTitle,
   reportProgress,
   reportFinished,
-  fetchDanmaku
+  fetchDanmaku,
+  // 个人主页 / 收藏夹 / 历史 / 关注
+  spaceInfo,
+  favFolders,
+  favItems,
+  historyList,
+  followings,
+  toviewList,
+  bangumiList,
+  likedVideos,
+  coinVideos,
+  collectedFolders,
+  userVideos
 } from '../biliClient.js'
 import {
   mergeToCache,
@@ -442,5 +454,161 @@ export function registerBiliIpc(getNcmServer) {
   ipcMain.handle('bili:cache-clear', () => {
     stopAllHlsSessions()
     return clearBiliCache()
+  })
+
+  // ---- 个人主页 / 收藏夹 / 历史 / 关注 ----
+
+  /**
+   * 统一的「取用户 mid」入口。
+   *
+   * 渲染层不传 mid 时，用当前登录账号的 mid（从 cookie 里读）——
+   * 这样「我的主页」不需要前端知道自己的 uid。
+   */
+  const resolveMid = (mid) => {
+    if (mid) return String(mid)
+    const cookie = getCookieString()
+    const m = /DedeUserID=(\d+)/.exec(cookie || '')
+    return m ? m[1] : ''
+  }
+
+  /**
+   * 个人主页头部信息。
+   * 不传 mid 则用当前登录账号（「我的主页」场景）。
+   */
+  ipcMain.handle('bili:space-info', async (_e, { mid } = {}) => {
+    const m = resolveMid(mid)
+    if (!m) return { ok: false, reason: 'not-login' }
+    try {
+      const info = await spaceInfo(m)
+      return { ok: true, info }
+    } catch (e) {
+      console.warn('[bili-space] 获取用户信息失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 收藏夹列表 */
+  ipcMain.handle('bili:fav-folders', async (_e, { mid } = {}) => {
+    const m = resolveMid(mid)
+    if (!m) return { ok: false, reason: 'not-login' }
+    try {
+      return { ok: true, list: await favFolders(m) }
+    } catch (e) {
+      console.warn('[bili-fav] 获取收藏夹失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 收藏夹内容（分页） */
+  ipcMain.handle('bili:fav-items', async (_e, { mediaId, page = 1, pageSize = 20 }) => {
+    if (!mediaId) return { ok: false, reason: 'no-media-id' }
+    try {
+      const r = await favItems(mediaId, page, pageSize)
+      return { ok: true, ...r }
+    } catch (e) {
+      console.warn('[bili-fav] 获取收藏内容失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 观看历史（游标分页） */
+  ipcMain.handle('bili:history', async (_e, { cursor, pageSize = 20 } = {}) => {
+    try {
+      const r = await historyList(cursor, pageSize)
+      return { ok: true, ...r }
+    } catch (e) {
+      // 未登录时 B 站返回 -101
+      const notLogin = /-101/.test(e.message)
+      if (!notLogin) console.warn('[bili-history] 获取历史失败:', e.message)
+      return { ok: false, reason: notLogin ? 'not-login' : 'error', message: e.message }
+    }
+  })
+
+  /** 关注列表 */
+  ipcMain.handle('bili:followings', async (_e, { mid, page = 1, pageSize = 20 } = {}) => {
+    const m = resolveMid(mid)
+    if (!m) return { ok: false, reason: 'not-login' }
+    try {
+      const r = await followings(m, page, pageSize)
+      return { ok: true, ...r }
+    } catch (e) {
+      console.warn('[bili-follow] 获取关注列表失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 稍后再看 */
+  ipcMain.handle('bili:toview', async () => {
+    try {
+      return { ok: true, list: await toviewList() }
+    } catch (e) {
+      const notLogin = /-101/.test(e.message)
+      if (!notLogin) console.warn('[bili-toview] 获取稍后再看失败:', e.message)
+      return { ok: false, reason: notLogin ? 'not-login' : 'error', message: e.message }
+    }
+  })
+
+  /** 追番 / 追剧 */
+  ipcMain.handle('bili:bangumi', async (_e, { mid, type = 1, page = 1, pageSize = 20, followStatus = 0 } = {}) => {
+    const m = resolveMid(mid)
+    if (!m) return { ok: false, reason: 'not-login' }
+    try {
+      const r = await bangumiList(m, type, page, pageSize, followStatus)
+      return { ok: true, ...r }
+    } catch (e) {
+      console.warn('[bili-bangumi] 获取追番失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 点赞过的视频 */
+  ipcMain.handle('bili:likes', async (_e, { mid, page = 1, pageSize = 20 } = {}) => {
+    const m = resolveMid(mid)
+    if (!m) return { ok: false, reason: 'not-login' }
+    try {
+      const r = await likedVideos(m, page, pageSize)
+      return { ok: true, ...r }
+    } catch (e) {
+      console.warn('[bili-likes] 获取点赞列表失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 投币过的视频 */
+  ipcMain.handle('bili:coins', async (_e, { mid, page = 1, pageSize = 20 } = {}) => {
+    const m = resolveMid(mid)
+    if (!m) return { ok: false, reason: 'not-login' }
+    try {
+      const r = await coinVideos(m, page, pageSize)
+      return { ok: true, ...r }
+    } catch (e) {
+      console.warn('[bili-coins] 获取投币列表失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 我关注的收藏夹 */
+  ipcMain.handle('bili:collected-folders', async (_e, { mid, page = 1, pageSize = 20 } = {}) => {
+    const m = resolveMid(mid)
+    if (!m) return { ok: false, reason: 'not-login' }
+    try {
+      const r = await collectedFolders(m, page, pageSize)
+      return { ok: true, ...r }
+    } catch (e) {
+      console.warn('[bili-collected] 获取关注收藏夹失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
+  })
+
+  /** 某个 up 主的投稿（点进 up 主主页时用） */
+  ipcMain.handle('bili:user-videos', async (_e, { mid, page = 1, pageSize = 20, keyword = '' } = {}) => {
+    if (!mid) return { ok: false, reason: 'no-mid' }
+    try {
+      const r = await userVideos(mid, page, pageSize, keyword)
+      return { ok: true, ...r }
+    } catch (e) {
+      console.warn('[bili-uservideos] 获取投稿失败:', e.message)
+      return { ok: false, reason: 'error', message: e.message }
+    }
   })
 }

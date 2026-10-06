@@ -62,6 +62,18 @@ const playerOpen = ref(false)
 
 onMounted(async () => {
   await refreshLogin()
+  /**
+   * 支持从别处跳过来直接播放指定视频。
+   *
+   * `?bvid=` 来自「B站个人中心」页（收藏夹 / 历史 / 点赞等列表点进来的）。
+   * 优先于 `?q=` 搜索：用户明确指定了要看的视频，不该再去搜索。
+   */
+  const directBvid = String(route.query.bvid || '').trim()
+  if (directBvid) {
+    // 用最小信息先建对象，play() 内部会拉完整详情（含 cid）
+    await play({ bvid: directBvid, title: '加载中…' })
+    return
+  }
   // 支持从 MV 页带歌名跳过来
   const q = String(route.query.q || '').trim()
   if (q) {
@@ -125,8 +137,27 @@ async function play(v) {
 
   try {
     const info = await bili.videoInfo(v.bvid)
-    // aid 也存下来：B 站观看记录上报需要它（只有 bvid/cid 时部分接口版本会失败）
-    current.value = { ...v, cid: info.cid, aid: info.aid, pages: info.pages, stat: info.stat, desc: info.desc }
+    /**
+     * 补全展示字段。
+     *
+     * 从「B站个人中心」跳过来时只带了 `{ bvid, title }`（列表项字段名
+     * 与这里不一致：收藏夹用 `cover`/`author`，历史用 `author_name`…），
+     * 若直接透传会导致播放器**没有封面**、标题显示「加载中…」。
+     * 统一用 videoInfo 的权威字段覆盖。
+     */
+    current.value = {
+      ...v,
+      title: info.title || v.title,
+      pic: info.pic || v.pic || v.cover,
+      author: info.owner?.name || v.author,
+      duration: info.duration || v.duration,
+      // aid 也存下来：B 站观看记录上报需要它（只有 bvid/cid 时部分接口版本会失败）
+      cid: info.cid,
+      aid: info.aid,
+      pages: info.pages,
+      stat: info.stat,
+      desc: info.desc
+    }
     const preferred = Number(settings.settings.biliQuality) || 0
     await resolveAndPlay(info.cid, preferred || undefined)
   } catch (e) {

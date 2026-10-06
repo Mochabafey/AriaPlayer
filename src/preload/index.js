@@ -96,7 +96,19 @@ const INVOKE_ALLOWLIST = new Set([
   'bili:report-progress',
   'bili:report-finished',
   'bili:cache-stats',
-  'bili:cache-clear'
+  'bili:cache-clear',
+  // B站个人主页 / 收藏夹 / 历史 / 关注
+  'bili:space-info',
+  'bili:fav-folders',
+  'bili:fav-items',
+  'bili:history',
+  'bili:followings',
+  'bili:toview',
+  'bili:bangumi',
+  'bili:likes',
+  'bili:coins',
+  'bili:collected-folders',
+  'bili:user-videos'
 ])
 
 const EVENT_ALLOWLIST = new Set([
