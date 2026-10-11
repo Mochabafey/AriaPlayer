@@ -470,6 +470,20 @@ async function restartServer() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* 允许收缩到可用空间（min-width: 0 才能突破 flex 的自动最小尺寸），
+     配合按钮的 flex:0 0 auto，长路径只会自己省略号截断，不会挤按钮 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/**
+ * 路径行里的按钮禁止被压缩。
+ *
+ * flex 子项默认 `flex-shrink: 1`，当路径很长（便携版的 AriaData 绝对路径
+ * 必然很长）时，按钮会被挤到换行 —— 「打开」被折成上下两行「打」「开」。
+ * 这与 README 里记的「flex 子项被 stretch 拉伸」是同一类问题。
+ */
+.dir .btn {
+  flex: 0 0 auto;
 }
 .switch {
 
