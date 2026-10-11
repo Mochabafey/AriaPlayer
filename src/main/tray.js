@@ -25,6 +25,7 @@
 import { app, Tray, Menu, nativeImage, BrowserWindow } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import { isPortable } from './portable.js'
 
 let tray = null
 let quitting = false
@@ -264,6 +265,23 @@ export function markQuitting() {
  * @param {boolean} startMinimized 自启时是否最小化（作为启动参数传给自身）
  */
 export function applyAutoLaunch(enabled, startMinimized = true) {
+  /**
+   * 便携模式**禁止**写自启项。
+   *
+   * 便携版的 process.execPath 是**临时解压目录**里的 exe
+   *（`%TEMP%\<随机名>\Aria Player.exe`），这个目录在程序退出时会被
+   * NSIS 包装器 `RMDir /r` 删掉。写进注册表 Run 项的结果是：
+   *   - 留下一条**永远失效**的启动项（开机报错 / 静默失败）
+   *   - 污染借用的那台电脑的注册表
+   *   - 即使当时有效，U 盘拔走后盘符变化也会让路径失效
+   *
+   * 所以这里直接拒绝，由 UI 展示原因（返回 portable:true 让设置页提示）。
+   */
+  if (isPortable()) {
+    console.log('[auto-launch] 便携模式不支持开机自启，已跳过（execPath 位于临时解压目录）')
+    return { applied: false, portable: true, reason: '便携版不支持开机自启' }
+  }
+
   try {
     app.setLoginItemSettings({
       openAtLogin: !!enabled,
@@ -320,6 +338,11 @@ export function applyAutoLaunch(enabled, startMinimized = true) {
  */
 export function getAutoLaunchState() {
   const devMode = !app.isPackaged
+  // 便携模式：自启不可用（见 applyAutoLaunch 的说明）。直接返回
+  // portable:true，让设置页禁用开关并说明原因，而不是显示一个假的「已关闭」。
+  if (isPortable()) {
+    return { enabled: false, devMode, portable: true, unsupported: true }
+  }
   try {
     // ---- 1. openAtLogin（必须把 args 组合都试一遍）----
     for (const args of [[], ['--start-minimized']]) {

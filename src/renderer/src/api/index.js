@@ -171,6 +171,7 @@ export const ncm = {
   // 曲库
   libraryList: () => bridge.invoke('ncm:library-list'),
   libraryFolders: () => bridge.invoke('ncm:library-folders'),
+  libraryRemoveFolder: (folder) => bridge.invoke('ncm:library-remove-folder', folder),
   libraryAddFolder: (folder) => bridge.invoke('ncm:library-add-folder', folder),
   libraryScan: () => bridge.invoke('ncm:library-scan'),
   librarySelectFolder: () => bridge.invoke('ncm:select-folder'),
@@ -182,10 +183,22 @@ export const ncm = {
 
   // 本地歌单
   playlistList: () => bridge.invoke('ncm:playlist-list'),
+  playlistDetail: (id) => bridge.invoke('ncm:playlist-detail', id),
+  playlistCreate: (p) => bridge.invoke('ncm:playlist-create', p),
   playlistSave: (p) => bridge.invoke('ncm:playlist-save', p),
+  playlistRename: (p) => bridge.invoke('ncm:playlist-rename', p),
   playlistRemove: (id) => bridge.invoke('ncm:playlist-remove', id),
+  playlistAddSongs: (p) => bridge.invoke('ncm:playlist-add-songs', p),
+  playlistRemoveSongs: (p) => bridge.invoke('ncm:playlist-remove-songs', p),
+  playlistReorder: (p) => bridge.invoke('ncm:playlist-reorder', p),
+  playlistExport: (p) => bridge.invoke('ncm:playlist-export', p),
   playlistExportM3u: (p) => bridge.invoke('ncm:playlist-export-m3u', p),
   playlistImportM3u: (name) => bridge.invoke('ncm:playlist-import-m3u', name),
+  playlistImportFile: (p) => bridge.invoke('ncm:playlist-import-file', p),
+  playlistImportNetease: (p) => bridge.invoke('ncm:playlist-import-netease', p),
+
+  // 便携模式
+  portableStatus: () => bridge.invoke('ncm:portable-status'),
 
   // 设置
   settingsGet: () => bridge.invoke('ncm:settings-get'),

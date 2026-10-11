@@ -8,11 +8,21 @@ import { app } from 'electron'
 import { settingsRepo } from '../db/settings.js'
 import { sessionRepo } from '../db/session.js'
 import { apiCacheRepo } from '../db/apiCache.js'
+import { isPortable, portableStatus } from '../portable.js'
 import { ffmpegAvailable, ffmpegVersion, transcodeToWav } from '../ffmpeg.js'
 import { cacheStats, cacheClear, enforceLimit } from '../audioCache.js'
 
-/* 可缓存的 API 及 TTL（命中 SQLite 缓存免走子进程请求网易云） */
-const API_CACHE_RULES = [
+/**
+ * 供其它主进程模块复用的网易云接口调用入口。
+ *
+ * 在 registerApiIpc() 执行时被赋值（那时才有 getServer 与 cookie jar）。
+ * 未注册前为 null —— 调用方需自行判空（ipc/playlist.js 的导入功能即如此）。
+ *
+ * @type {null | ((method: string, params?: object) => Promise<any>)}
+ */
+export let ncmApiCall = null
+
+/* 可缓存的 API 及 TTL（命中 SQLite 缓存免走子进程请求网易云） */const API_CACHE_RULES = [
   { re: /^song\/url\/v1/, ttl: 10 * 60 * 1000 }, // 音源 URL 有时效，短缓存
   { re: /^lyric\b/, ttl: 7 * 24 * 60 * 60 * 1000 }, // 歌词（含翻译）极少变化
   { re: /^song\/detail\b/, ttl: 24 * 60 * 60 * 1000 } // 歌曲详情
@@ -59,9 +69,25 @@ export function registerApiIpc(getServer) {
   const cookieJar = new Map()
 
   /* ---- 登录态加密持久化（BLOB 存 SQLite session 表，见 db/session.js） ----
-   * 加密优先走 Electron safeStorage（Windows DPAPI / macOS Keychain，
-   * 密文绑定当前系统账户）；不可用时回退 AES-256-GCM（密钥由机器信息派生）。
-   * 解密失败（换机器/系统变更）静默丢弃，退回未登录状态。 */
+   * 三种封装格式，靠 4 字节 magic 区分：
+   *
+   *   SS01  Electron safeStorage（Windows DPAPI / macOS Keychain）
+   *         —— 密文**绑定当前系统账户与机器**，最安全
+   *   AG01  AES-256-GCM，密钥由机器信息派生（hostname|username|uid）
+   *         —— safeStorage 不可用时的兜底，同样换机即废
+   *   PG01  AES-256-GCM，密钥来自数据目录内的随机 keyfile
+   *         —— **便携模式专用**：密钥随数据目录一起走（U 盘），
+   *            换台电脑仍能解密，登录态才真正「便携」
+   *
+   * 为什么便携模式不能用 SS01：DPAPI 密文只能在**加密它的那台机器+账户**上解开。
+   * 便携版把 ntr.db 拷到新机器后 safeStorage.decryptString 会抛异常，
+   * 下面的 catch 会静默丢弃会话 → 每次换机都要重新扫码登录，
+   * 与「插上就用」的预期不符。
+   *
+   * 安全性权衡：PG01 的密钥与密文同在 U 盘上，能读到 db 的人也能读到 key
+   * —— 强度约等于「明文存储但需要两步」。这是便携场景的固有取舍
+   *（用户要的就是数据随身走），且不降低非便携模式的安全性。
+   * 解密失败（换机器/系统变更/数据损坏）一律静默丢弃，退回未登录状态。 */
   let saveTimer = null
   let jarDirty = false
 
@@ -69,13 +95,46 @@ export function registerApiIpc(getServer) {
     const u = os.userInfo()
     return crypto.scryptSync(`${os.hostname()}|${u.username}|${u.uid ?? ''}`, 'ntr-session-v1', 32)
   }
-  function aesEncrypt(buf) {
+
+  /** 便携模式 keyfile 路径（与 ntr.db 同目录，随数据目录迁移） */
+  function portableKeyFile() {
+    return path.join(app.getPath('userData'), 'ncm-store', '.session-key')
+  }
+
+  /**
+   * 读取便携模式密钥；不存在则生成一个 32 字节随机密钥并落盘。
+   *
+   * 生成用 'wx' 标志（文件已存在则失败）——避免两个实例同时首启时
+   * 互相覆盖密钥，导致先启动的那个会话作废。
+   */
+  function portableKey() {
+    const f = portableKeyFile()
+    try {
+      const buf = fs.readFileSync(f)
+      if (buf.length === 32) return buf
+    } catch { /* 不存在或读失败 → 走生成 */ }
+    try {
+      fs.mkdirSync(path.dirname(f), { recursive: true })
+      const key = crypto.randomBytes(32)
+      fs.writeFileSync(f, key, { flag: 'wx', mode: 0o600 })
+      return key
+    } catch {
+      // 并发首启：另一个实例刚写完 → 读它写的那个
+      try {
+        const buf = fs.readFileSync(f)
+        if (buf.length === 32) return buf
+      } catch { /* ignore */ }
+      throw new Error('portable session key unavailable')
+    }
+  }
+
+  function aesEncrypt(buf, key) {
     const iv = crypto.randomBytes(12)
-    const c = crypto.createCipheriv('aes-256-gcm', fallbackKey(), iv)
+    const c = crypto.createCipheriv('aes-256-gcm', key, iv)
     return Buffer.concat([iv, c.update(buf), c.final(), c.getAuthTag()])
   }
-  function aesDecrypt(buf) {
-    const d = crypto.createDecipheriv('aes-256-gcm', fallbackKey(), buf.subarray(0, 12))
+  function aesDecrypt(buf, key) {
+    const d = crypto.createDecipheriv('aes-256-gcm', key, buf.subarray(0, 12))
     d.setAuthTag(buf.subarray(buf.length - 16))
     return Buffer.concat([d.update(buf.subarray(12, buf.length - 16)), d.final()])
   }
@@ -85,10 +144,13 @@ export function registerApiIpc(getServer) {
     try {
       const payload = Buffer.from(JSON.stringify([...cookieJar.entries()]), 'utf-8')
       let out
-      if (safeStorage.isEncryptionAvailable()) {
+      if (isPortable()) {
+        // 便携模式：密钥随数据目录走，换机可解密
+        out = Buffer.concat([Buffer.from('PG01'), aesEncrypt(payload, portableKey())])
+      } else if (safeStorage.isEncryptionAvailable()) {
         out = Buffer.concat([Buffer.from('SS01'), safeStorage.encryptString(payload.toString('utf-8'))])
       } else {
-        out = Buffer.concat([Buffer.from('AG01'), aesEncrypt(payload)])
+        out = Buffer.concat([Buffer.from('AG01'), aesEncrypt(payload, fallbackKey())])
       }
       sessionRepo.save(out)
     } catch (e) {
@@ -110,10 +172,12 @@ export function registerApiIpc(getServer) {
       const magic = buf.subarray(0, 4).toString('latin1')
       const body = buf.subarray(4)
       let json = ''
-      if (magic === 'SS01' && safeStorage.isEncryptionAvailable()) {
+      if (magic === 'PG01') {
+        json = aesDecrypt(body, portableKey()).toString('utf-8')
+      } else if (magic === 'SS01' && safeStorage.isEncryptionAvailable()) {
         json = safeStorage.decryptString(body)
       } else if (magic === 'AG01') {
-        json = aesDecrypt(body).toString('utf-8')
+        json = aesDecrypt(body, fallbackKey()).toString('utf-8')
       } else {
         return
       }
@@ -203,7 +267,14 @@ export function registerApiIpc(getServer) {
   }
 
   // ---- 通用 API 转发（私有 socket 通道）+ SQLite 缓存 ----
-  ipcMain.handle('ncm:api', async (_e, { method, params, noCache }) => {
+  /**
+   * 调用网易云接口。抽成具名函数是为了让**其它主进程模块**也能调用
+   *（如 ipc/playlist.js 导入网易云歌单），而不必自己重建 socket 连接、
+   * 重写缓存与 cookie 处理逻辑。
+   *
+   * 通过模块级 `ncmApiCall` 暴露给外部（见文件末尾的导出）。
+   */
+  async function callNcmApi({ method, params, noCache }) {
     const srv = getServer()
     if (!srv) throw new Error('NCM_SERVER_NOT_READY')
     // 启动窗口期兜底：窗口 ready-to-show 不等子服务就绪就显示出来，
@@ -240,7 +311,12 @@ export function registerApiIpc(getServer) {
     // 2. 业务成功且值得缓存才写（网易云约定 code === 200）
     if (cacheRule && json.code === 200 && isCacheable(route, json)) apiCacheRepo.set(key, json, cacheRule.ttl)
     return json
-  })
+  }
+
+  // 暴露给其它主进程模块（playlist 导入等）
+  ncmApiCall = (method, params) => callNcmApi({ method, params })
+
+  ipcMain.handle('ncm:api', (_e, args) => callNcmApi(args))
 
   // ---- 短链跳转解析（163cn.tv 等）→ 返回真实 URL ----
   ipcMain.handle('ncm:resolve-link', async (_e, input) => {
@@ -265,6 +341,9 @@ export function registerApiIpc(getServer) {
     const srv = getServer()
     return srv ? srv.status : 'down'
   })
+
+  // ---- 便携模式状态（设置页展示数据目录 / 是否随身携带）----
+  ipcMain.handle('ncm:portable-status', () => portableStatus())
 
   // ---- ffmpeg ----
   ipcMain.handle('ncm:ffmpeg-version', async () => {

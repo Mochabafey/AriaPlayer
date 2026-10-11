@@ -1,10 +1,15 @@
+// ⚠️ 必须排在所有其它 import 之前：便携模式要在 app ready 前、
+// 且在任何模块读取 app.getPath('userData') 之前完成重定向。
+// 下面的 db/、audioCache.js 等在模块作用域就依赖 userData 路径。
+import { setupPortableMode, isPortable, portableStatus } from './portable.js'
+
 import { app, BrowserWindow, protocol, shell, ipcMain } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { registerAudioProtocol } from './audioProtocol.js'
 import { NcmServer } from './ncmServer.js'
 import { QqMusicServer } from './qqMusicServer.js'
-import { registerApiIpc } from './ipc/api.js'
+import { registerApiIpc, ncmApiCall } from './ipc/api.js'
 import { registerDownloadIpc } from './ipc/download.js'
 import { registerLibraryIpc } from './ipc/library.js'
 import { registerPlaylistIpc } from './ipc/playlist.js'
@@ -60,6 +65,26 @@ app.commandLine.appendSwitch('proxy-bypass-list', 'localhost;127.0.0.1;[::1]')
 // 调试用：远程调试端口（排障时打开；正常使用不受影响）
 if (process.env.NCM_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.NCM_DEBUG_PORT)
+}
+
+/**
+ * 便携模式：把 userData 重定向到包装器 exe 同级的 AriaData/。
+ *
+ * 必须在 app ready 前执行，且要早于任何读取 userData 的模块
+ *（db/index.js 的 dbFile()、audioCache.js、biliStream.js、ipc/library.js
+ * 的 coversDir() 都基于 app.getPath('userData')）。
+ *
+ * 附带收益：便携版与安装版从此使用**不同的 userData**，
+ * requestSingleInstanceLock 不再互相抢锁（此前便携版启动会把安装版
+ * 的窗口唤到前台，然后自己静默退出）。
+ */
+const portable = setupPortableMode()
+if (portable.portable) {
+  console.log(
+    `[portable] 便携模式${portable.ok ? '已启用' : '目录不可写，已回退系统目录'}`,
+    '| 数据目录:', portable.dataDir,
+    portable.error ? `| 原因: ${portable.error}` : ''
+  )
 }
 
 // 兜底：静默 EPIPE 等管道断开错误，避免触发"JavaScript error"弹窗
@@ -161,7 +186,9 @@ function registerTrayIpc() {
       startMinimized: startMinimizedEnabled(),
       // 系统实际状态（可能与设置库不一致，供 UI 提示）
       systemAutoLaunch: sys.enabled,
-      devMode: sys.devMode
+      devMode: sys.devMode,
+      // 便携模式下自启不可用（execPath 在临时解压目录，写注册表只会留下失效项）
+      portable: !!sys.portable
     }
   })
 
@@ -439,7 +466,19 @@ async function bootstrap() {
       mainWindow.webContents.send('ncm:library-updated', {})
     }
   })
-  registerPlaylistIpc()
+  registerPlaylistIpc({
+    notifyUpdate: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ncm:library-updated', {})
+      }
+    },
+    // 惰性读取：ncmApiCall 在 registerApiIpc 里赋值（上面那行已执行），
+    // 但用包装函数而非直接传值，避免将来调整注册顺序时静默拿到 null。
+    apiCall: (method, params) => {
+      if (!ncmApiCall) throw new Error('NCM_SERVER_NOT_READY')
+      return ncmApiCall(method, params)
+    }
+  })
   registerNcmConvertIpc(() => mainWindow)
   // 传入 ncm server：B 站字幕/歌词功能需要经私有通道搜网易云
   registerBiliIpc(() => server)

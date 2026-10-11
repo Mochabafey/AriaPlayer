@@ -31,6 +31,11 @@ export const useLibraryStore = defineStore('library', {
       await ncm.libraryAddFolder(dir)
       await this.load()
     },
+    /** 移除监控文件夹（不删已入库的歌曲记录） */
+    async removeFolder(dir) {
+      await ncm.libraryRemoveFolder(dir)
+      await this.load()
+    },
     async edit(id, fields) {
       const r = await ncm.libraryEdit(id, fields)
       await this.load()

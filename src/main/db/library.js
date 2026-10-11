@@ -38,5 +38,15 @@ export const libraryRepo = {
   },
   addFolder(p) {
     getDb().prepare('INSERT OR IGNORE INTO folders (path, addedAt) VALUES (?, ?)').run(p, Date.now())
+  },
+  /**
+   * 移除监控文件夹。
+   *
+   * 只删 folders 表里的记录，**不删 songs 表里已扫描到的歌** ——
+   * 用户想「不再自动扫描这个目录」，而不是「把这些歌从曲库丢掉」。
+   * 真要清歌走 removeSong（右键「从曲库移除」）。
+   */
+  removeFolder(p) {
+    getDb().prepare('DELETE FROM folders WHERE path = ?').run(p)
   }
 }

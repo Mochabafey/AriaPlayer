@@ -64,11 +64,16 @@
 
 - **SQLite** — Node 内置 `node:sqlite`，零原生依赖；设置/曲库/歌单/下载任务/API 缓存/会话统一入库，含旧 JSON 自动迁移
 - **本地曲库** — 文件夹扫描、元数据读取、ID3 写回（MP3）、封面墙、自建歌单、m3u/json 导入导出、NCM 批量转换
+- **本地歌单** — 曲库页左侧歌单栏：新建/重命名/删除、批量加歌与移出、右键菜单、拖拽排序；
+  **网易云歌单导入**（粘贴链接或 ID，存曲目快照，可离线浏览、按需下载）；
+  导出 M3U / JSON / TXT
+- **便携模式** — 便携版数据全部落在程序同级的 `AriaData/`，换机插上即用（见[便携模式](#便携模式)）
 - **安全加固** — IPC 白名单桥 + sandbox 渲染隔离、音频代理 URL 校验（防 SSRF）、HLS 协议目录穿越防护
 - **登录态加密** — cookie 经 safeStorage / AES-256-GCM 加密存盘，不进仓库
 
 > **凭据存放位置**：所有登录态（网易云 / QQ 音乐 / B 站）经加密后存在
 > `%APPDATA%/Aria Player/ncm-store/`（**项目目录之外**），`.gitignore` 已排除。
+> 便携版则存在 `<exe 同级>/AriaData/ncm-store/`。
 > 全历史核查确认：`SESSDATA` / `bili_jct` / `DedeUserID` / `MUSIC_U` 等
 > 真实凭据值**从未进入 git 历史**（仓库中的 `MUSIC_U=xxx` 均为上游文档占位符）。
 >
@@ -77,6 +82,44 @@
 > 风险很低（随机设备 ID，与账号无关），如需彻底清理可用
 > `git filter-repo --path server/data/deviceid.txt --invert-paths` 后强推。
 - **零原生依赖打包** — 纯 JS（music-metadata、node-id3、node:sqlite、hls.js），无 better-sqlite3 等编译依赖
+
+---
+
+## 便携模式
+
+electron-builder 的 `portable` target 是一个**自解压 NSIS 包装器**：运行时把应用解包到
+`%TEMP%`，再启动真正的 exe，同时注入 `PORTABLE_EXECUTABLE_DIR`（包装器 exe 所在目录）。
+
+**问题**：不处理这个变量的话，所有数据仍走 `app.getPath('userData')` = `%APPDATA%\Aria Player`：
+
+- 换台电脑插上 U 盘 → 曲库/歌单/设置全空，失去「便携」意义
+- 在借用的电脑上留下数据（音频缓存上限 8GB）
+- **与安装版共用同一个 userData** → `requestSingleInstanceLock` 判重冲突：
+  便携版启动会把安装版的窗口唤到前台，然后自己静默退出
+
+**做法**（[src/main/portable.js](src/main/portable.js)，在 `app ready` 前调用）：
+
+```js
+const portable = setupPortableMode()   // → app.setPath('userData', <exe 同级>/AriaData)
+```
+
+配套改动：
+
+| 项 | 处理 |
+|---|---|
+| 数据目录 | `userData` + `sessionData` 一起重定向，写权限自检（探测文件用完即删） |
+| 目录不可写 | 只读介质 / 权限不足 → **回退系统目录**，功能不受影响，设置页展示原因 |
+| 开机自启 | **禁用**。便携版 execPath 在临时解压目录，写注册表只会留下失效项并污染宿主机 |
+| 下载目录 | 默认改为 `<数据目录>/Music`，而不是宿主机的「音乐」文件夹 |
+| 登录态加密 | 便携模式改用 **keyfile 派生的 AES-256-GCM**（magic `PG01`），密钥随数据目录走 |
+
+**为什么便携模式不能用 DPAPI**：`safeStorage`（Windows DPAPI）的密文绑定
+**加密它的那台机器与账户**，换机后 `decryptString` 抛异常 → 会话被静默丢弃 →
+每次换机都要重新扫码。便携模式改用数据目录内的随机 keyfile（`.session-key`），
+密钥随 U 盘一起走。**代价是密钥与密文同盘**（能读 db 的人也能读 key），
+这是「数据随身带」的固有取舍，且不影响安装版（仍优先走 safeStorage）。
+
+> 顺带解决了单一实例锁冲突：便携版与安装版从此使用不同的 userData。
 
 ---
 
@@ -421,6 +464,20 @@ bs-blur         1   歌词模糊底
 **设计约定**：全应用状态与持久化**一律保存「滑块位置」**（0..1），
 只在最后一步设置媒体元素时换算成振幅 —— 设置格式不变、UI 显示符合直觉、音视频两条链路共用同一曲线。
 
+### 歌单的两种形态
+
+`playlists` 表用 `source` 区分，因为它们的数据结构本质不同：
+
+| source | songIds | tracks | 说明 |
+|---|---|---|---|
+| `local` | 引用曲库 id | NULL | 本地歌单。曲库删歌后引用悬空，读取时按曲库现状过滤（不级联清理 —— 重新加回同一文件即复原） |
+| `m3u` | 引用曲库 id | NULL | m3u 导入，只收录曲库已有的文件 |
+| `netease` | `[]` | 曲目快照 | 网易云导入。歌通常不在本地磁盘，无法用 id 引用 → 存完整快照，播放走在线音源 |
+
+**快照不同步上游是刻意的**：用户「导入」即拿走一份副本，不应因上游改歌单而丢失。
+渲染时若曲库里恰好有同 id 的下载歌曲，会**优先本地播放**（`resolvePlaylistSongs` 补 `filePath`），
+省一次音源解析与网络请求。
+
 ### 不占 TCP 端口
 
 `bridge.cjs` 劫持 `net.Server.listen`，服务绑定 Named Pipe（Windows）/ Unix Socket（Unix）。
@@ -709,6 +766,7 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 ├── src/
 │   ├── main/
 │   │   ├── index.js             # 窗口 + IPC 注册 + 协议特权注册
+│   │   ├── portable.js          # 便携模式：userData 重定向（app ready 前调用）
 │   │   ├── ncmServer.js         # api-enhanced 子进程管理
 │   │   ├── qqMusicServer.js     # qq-music-api 子进程管理
 │   │   ├── ncm/bridge.cjs       # listen() 劫持 → Named Pipe / Unix Socket
@@ -724,9 +782,9 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 │   ├── preload/index.js         # contextBridge 白名单桥
 │   └── renderer/src/
 │       ├── App.vue / main.js / router/
-│       ├── stores/              # player / library / downloads / settings
+│       ├── stores/              # player / library / playlist / downloads / settings
 │       ├── views/               # Discover / Daily / Search / Library / Profile / MvDetail / BiliView
-│       ├── components/          # PlayerBar / LyricPanel / BiliPlayer / BiliSubtitle / BiliDanmaku / SongTable
+│       ├── components/          # PlayerBar / LyricPanel / BiliPlayer / BiliSubtitle / BiliDanmaku / SongTable / ContextMenu / PromptModal
 │       ├── composables/         # useVolumeSlider
 │       ├── api/ utils/ assets/  # utils: lrc(解析/中英拆分) / lrcSync(自动对轨) / volume(音量曲线) / scrobble(双上报)
 ├── server/                      # 上游服务（vendor 后生成）
@@ -780,6 +838,11 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 | `Get-Content`/`Set-Content` 损坏中文 | 源码中文乱码 | 改用编辑器工具（`edit`/`write`）读写源文件 |
 | `node -e "..."` 嵌套模板字符串 | 语法错误 | 写成脚本文件再执行 |
 | `spawn EPERM` | sandbox 下 piped stdio 被拒 | 用 `stdio: 'inherit'` |
+| **`git checkout -b` 权限被拒** | `cannot lock ref ... Permission denied` | 两层原因：① `.git`、`.git/refs`、`.git/refs/heads` 三级缺当前用户的完全控制权限 → 用 `diagnose-windows-sandbox-acl.ps1` 修复；② **修完仍被拒**（根目录可写、所有子目录被拒，而编辑器工具却能写）→ 是沙箱进程令牌限制，需提权执行 |
+| **ESM 裸跑 Electron 主进程** | `does not provide an export named 'app'` | Electron 内置模块只有 CJS 导出，源码是 ESM；必须经 electron-vite 打成 CJS 才能跑。验证主进程逻辑请直接跑构建产物 |
+| **验证便携模式时主进程崩溃** | `Cannot read properties of undefined (reading 'registerSchemesAsPrivileged')` | 环境里继承了 `ELECTRON_RUN_AS_NODE=1`（DSH 自身是 Electron 应用，注入给了子进程）→ Electron 以纯 Node 模式运行，`require('electron')` 只返回路径字符串。测试脚本须 `delete env.ELECTRON_RUN_AS_NODE`（`dev-server.mjs` 同样在防这个坑） |
+| **开发版与安装版抢单一实例锁** | 开发版启动后立刻退出，安装版窗口被唤到前台 | 两者 `app.getName()` 都是 productName「Aria Player」→ 共用 `%APPDATA%\Aria Player`。排查时给开发版加 `--user-data-dir=<独立目录>` |
+
 | **weapi 接口全部 502** | 每日推荐/我的歌单/推荐歌单等页面全空，而搜索/播放正常 | `weapi` 走 `music.163.com`，该域名在部分网络下解析到**不可达 IP**（IPv6 + 某 IPv4 均 ECONNRESET），而 `interface.music.163.com` 正常。实测 `/weapi/` 路径在 `interface*.music.163.com` 上完全可用 → 在 `request.js` 请求层加**域名自动回退**（仅网络错误时重试 + 5 分钟熔断）。影响 217 个接口 |
 | **打包版服务起不来（CI 构建）** | 界面显示「服务未就绪」，「我的」页卡在加载中 | `vendor-server.mjs` 旧判据「有 `app.js` 就 `process.exit(0)`」在 CI 上误跳过依赖安装（`server/node_modules` 被 gitignore 排除）→ 判据改为**「有源码**且**关键依赖齐全」**，并移除顶层 exit 以免连本地补丁一起跳过 |
 | **正则匹配转换前形式** | 「刚听完查不到记录，过一会又出现」 | `method.replace(/_/g,'/')` 之后才做 `FORCE_FETCH_RE.test(route)`，而正则写的是下划线形式 → 7 个实时接口的强制刷新**从未生效**。正则改用 `[/_]` 兼容两种形式 |

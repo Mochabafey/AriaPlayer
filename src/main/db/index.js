@@ -34,12 +34,17 @@ CREATE TABLE IF NOT EXISTS songs (
 );
 CREATE INDEX IF NOT EXISTS idx_songs_added ON songs(addedAt);
 CREATE TABLE IF NOT EXISTS playlists (
-  id        TEXT PRIMARY KEY,
-  name      TEXT NOT NULL,
-  songIds   TEXT NOT NULL DEFAULT '[]',
-  imported  INTEGER DEFAULT 0,
-  createdAt INTEGER NOT NULL,
-  updatedAt INTEGER NOT NULL
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  songIds     TEXT NOT NULL DEFAULT '[]',
+  tracks      TEXT,
+  cover       TEXT,
+  description TEXT,
+  source      TEXT DEFAULT 'local',
+  sourceId    TEXT,
+  imported    INTEGER DEFAULT 0,
+  createdAt   INTEGER NOT NULL,
+  updatedAt   INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS downloads (
   id        TEXT PRIMARY KEY,
@@ -96,8 +101,48 @@ export function initDb() {
   db = new DatabaseSync(dbFile())
   db.exec('PRAGMA journal_mode = WAL')
   db.exec(SCHEMA)
+  migrateColumns()
   migrateFromJson()
   return db
+}
+
+/**
+ * 追加式列迁移。
+ *
+ * SCHEMA 里全是 `CREATE TABLE IF NOT EXISTS` —— 对**已存在**的表不会补新列。
+ * 所以每次给旧表加字段，都要在这里补一条幂等的 ALTER TABLE。
+ *
+ * 用 PRAGMA table_info 先查现有列，缺哪列补哪列：重复启动安全，
+ * 且比 try/catch 吞掉 "duplicate column name" 错误更明确（不会掩盖其它失败）。
+ */
+function migrateColumns() {
+  const addColumns = (table, columns) => {
+    let existing
+    try {
+      existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name))
+    } catch (e) {
+      console.error('[db] table_info failed', table, e.message)
+      return
+    }
+    for (const [name, ddl] of Object.entries(columns)) {
+      if (existing.has(name)) continue
+      try {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`)
+        console.log(`[db] migrated column ${table}.${name}`)
+      } catch (e) {
+        console.error(`[db] add column failed ${table}.${name}`, e.message)
+      }
+    }
+  }
+
+  // 歌单扩展：在线导入的曲目快照 + 封面/描述/来源标记
+  addColumns('playlists', {
+    tracks: 'TEXT',
+    cover: 'TEXT',
+    description: 'TEXT',
+    source: "TEXT DEFAULT 'local'",
+    sourceId: 'TEXT'
+  })
 }
 
 export function closeDb() {

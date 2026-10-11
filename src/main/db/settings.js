@@ -1,8 +1,31 @@
 import { app } from 'electron'
+import path from 'path'
+import fs from 'fs'
 import { getDb } from './index.js'
+import { isPortable, portableDataDir } from '../portable.js'
+
+/**
+ * 便携模式下的下载目录默认值：<数据目录>/Music。
+ *
+ * 不用 app.getPath('music') —— 那是**宿主系统**的音乐文件夹，
+ * 便携版的下载结果会留在别人电脑上，与「便携」相悖。
+ * 放在数据目录下，U 盘拔走时下载的歌一起带走。
+ *
+ * 目录创建失败（只读介质）时退回系统音乐目录，不让默认值本身抛错。
+ */
+function defaultDownloadDir() {
+  if (!isPortable()) return app.getPath('music')
+  try {
+    const dir = path.join(portableDataDir(), 'Music')
+    fs.mkdirSync(dir, { recursive: true })
+    return dir
+  } catch {
+    return app.getPath('music')
+  }
+}
 
 const DEFAULTS = {
-  downloadDir: app.getPath('music'),
+  downloadDir: defaultDownloadDir(),
   quality: '320000',
   enableUnblock: true,
   enableFlac: true,

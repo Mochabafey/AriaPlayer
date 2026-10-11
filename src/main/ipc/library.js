@@ -33,6 +33,13 @@ export function registerLibraryIpc(notifyUpdate) {
 
   ipcMain.handle('ncm:library-folders', () => libraryRepo.listFolders())
 
+  // 移除监控文件夹（保留已入库的歌曲记录，只是不再自动扫描）
+  ipcMain.handle('ncm:library-remove-folder', (_e, folder) => {
+    libraryRepo.removeFolder(folder)
+    notify()
+    return true
+  })
+
   ipcMain.handle('ncm:library-add-folder', async (_e, folder) => {
     libraryRepo.addFolder(folder)
     const added = await scanDir(folder)

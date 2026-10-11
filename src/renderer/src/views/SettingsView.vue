@@ -41,8 +41,22 @@ const tray = ref({
   autoLaunch: false,
   startMinimized: true,
   systemAutoLaunch: false,
-  devMode: false
+  devMode: false,
+  portable: false
 })
+
+/**
+ * 便携模式状态（数据目录位置、是否真正生效）。
+ * 便携版的数据放在 exe 同级的 AriaData/，需要让用户看得见 ——
+ * 否则他会以为「便携版怎么还是把歌单存到 C 盘了」。
+ */
+const portable = ref({ portable: false, active: false, dataDir: null, exeDir: null, userData: '' })
+
+async function loadPortable() {
+  try {
+    portable.value = await ncm.portableStatus()
+  } catch { /* 主进程未就绪时用默认值 */ }
+}
 
 async function loadTray() {
   try {
@@ -73,6 +87,7 @@ onMounted(() => {
   settings.load()
   refreshCache()
   loadTray()
+  loadPortable()
 })
 
 async function refreshCache() {
@@ -144,6 +159,46 @@ async function restartServer() {
     </section>
 
     <section class="sec">
+      <h2>数据存储</h2>
+      <div class="row">
+        <div class="label">
+          <div>
+            运行模式
+            <span v-if="portable.active" class="tag-ok">便携模式</span>
+            <span v-else-if="portable.portable" class="tag-warn">便携版（已回退系统目录）</span>
+          </div>
+          <div class="hint">
+            <template v-if="portable.active">
+              所有数据（曲库、歌单、设置、登录态、缓存）都存放在程序同级目录，
+              换台电脑插上就能用，不会在宿主机留下数据
+            </template>
+            <template v-else-if="portable.portable">
+              检测到便携版，但数据目录不可写（U 盘写保护 / 权限不足），
+              已回退到系统用户目录 —— 数据不会随程序移动
+            </template>
+            <template v-else>
+              安装版：数据存放在系统用户目录，与程序安装位置分离
+            </template>
+          </div>
+        </div>
+        <div class="value dir">
+          <span class="path">{{ portable.userData || '（未知）' }}</span>
+          <button class="btn small ghost" @click="ncm.openFolder(portable.userData)">打开</button>
+        </div>
+      </div>
+      <div v-if="portable.portable" class="row">
+        <div class="label">
+          <div>程序所在目录</div>
+          <div class="hint">便携版的数据目录是它下面的 AriaData 文件夹</div>
+        </div>
+        <div class="value dir">
+          <span class="path">{{ portable.exeDir }}</span>
+          <button class="btn small ghost" @click="ncm.openFolder(portable.exeDir)">打开</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec">
       <h2>播放缓存</h2>
       <div class="row">
         <div class="label">
@@ -184,15 +239,24 @@ async function restartServer() {
         <div class="label">
           <div>开机自启动</div>
           <div class="hint">
-            登录系统后自动启动咏叹调
-            <span v-if="tray.devMode" class="warn">（当前为开发模式，自启项指向开发环境而非安装版）</span>
-            <span v-else-if="tray.autoLaunch !== tray.systemAutoLaunch" class="warn">（与系统实际状态不一致，重新开关一次可同步）</span>
+            <template v-if="tray.portable">
+              <span class="warn">便携版不支持开机自启</span>
+              —— 便携版的程序运行在临时解压目录，写入的自启项在退出后即失效，
+              还会污染当前电脑的注册表
+            </template>
+            <template v-else>
+              登录系统后自动启动咏叹调
+              <span v-if="tray.devMode" class="warn">（当前为开发模式，自启项指向开发环境而非安装版）</span>
+              <span v-else-if="tray.autoLaunch !== tray.systemAutoLaunch" class="warn">（与系统实际状态不一致，重新开关一次可同步）</span>
+            </template>
           </div>
         </div>
         <div class="value">
           <button
             class="switch"
             :class="{ on: tray.autoLaunch }"
+            :disabled="tray.portable"
+            :title="tray.portable ? '便携版不支持开机自启' : ''"
             @click="setTray({ autoLaunch: !tray.autoLaunch })"
           ></button>
         </div>
@@ -439,6 +503,31 @@ async function restartServer() {
   left: 23px;
   background: #fff;
   transform: none;
+}
+.switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.switch:disabled:hover::after {
+  transform: none;
+}
+/* 运行模式标签 */
+.tag-ok,
+.tag-warn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.tag-ok {
+  background: rgba(49, 194, 124, 0.15);
+  color: var(--green);
+}
+.tag-warn {
+  background: rgba(255, 152, 0, 0.16);
+  color: #e08b00;
 }
 .about p {
   font-size: 13px;
