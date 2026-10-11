@@ -9,6 +9,7 @@ import { settingsRepo } from '../db/settings.js'
 import { sessionRepo } from '../db/session.js'
 import { apiCacheRepo } from '../db/apiCache.js'
 import { isPortable, portableStatus } from '../portable.js'
+import { sealSession, openSession } from '../sessionCrypto.js'
 import { ffmpegAvailable, ffmpegVersion, transcodeToWav } from '../ffmpeg.js'
 import { cacheStats, cacheClear, enforceLimit } from '../audioCache.js'
 
@@ -91,68 +92,25 @@ export function registerApiIpc(getServer) {
   let saveTimer = null
   let jarDirty = false
 
-  function fallbackKey() {
+  /** 传给 sessionCrypto 的上下文（便携模式 / safeStorage / 机器信息） */
+  function sessionOpts() {
     const u = os.userInfo()
-    return crypto.scryptSync(`${os.hostname()}|${u.username}|${u.uid ?? ''}`, 'ntr-session-v1', 32)
-  }
-
-  /** 便携模式 keyfile 路径（与 ntr.db 同目录，随数据目录迁移） */
-  function portableKeyFile() {
-    return path.join(app.getPath('userData'), 'ncm-store', '.session-key')
-  }
-
-  /**
-   * 读取便携模式密钥；不存在则生成一个 32 字节随机密钥并落盘。
-   *
-   * 生成用 'wx' 标志（文件已存在则失败）——避免两个实例同时首启时
-   * 互相覆盖密钥，导致先启动的那个会话作废。
-   */
-  function portableKey() {
-    const f = portableKeyFile()
-    try {
-      const buf = fs.readFileSync(f)
-      if (buf.length === 32) return buf
-    } catch { /* 不存在或读失败 → 走生成 */ }
-    try {
-      fs.mkdirSync(path.dirname(f), { recursive: true })
-      const key = crypto.randomBytes(32)
-      fs.writeFileSync(f, key, { flag: 'wx', mode: 0o600 })
-      return key
-    } catch {
-      // 并发首启：另一个实例刚写完 → 读它写的那个
-      try {
-        const buf = fs.readFileSync(f)
-        if (buf.length === 32) return buf
-      } catch { /* ignore */ }
-      throw new Error('portable session key unavailable')
+    return {
+      portable: isPortable(),
+      dataDir: app.getPath('userData'),
+      safeStorage,
+      hostname: os.hostname(),
+      username: u.username,
+      uid: u.uid
     }
-  }
-
-  function aesEncrypt(buf, key) {
-    const iv = crypto.randomBytes(12)
-    const c = crypto.createCipheriv('aes-256-gcm', key, iv)
-    return Buffer.concat([iv, c.update(buf), c.final(), c.getAuthTag()])
-  }
-  function aesDecrypt(buf, key) {
-    const d = crypto.createDecipheriv('aes-256-gcm', key, buf.subarray(0, 12))
-    d.setAuthTag(buf.subarray(buf.length - 16))
-    return Buffer.concat([d.update(buf.subarray(12, buf.length - 16)), d.final()])
   }
 
   function saveSession() {
     if (!cookieJar.size) return
     try {
-      const payload = Buffer.from(JSON.stringify([...cookieJar.entries()]), 'utf-8')
-      let out
-      if (isPortable()) {
-        // 便携模式：密钥随数据目录走，换机可解密
-        out = Buffer.concat([Buffer.from('PG01'), aesEncrypt(payload, portableKey())])
-      } else if (safeStorage.isEncryptionAvailable()) {
-        out = Buffer.concat([Buffer.from('SS01'), safeStorage.encryptString(payload.toString('utf-8'))])
-      } else {
-        out = Buffer.concat([Buffer.from('AG01'), aesEncrypt(payload, fallbackKey())])
-      }
-      sessionRepo.save(out)
+      // 加密封装在 src/main/sessionCrypto.js（纯函数，可单测）
+      const { blob } = sealSession([...cookieJar.entries()], sessionOpts())
+      sessionRepo.save(blob)
     } catch (e) {
       console.error('[session] save failed', e)
     }
@@ -166,25 +124,18 @@ export function registerApiIpc(getServer) {
   }
 
   function loadSession() {
-    try {
-      const buf = sessionRepo.load()
-      if (!buf) return
-      const magic = buf.subarray(0, 4).toString('latin1')
-      const body = buf.subarray(4)
-      let json = ''
-      if (magic === 'PG01') {
-        json = aesDecrypt(body, portableKey()).toString('utf-8')
-      } else if (magic === 'SS01' && safeStorage.isEncryptionAvailable()) {
-        json = safeStorage.decryptString(body)
-      } else if (magic === 'AG01') {
-        json = aesDecrypt(body, fallbackKey()).toString('utf-8')
-      } else {
-        return
+    const blob = sessionRepo.load()
+    if (!blob) return
+    const r = openSession(blob, sessionOpts())
+    if (!r.ok) {
+      // 解密失败（换机器 / 系统凭据变更 / 数据损坏）：丢弃旧会话，走未登录。
+      // 这是预期内的降级路径，不打扰用户。
+      if (r.reason && r.reason !== 'empty') {
+        console.log('[session] 旧登录态无法解封（%s），已退回未登录', r.reason)
       }
-      for (const [k, v] of JSON.parse(json)) cookieJar.set(k, v)
-    } catch {
-      // 解密失败（换机器 / 系统凭据变更 / 数据损坏）：丢弃旧会话，走未登录
+      return
     }
+    for (const [k, v] of r.entries) cookieJar.set(k, v)
   }
   loadSession()
 

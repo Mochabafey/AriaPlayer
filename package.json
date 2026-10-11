@@ -20,10 +20,11 @@
     "smoke": "node scripts/smoke-server.mjs",
     "test:tags": "node scripts/gen-tag-samples.js && node src/main/tags/writeTags.test.mjs",
     "test:playlist": "node src/main/playlistExport.test.mjs && node src/main/playlistImport.test.mjs",
+    "test:session": "node src/main/sessionCrypto.test.mjs",
     "test:pack": "node scripts/pack-filter.test.mjs",
     "test:pack:report": "node scripts/pack-filter-report.mjs",
     "test:integration": "node tests/playlist-integration.mjs",
-    "test": "node src/main/playlistExport.test.mjs && node src/main/playlistImport.test.mjs && node scripts/pack-filter.test.mjs && node src/main/tags/writeTags.test.mjs",
+    "test": "node src/main/playlistExport.test.mjs && node src/main/playlistImport.test.mjs && node src/main/sessionCrypto.test.mjs && node scripts/pack-filter.test.mjs && node src/main/tags/writeTags.test.mjs",
     "pack:win": "node scripts/build-app.mjs && electron-builder --win",
     "pack:mac": "node scripts/build-app.mjs && electron-builder --mac",
     "pack:dir": "node scripts/build-app.mjs && electron-builder --dir"

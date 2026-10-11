@@ -119,6 +119,29 @@ const portable = setupPortableMode()   // → app.setPath('userData', <exe 同�
 密钥随 U 盘一起走。**代价是密钥与密文同盘**（能读 db 的人也能读 key），
 这是「数据随身带」的固有取舍，且不影响安装版（仍优先走 safeStorage）。
 
+### 换机后哪些数据会保留
+
+便携模式的数据目录（`AriaData/`）整个随 U 盘走，所以**绝大多数内容都会保留**。
+但三类凭据的存储方式不同，跨机行为需要说清楚：
+
+| 数据 | 存放位置 | 跨机保留 | 说明 |
+|---|---|---|---|
+| **网易云登录态** | `session` 表（BLOB） | ✅ 保留 | 便携模式走 `PG01`（keyfile 派生 AES-GCM），密钥随数据目录 |
+| **QQ 音乐登录态** | `settings.qqCookie` | ✅ 保留 | 明文存 SQLite，无机器绑定 |
+| **B 站登录态** | `settings.biliCookie` | ✅ 保留 | 明文存 SQLite，无机器绑定 |
+| 设置 / 曲库 / 歌单 / 下载任务 | SQLite 各表 | ✅ 保留 | — |
+| 音频持久缓存 / B站合流缓存 | `audio-cache/`、`bili-cache/` | ✅ 保留 | 注意 U 盘写入寿命，建议调小上限 |
+| 播放队列、视图偏好、推荐缓存 | `Local Storage/`（Chromium） | ✅ 保留 | 随 `userData` 走 |
+| 封面缓存 | `covers/` | ✅ 保留 | — |
+
+> **`.session-key` 是惰性生成的**：只在首次**保存登录态**时创建。
+> 全新便携版首次启动时它并不存在 —— 这是正确行为，不是缺陷。
+>
+> **⚠️ 安全提示**：`settings` 表里的 QQ / B站 cookie 是**明文**存储的。
+> 便携版把整个 `AriaData/` 放在 U 盘上，**U 盘丢失等于这些账号凭据泄露**。
+> 网易云那份有 keyfile 加密（虽然密钥同盘，仍需两步）；QQ/B站那两份没有。
+> 如果对安全性敏感，便携版建议只登录网易云，或给 U 盘加 BitLocker。
+
 > 顺带解决了单一实例锁冲突：便携版与安装版从此使用不同的 userData。
 
 ### 首次启动较慢（正常现象）
@@ -745,8 +768,9 @@ npm run build     # 编译三进程（out/）
 ### 测试
 
 ```bash
-npm test              # 全部单元测试：歌单导入导出 + 打包裁剪 + 标签写回（135 项）
+npm test              # 全部单元测试：歌单 + 登录态加密 + 打包裁剪 + 标签（159 项）
 npm run test:playlist # 歌单导出内容生成 + 歌单文件解析（59 项）
+npm run test:session  # 登录态加密封装（含跨机保留验证，24 项）
 npm run test:pack     # 打包载荷裁剪规则（50 项）—— 改裁剪规则后必跑
 npm run test:tags     # ID3/FLAC/M4A 标签写回
 
