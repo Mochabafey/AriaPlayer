@@ -20,6 +20,7 @@
     "smoke": "node scripts/smoke-server.mjs",
     "test:tags": "node scripts/gen-tag-samples.js && node src/main/tags/writeTags.test.mjs",
     "test:playlist": "node src/main/playlistExport.test.mjs && node src/main/playlistImport.test.mjs",
+    "test:integration": "node tests/playlist-integration.mjs",
     "test": "node src/main/playlistExport.test.mjs && node src/main/playlistImport.test.mjs && node src/main/tags/writeTags.test.mjs",
     "pack:win": "node scripts/build-app.mjs && electron-builder --win",
     "pack:mac": "node scripts/build-app.mjs && electron-builder --mac",

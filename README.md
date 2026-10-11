@@ -693,13 +693,23 @@ npm run build     # 编译三进程（out/）
 ### 测试
 
 ```bash
-npm test              # 全部（歌单导入导出 + 标签写回）
+npm test              # 单元测试：歌单导入导出 + 标签写回（85 项）
 npm run test:playlist # 歌单导出内容生成 + 歌单文件解析（59 项）
 npm run test:tags     # ID3/FLAC/M4A 标签写回
+
+# 集成测试（需 app 已运行 + 调试端口）
+NCM_DEBUG_PORT=9333 npm run dev        # 终端 A
+npm run test:integration               # 终端 B
 ```
 
 纯函数模块（`playlistExport.js` / `playlistImport.js`）零依赖，普通 Node 直接跑，
 不需要 Electron —— 这也是把它们从 IPC handler 里拆出来的原因。
+
+集成测试（`tests/playlist-integration.mjs`）补单测够不着的那部分：
+**IPC handler 是否正确透传参数**。它用 ffmpeg 生成真实音频跑完整生命周期，
+结束后自行清理，可反复运行。这个脚本已经抓到过一个真实缺陷 ——
+`ncm:playlist-save` 曾经只解构 `{ id, name, songIds }`，把调用方传的
+`source`/`tracks` 静默丢掉（不报错），快照歌单因此被当成本地歌单。
 
 ---
 
@@ -828,6 +838,8 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 │       ├── composables/         # useVolumeSlider
 │       ├── api/ utils/ assets/  # utils: lrc(解析/中英拆分) / lrcSync(自动对轨) / volume(音量曲线) / scrobble(双上报)
 ├── server/                      # 上游服务（vendor 后生成）
+├── tests/
+│   └── playlist-integration.mjs # 歌单集成测试（需 app 运行 + 调试端口）
 └── .github/workflows/build.yml
 ```
 
@@ -884,6 +896,7 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 | **开发版与安装版抢单一实例锁** | 开发版启动后立刻退出，安装版窗口被唤到前台 | 两者 `app.getName()` 都是 productName「Aria Player」→ 共用 `%APPDATA%\Aria Player`。排查时给开发版加 `--user-data-dir=<独立目录>` |
 | **正斜杠路径查库不命中** | 导入 M3U 显示「0 首，跳过 50 首」，但文件确实在曲库 | M3U 跨平台惯例用正斜杠（`D:/Music/a.mp3`），曲库存的是 `path.join` 的反斜杠形式，精确匹配失败。`path.isAbsolute('D:/x')` 为 **true**，所以只判 isAbsolute 发现不了 → 必须 `path.normalize`；仓储层读写两侧都规范化 |
 | **构建产物跑不起来内置服务** | 直接跑 `dist/out/main/index.js` 报 `app.js not found at dist/out/main/server/app.js` | 打包路径布局（`process.resourcesPath`）只在 electron-builder 产物里存在。要在源码目录跑就用 `npm run dev`，别直接跑构建产物 |
+| **IPC handler 静默丢字段** | 传了 `source:'netease'` 却存成 `'local'`，快照曲目全丢，**且不报错** | handler 里解构参数时漏了字段（`{ id, name, songIds }` 丢了 tracks/cover/description/source/sourceId），仓储层支持也没用。加字段时要同步改 handler；这类缺陷单测够不着，靠 `npm run test:integration` 兜住 |
 
 | **weapi 接口全部 502** | 每日推荐/我的歌单/推荐歌单等页面全空，而搜索/播放正常 | `weapi` 走 `music.163.com`，该域名在部分网络下解析到**不可达 IP**（IPv6 + 某 IPv4 均 ECONNRESET），而 `interface.music.163.com` 正常。实测 `/weapi/` 路径在 `interface*.music.163.com` 上完全可用 → 在 `request.js` 请求层加**域名自动回退**（仅网络错误时重试 + 5 分钟熔断）。影响 217 个接口 |
 | **打包版服务起不来（CI 构建）** | 界面显示「服务未就绪」，「我的」页卡在加载中 | `vendor-server.mjs` 旧判据「有 `app.js` 就 `process.exit(0)`」在 CI 上误跳过依赖安装（`server/node_modules` 被 gitignore 排除）→ 判据改为**「有源码**且**关键依赖齐全」**，并移除顶层 exit 以免连本地补丁一起跳过 |

@@ -97,8 +97,18 @@ export function registerPlaylistIpc({ notifyUpdate = () => {}, apiCall = null } 
     return p
   })
 
-  ipcMain.handle('ncm:playlist-save', (_e, { id, name, songIds }) => {
-    const p = playlistsRepo.save({ id, name, songIds })
+  /**
+   * 通用保存（新建或更新）。
+   *
+   * 必须**透传全部可选字段** —— 仓储层的 save() 支持
+   * tracks/cover/description/source/sourceId，若这里只解构 id/name/songIds，
+   * 其余字段会被静默丢弃：调用方传了 source:'netease' 却得到 'local'，
+   * 歌单形态判断随之出错（快照歌单被当成本地歌单，曲目全丢）。
+   * 这种「静默丢字段」不报错、难排查，所以显式列全。
+   */
+  ipcMain.handle('ncm:playlist-save', (_e, payload = {}) => {
+    const { id, name, songIds, tracks, cover, description, source, sourceId } = payload
+    const p = playlistsRepo.save({ id, name, songIds, tracks, cover, description, source, sourceId })
     notify()
     return p
   })
