@@ -1,4 +1,10 @@
-// ⚠️ 必须排在所有其它 import 之前：便携模式要在 app ready 前、
+// ⚠️ 第 0 位：ELECTRON_RUN_AS_NODE 自愈守卫。
+// 必须绝对排在所有 import 之前 —— 下面 db/ 链路里的 settings.js 会在
+// **模块作用域**调用 app.getPath('music')，若此时 Electron 已退化为纯 Node
+// 模式就会先崩，守卫再也没机会执行。详见该模块头部说明。
+import './runAsNodeGuard.js'
+
+// ⚠️ 第 1 位：便携模式要在 app ready 前、
 // 且在任何模块读取 app.getPath('userData') 之前完成重定向。
 // 下面的 db/、audioCache.js 等在模块作用域就依赖 userData 路径。
 import { setupPortableMode, isPortable, portableStatus } from './portable.js'

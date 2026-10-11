@@ -132,6 +132,47 @@ const portable = setupPortableMode()   // → app.setPath('userData', <exe 同�
 > 因此**不建议**把音频持久缓存上限开太大（默认 2GB）：U 盘写入寿命有限，
 > 且缓存目录就在 U 盘上。可在设置 → 播放缓存里调小或设为「不缓存」。
 
+### 便携版载荷裁剪
+
+便携版每次启动都要把载荷自解压到 `%TEMP%`，**耗时主要由文件数决定**
+（不是体积）。而 vendor 出来的上游目录里有大量运行时用不到的内容：
+
+| 内容 | 规模 | 为什么能裁 |
+|---|---|---|
+| `@biomejs` | 64.4 MB | 代码格式化工具 |
+| `typescript` | 22.5 MB | qqmusic 已由 esbuild 预编译成 `dist/app.cjs` |
+| `.git` | 15.9 MB | 版本库 |
+| `screenshot` | 13.1 MB | 文档截图 |
+| `@types` | 973 文件 | 纯 TS 类型声明，运行时零作用 |
+| `ts-node` / `jest` / `husky` / `eslint` … | — | 开发与测试工具 |
+
+裁剪规则在 [scripts/pack-filter.cjs](scripts/pack-filter.cjs)，
+由 `after-pack.cjs` 在复制到 `resources/` 时应用。**只影响安装包内容，
+源码目录原样不动**（开发、vendor 升级、`npm run dev` 都不受影响）。
+
+实测效果：
+
+| | 裁剪前 | 裁剪后 |
+|---|---|---|
+| portable 体积 | 199 MB | **151 MB** |
+| qqmusic 文件数 | 22054 | 13575 |
+| 首次启动（含解压） | ~100 s | **~72 s** |
+
+> ⚠️ **裁剪规则必须保守**：误裁一个运行时依赖 → 打包版内置服务静默失效，
+> 而开发模式完全正常，极难发现。所以
+> [pack-filter.test.mjs](scripts/pack-filter.test.mjs) 把「必须保留」的
+> 关键路径逐一钉死（koa/axios/moment/zod、`src/app.ts`、`dist/app.cjs`、
+> `public/`、`package.json` 等 50 项）。
+>
+> 改规则后务必跑：
+>
+> ```bash
+> node scripts/pack-filter.test.mjs        # 50 项断言
+> node scripts/pack-filter-report.mjs      # 干跑，列出「需复核」的排除项
+> ```
+>
+> 干跑报告会高亮**非显然**的排除项（不在明显开发目录里的），便于人工复核。
+
 ---
 
 ## 架构
@@ -704,9 +745,13 @@ npm run build     # 编译三进程（out/）
 ### 测试
 
 ```bash
-npm test              # 单元测试：歌单导入导出 + 标签写回（85 项）
+npm test              # 全部单元测试：歌单导入导出 + 打包裁剪 + 标签写回（135 项）
 npm run test:playlist # 歌单导出内容生成 + 歌单文件解析（59 项）
+npm run test:pack     # 打包载荷裁剪规则（50 项）—— 改裁剪规则后必跑
 npm run test:tags     # ID3/FLAC/M4A 标签写回
+
+# 干跑裁剪规则，列出「需复核」的排除项（人工复核用）
+npm run test:pack:report
 
 # 集成测试（需 app 已运行 + 调试端口）
 NCM_DEBUG_PORT=9333 npm run dev        # 终端 A
@@ -741,8 +786,15 @@ powershell -ExecutionPolicy Bypass -File scripts\pack-signed.ps1           # 签
 > 路由完全失效**（侧栏点击无反应、hash 变了视图不切换），而开发模式一切正常
 > （走 vite dev server，不读这些产物）。实测累积到 16 个 `index-*.js` 时必现。
 >
+> **现已自动化**：[scripts/build-app.mjs](scripts/build-app.mjs) 在构建前
+> 自动清空 `dist/out`（三个子进程各写自己的目录，清空互不干扰），
+> 输出 `[build] 已清空 dist/out（移除 N 个旧产物文件）`。
+> 实测连跑三次构建，assets 稳定在 35 个文件 / 1 个 `index-*.js`，不再累积。
+>
+> 手工打包时仍建议显式清一次：
+>
 > ```bash
-> rm -rf dist/out/renderer && node scripts/build-app.mjs && npx electron-builder --win
+> rm -rf dist/out && node scripts/build-app.mjs && npx electron-builder --win
 > ```
 
 - 自签名证书存放在 `%USERPROFILE%\.ntr-certs\`（项目外，不进 git）；换机器需重新生成并导入信任
@@ -918,8 +970,8 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 | **构建产物跑不起来内置服务** | 直接跑 `dist/out/main/index.js` 报 `app.js not found at dist/out/main/server/app.js` | 打包路径布局（`process.resourcesPath`）只在 electron-builder 产物里存在。要在源码目录跑就用 `npm run dev`，别直接跑构建产物 |
 | **IPC handler 静默丢字段** | 传了 `source:'netease'` 却存成 `'local'`，快照曲目全丢，**且不报错** | handler 里解构参数时漏了字段（`{ id, name, songIds }` 丢了 tracks/cover/description/source/sourceId），仓储层支持也没用。加字段时要同步改 handler；这类缺陷单测够不着，靠 `npm run test:integration` 兜住 |
 | **打包版路由完全失效** | 侧栏点击无反应、`location.hash` 变了但视图不切换（停留在发现页） | **构建产物残留**：`dist/out/renderer/assets` 累积了 16 个 `index-*.js`（292 个文件），Electron 加载到旧的入口 bundle。按本表早先那条「构建产物累积」处理：**先清 `dist/out/renderer` 再打包**（清理后 35 个文件、1 个 index-*.js）。开发模式（vite dev server）不受影响，所以只在打包版暴露 |
-| **便携版首次启动"没反应"** | 双击便携版后长时间无窗口，任务管理器只有包装器进程、零子进程 | NSIS 自解压要先把 234MB 解到 `%TEMP%`，**慢盘上约 100 秒**；期间没有子进程是正常的。用 CPU 占用上升可判断它在干活（不是卡死） |
-| **`ELECTRON_RUN_AS_NODE` 污染导致便携版启动即崩** | 便携版解压完成后子进程瞬间退出，`AriaData` 不生成 | 环境里带着 `ELECTRON_RUN_AS_NODE=1`（DSH 自身是 Electron 应用，会注入给子进程）→ 被包装器继承 → 子进程以纯 Node 模式跑 → `registerSchemesAsPrivileged` 报 undefined。**测试脚本/启动器须先清除该变量** |
+| **便携版首次启动"没反应"** | 双击便携版后长时间无窗口，任务管理器只有包装器进程、零子进程 | NSIS 自解压要先把载荷解到 `%TEMP%`，**慢盘上要 1~2 分钟**；期间没有子进程是正常的。用 CPU 占用上升可判断它在干活（不是卡死）。已通过[载荷裁剪](#便携版载荷裁剪)从约 100s 降到约 72s |
+| **`ELECTRON_RUN_AS_NODE` 污染** | 从 Electron 系终端启动时，便携版解压完成后子进程瞬间退出，`AriaData` 不生成 | **打包版无法用 JS 修复**：Electron 退化后不加载 app.asar 里任何 JS（argv[1] 为空 → REPL 无 TTY → 立即退出，实测退出码 0、零输出），守卫没有执行机会。**但它不是持久化系统变量**（User/Machine 级注册表均为空），只由父进程注入 → **普通用户双击不会遇到**。项目里的启动脚本各自 `delete process.env.ELECTRON_RUN_AS_NODE`；主进程另有 `runAsNodeGuard.js` 兜住开发模式 |
 
 | **weapi 接口全部 502** | 每日推荐/我的歌单/推荐歌单等页面全空，而搜索/播放正常 | `weapi` 走 `music.163.com`，该域名在部分网络下解析到**不可达 IP**（IPv6 + 某 IPv4 均 ECONNRESET），而 `interface.music.163.com` 正常。实测 `/weapi/` 路径在 `interface*.music.163.com` 上完全可用 → 在 `request.js` 请求层加**域名自动回退**（仅网络错误时重试 + 5 分钟熔断）。影响 217 个接口 |
 | **打包版服务起不来（CI 构建）** | 界面显示「服务未就绪」，「我的」页卡在加载中 | `vendor-server.mjs` 旧判据「有 `app.js` 就 `process.exit(0)`」在 CI 上误跳过依赖安装（`server/node_modules` 被 gitignore 排除）→ 判据改为**「有源码**且**关键依赖齐全」**，并移除顶层 exit 以免连本地补丁一起跳过 |
