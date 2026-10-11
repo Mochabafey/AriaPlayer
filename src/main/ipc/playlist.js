@@ -4,6 +4,13 @@ import path from 'path'
 import crypto from 'crypto'
 import { playlistsRepo, normalizeName } from '../db/playlists.js'
 import { libraryRepo } from '../db/library.js'
+import {
+  buildPlaylistExport,
+  normalizeFormat,
+  safeFileName,
+  FORMAT_LABELS
+} from '../playlistExport.js'
+import { parsePlaylistFile, isAudioFile } from '../playlistImport.js'
 
 /**
  * 本地歌单 IPC。
@@ -24,8 +31,6 @@ import { libraryRepo } from '../db/library.js'
  * 而「加入播放队列」需要统一成播放器认识的形状。故本文件提供
  * `resolvePlaylistSongs` 输出统一结构，由渲染层决定怎么用。
  */
-
-const AUDIO_EXTS = new Set(['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.opus'])
 
 /**
  * 把歌单解析成统一的「可播放曲目」数组。
@@ -66,16 +71,6 @@ function resolvePlaylistSongs(p) {
     out.push({ ...s, _pid: String(s.id), fromLocal: true })
   }
   return { songs: out, missing }
-}
-
-/** 文件名安全化：去掉 Windows 非法字符，避免导出时路径非法 */
-function safeFileName(name, fallback = 'playlist') {
-  const s = String(name || '')
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-    .replace(/[.\s]+$/, '')
-    .trim()
-    .slice(0, 80)
-  return s || fallback
 }
 
 export function registerPlaylistIpc({ notifyUpdate = () => {}, apiCall = null } = {}) {
@@ -147,62 +142,27 @@ export function registerPlaylistIpc({ notifyUpdate = () => {}, apiCall = null } 
    *   m3u  —— 通用播放列表，只有本地文件能导出（在线曲目没有路径，跳过并计数）
    *   json —— 完整快照，含在线曲目信息，可用于备份/迁移
    *   txt  —— 纯歌名列表，方便分享/贴给别人
+   *
+   * 内容生成在 src/main/playlistExport.js（纯函数，可单测）；
+   * 本 handler 只负责对话框与落盘。
    */
   ipcMain.handle('ncm:playlist-export', async (_e, { id, format = 'm3u' }) => {
     const p = playlistsRepo.get(id)
     if (!p) return { ok: false, reason: 'not found' }
     const { songs } = resolvePlaylistSongs(p)
+    const ext = normalizeFormat(format)
 
-    const ext = format === 'json' ? 'json' : format === 'txt' ? 'txt' : 'm3u'
-    const filterName = { m3u: 'M3U 播放列表', json: 'JSON 歌单', txt: '文本列表' }[ext]
     const r = await dialog.showSaveDialog({
       title: '导出歌单',
       defaultPath: `${safeFileName(p.name)}.${ext}`,
-      filters: [{ name: filterName, extensions: [ext] }]
+      filters: [{ name: FORMAT_LABELS[ext], extensions: [ext] }]
     })
     if (r.canceled || !r.filePath) return { ok: false, canceled: true }
 
-    let content = ''
-    let skipped = 0
-
-    if (ext === 'm3u') {
-      const lines = ['#EXTM3U']
-      for (const s of songs) {
-        if (!s.filePath) { skipped++; continue }
-        const dur = Math.round(s.duration || 0)
-        // EXTINF 的标题里若含逗号会破坏格式（逗号是时长与标题的分隔符）→ 替换掉
-        const label = `${s.artist || ''} - ${s.title || ''}`.replace(/,/g, '，')
-        lines.push(`#EXTINF:${dur},${label}`)
-        lines.push(s.filePath)
-      }
-      content = lines.join('\n')
-    } else if (ext === 'json') {
-      content = JSON.stringify(
-        {
-          name: p.name,
-          description: p.description || '',
-          source: p.source,
-          exportedAt: new Date().toISOString(),
-          count: songs.length,
-          songs: songs.map((s) => ({
-            id: s._pid,
-            title: s.title,
-            artist: s.artist,
-            album: s.album,
-            duration: s.duration,
-            filePath: s.filePath || null
-          }))
-        },
-        null,
-        2
-      )
-    } else {
-      content = songs.map((s, i) => `${String(i + 1).padStart(3, ' ')}. ${s.artist || '未知歌手'} - ${s.title || '未知歌曲'}`).join('\n')
-    }
-
+    const { content, skipped, count } = buildPlaylistExport(p, songs, ext)
     try {
       fs.writeFileSync(r.filePath, content, 'utf-8')
-      return { ok: true, path: r.filePath, count: songs.length - skipped, skipped }
+      return { ok: true, path: r.filePath, count, skipped }
     } catch (e) {
       return { ok: false, reason: e.message }
     }
@@ -239,12 +199,12 @@ export function registerPlaylistIpc({ notifyUpdate = () => {}, apiCall = null } 
     if (r.canceled || !r.filePaths[0]) return null
     const file = r.filePaths[0]
     const raw = fs.readFileSync(file, 'utf-8')
+    const { paths, error } = parsePlaylistFile(raw, file)
+    if (error) return { playlist: null, total: 0, matched: 0, missing: 0, error }
+
     const songIds = []
     let missing = 0
-    for (const line of raw.split(/\r?\n/)) {
-      const t = line.trim()
-      if (!t || t.startsWith('#')) continue
-      const abs = path.isAbsolute(t) ? t : path.join(path.dirname(file), t)
+    for (const abs of paths) {
       const s = libraryRepo.getByFile(abs)
       if (s) songIds.push(s.id)
       else missing++
@@ -277,31 +237,15 @@ export function registerPlaylistIpc({ notifyUpdate = () => {}, apiCall = null } 
     const file = r.filePaths[0]
     const ext = path.extname(file).toLowerCase()
 
-    const paths = []
-    if (ext === '.json') {
-      try {
-        const data = JSON.parse(fs.readFileSync(file, 'utf-8'))
-        // 兼容两种 json：导出的歌单快照 { songs:[...] } 与曲库清单 [...]
-        const arr = Array.isArray(data) ? data : data.songs || []
-        for (const s of arr) if (s && s.filePath) paths.push(s.filePath)
-      } catch (e) {
-        return { ok: false, reason: 'JSON 解析失败：' + e.message }
-      }
-    } else {
-      const raw = fs.readFileSync(file, 'utf-8')
-      for (const line of raw.split(/\r?\n/)) {
-        const t = line.trim()
-        if (!t || t.startsWith('#')) continue
-        paths.push(path.isAbsolute(t) ? t : path.join(path.dirname(file), t))
-      }
-    }
+    const { paths, error } = parsePlaylistFile(fs.readFileSync(file, 'utf-8'), file)
+    if (error) return { ok: false, reason: error }
 
     // 已在曲库的 + 需要新导入的
     const songIds = []
     let missing = 0
     const toImport = []
     for (const p of paths) {
-      if (!AUDIO_EXTS.has(path.extname(p).toLowerCase())) { missing++; continue }
+      if (!isAudioFile(p)) { missing++; continue }
       if (!fs.existsSync(p)) { missing++; continue }
       const existing = libraryRepo.getByFile(p)
       if (existing) songIds.push(existing.id)

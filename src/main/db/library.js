@@ -1,6 +1,31 @@
+import path from 'path'
 import { getDb } from './index.js'
 
 const COLS = 'id, filePath, title, artist, album, coverPath, duration, size, format, source, songId, addedAt'
+
+/**
+ * 路径规范化：统一分隔符、折叠 `..`/`.`/重复分隔符。
+ *
+ * ## 为什么读写都要规范化
+ *
+ * 曲库用 `filePath` 做**精确字符串匹配**查重（hasFile / getByFile）。
+ * 而同一个文件可能以不同写法出现：
+ *   - 扫描目录 → `path.join` → `D:\Music\a.mp3`（反斜杠）
+ *   - M3U 导入 → 播放器导出的文本 → `D:/Music/a.mp3`（正斜杠，跨平台惯例）
+ *
+ * 这两串字符串不相等，于是「文件明明在曲库，导入却说找不到」。
+ * 在仓储层统一规范化，写入与查询两侧就都对齐了 —— 无论调用方怎么写路径。
+ *
+ * 幂等：已规范化的路径再规范化仍是自身（老数据不受影响）。
+ */
+function normPath(p) {
+  if (!p || typeof p !== 'string') return p
+  try {
+    return path.normalize(p)
+  } catch {
+    return p
+  }
+}
 
 export const libraryRepo = {
   listSongs() {
@@ -10,16 +35,16 @@ export const libraryRepo = {
     return getDb().prepare(`SELECT ${COLS} FROM songs WHERE id = ?`).get(id) || null
   },
   hasFile(filePath) {
-    return !!getDb().prepare('SELECT 1 FROM songs WHERE filePath = ?').get(filePath)
+    return !!getDb().prepare('SELECT 1 FROM songs WHERE filePath = ?').get(normPath(filePath))
   },
   getByFile(filePath) {
-    return getDb().prepare(`SELECT ${COLS} FROM songs WHERE filePath = ?`).get(filePath) || null
+    return getDb().prepare(`SELECT ${COLS} FROM songs WHERE filePath = ?`).get(normPath(filePath)) || null
   },
   insertSong(s) {
     getDb().prepare(`INSERT OR REPLACE INTO songs
       (id, filePath, title, artist, album, coverPath, duration, size, format, source, songId, addedAt)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(s.id, s.filePath, s.title ?? '', s.artist ?? '', s.album ?? '', s.coverPath ?? null,
+      .run(s.id, normPath(s.filePath), s.title ?? '', s.artist ?? '', s.album ?? '', s.coverPath ?? null,
         s.duration ?? 0, s.size ?? 0, s.format ?? '', s.source ?? '', s.songId ?? null, s.addedAt ?? Date.now())
   },
   updateSong(id, fields) {

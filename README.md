@@ -478,6 +478,33 @@ bs-blur         1   歌词模糊底
 渲染时若曲库里恰好有同 id 的下载歌曲，会**优先本地播放**（`resolvePlaylistSongs` 补 `filePath`），
 省一次音源解析与网络请求。
 
+### 歌单导入导出的纯函数拆分
+
+导出的「内容生成」与「弹对话框 + 写文件」是两件事，导入的「解析」与「弹选择框」也是。
+原先它们内联在 IPC handler 里，导致**内容逻辑无法被测试** —— 每次都要先弹一个
+`dialog.showSaveDialog`，无人值守环境下根本走不到那一步（只能靠复刻算法来"验证"，
+而那验证的不是真实代码）。
+
+拆成两个零依赖模块后，普通 Node 即可单测真实实现：
+
+| 模块 | 职责 | 测试 |
+|---|---|---|
+| [src/main/playlistExport.js](src/main/playlistExport.js) | 生成 m3u/json/txt 内容、文件名安全化 | `playlistExport.test.mjs`（26 项） |
+| [src/main/playlistImport.js](src/main/playlistImport.js) | 解析 m3u/m3u8/json 为路径列表 | `playlistImport.test.mjs`（33 项） |
+
+```
+npm run test:playlist    # 59 项
+```
+
+> **拆出来才发现的一个真实缺陷**：M3U 是跨平台文本格式，foobar2000 / Winamp /
+> MusicBee 导出的 Windows 播放列表**普遍用正斜杠** `D:/Music/a.mp3`，而曲库存的是
+> `path.join` 的 `D:\Music\a.mp3`。查库是精确字符串匹配，两者不等 →
+> 明明文件在曲库里，导入却全部算 missing（用户看到「导入 0 首，跳过 50 首」）。
+>
+> 坑点在于 `path.isAbsolute('D:/x') === true`，所以只判 isAbsolute 发现不了。
+> 修复：解析层用 `path.normalize` 规范化；并在**仓储层**（libraryRepo 的
+> hasFile/getByFile/insertSong）也统一规范化，这样无论调用方怎么写路径都对齐。
+
 ### 不占 TCP 端口
 
 `bridge.cjs` 劫持 `net.Server.listen`，服务绑定 Named Pipe（Windows）/ Unix Socket（Unix）。
@@ -663,6 +690,17 @@ npm run build     # 编译三进程（out/）
 > **注意**：用 `node scripts/build-app.mjs` 直接调用，比 `npm run build` 更可靠
 > —— npm script 在某些环境下会静默失败。
 
+### 测试
+
+```bash
+npm test              # 全部（歌单导入导出 + 标签写回）
+npm run test:playlist # 歌单导出内容生成 + 歌单文件解析（59 项）
+npm run test:tags     # ID3/FLAC/M4A 标签写回
+```
+
+纯函数模块（`playlistExport.js` / `playlistImport.js`）零依赖，普通 Node 直接跑，
+不需要 Electron —— 这也是把它们从 IPC handler 里拆出来的原因。
+
 ---
 
 ## 打包
@@ -767,6 +805,8 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 │   ├── main/
 │   │   ├── index.js             # 窗口 + IPC 注册 + 协议特权注册
 │   │   ├── portable.js          # 便携模式：userData 重定向（app ready 前调用）
+│   │   ├── playlistExport.js    # 歌单导出内容生成（纯函数，可单测）
+│   │   ├── playlistImport.js    # 歌单文件解析（纯函数，可单测）
 │   │   ├── ncmServer.js         # api-enhanced 子进程管理
 │   │   ├── qqMusicServer.js     # qq-music-api 子进程管理
 │   │   ├── ncm/bridge.cjs       # listen() 劫持 → Named Pipe / Unix Socket
@@ -842,6 +882,8 @@ BtbN **只发布 Windows 与 Linux**，没有 macOS 构建
 | **ESM 裸跑 Electron 主进程** | `does not provide an export named 'app'` | Electron 内置模块只有 CJS 导出，源码是 ESM；必须经 electron-vite 打成 CJS 才能跑。验证主进程逻辑请直接跑构建产物 |
 | **验证便携模式时主进程崩溃** | `Cannot read properties of undefined (reading 'registerSchemesAsPrivileged')` | 环境里继承了 `ELECTRON_RUN_AS_NODE=1`（DSH 自身是 Electron 应用，注入给了子进程）→ Electron 以纯 Node 模式运行，`require('electron')` 只返回路径字符串。测试脚本须 `delete env.ELECTRON_RUN_AS_NODE`（`dev-server.mjs` 同样在防这个坑） |
 | **开发版与安装版抢单一实例锁** | 开发版启动后立刻退出，安装版窗口被唤到前台 | 两者 `app.getName()` 都是 productName「Aria Player」→ 共用 `%APPDATA%\Aria Player`。排查时给开发版加 `--user-data-dir=<独立目录>` |
+| **正斜杠路径查库不命中** | 导入 M3U 显示「0 首，跳过 50 首」，但文件确实在曲库 | M3U 跨平台惯例用正斜杠（`D:/Music/a.mp3`），曲库存的是 `path.join` 的反斜杠形式，精确匹配失败。`path.isAbsolute('D:/x')` 为 **true**，所以只判 isAbsolute 发现不了 → 必须 `path.normalize`；仓储层读写两侧都规范化 |
+| **构建产物跑不起来内置服务** | 直接跑 `dist/out/main/index.js` 报 `app.js not found at dist/out/main/server/app.js` | 打包路径布局（`process.resourcesPath`）只在 electron-builder 产物里存在。要在源码目录跑就用 `npm run dev`，别直接跑构建产物 |
 
 | **weapi 接口全部 502** | 每日推荐/我的歌单/推荐歌单等页面全空，而搜索/播放正常 | `weapi` 走 `music.163.com`，该域名在部分网络下解析到**不可达 IP**（IPv6 + 某 IPv4 均 ECONNRESET），而 `interface.music.163.com` 正常。实测 `/weapi/` 路径在 `interface*.music.163.com` 上完全可用 → 在 `request.js` 请求层加**域名自动回退**（仅网络错误时重试 + 5 分钟熔断）。影响 217 个接口 |
 | **打包版服务起不来（CI 构建）** | 界面显示「服务未就绪」，「我的」页卡在加载中 | `vendor-server.mjs` 旧判据「有 `app.js` 就 `process.exit(0)`」在 CI 上误跳过依赖安装（`server/node_modules` 被 gitignore 排除）→ 判据改为**「有源码**且**关键依赖齐全」**，并移除顶层 exit 以免连本地补丁一起跳过 |
